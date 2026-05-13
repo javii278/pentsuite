@@ -1,0 +1,28 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Sensitive runtime data
+data/projects/
+data/session_memory.db
+data/screenshots/
+
+# Claude Code internal
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Logs / tmp
+*.log
+/tmp/

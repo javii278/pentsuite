@@ -1,0 +1,2105 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PentestSuite</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.3.0/css/xterm.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/vis-network@9.1.2/standalone/umd/vis-network.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/lib/addon-web-links.js"></script>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar fixed-top px-3">
+    <div class="d-flex align-items-center gap-2">
+        <button class="sidebar-toggle-btn" id="sidebar-toggle-btn" onclick="toggleSidebar()" title="Toggle sidebar">
+            <i class="fas fa-bars"></i>
+        </button>
+        <span class="brand"><i class="fas fa-terminal"></i> PentestSuite</span>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+        <button class="btn btn-xs btn-outline-success" onclick="showNewProjectModal()">
+            <i class="fas fa-plus"></i> Nuevo
+        </button>
+    </div>
+</nav>
+
+<!-- Layout principal -->
+<div class="layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-title">PROYECTOS</div>
+        <div id="projects-list">
+            <div class="text-muted small p-3">Cargando...</div>
+        </div>
+
+        <div class="nav-groups" id="nav-groups">
+          <!-- Grupo: PENTEST -->
+          <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleNavGroup(this)">
+              <i class="fas fa-crosshairs"></i> PENTEST <i class="fas fa-chevron-down nav-chevron"></i>
+            </div>
+            <div class="nav-group-items">
+              <button class="nav-item" data-phase="recon" onclick="loadPhase('recon')"><i class="fas fa-magnifying-glass"></i> Recon</button>
+              <button class="nav-item" data-phase="enum" onclick="loadPhase('enum')"><i class="fas fa-list-check"></i> Enum</button>
+              <button class="nav-item" data-phase="exploitation" onclick="loadPhase('exploitation')"><i class="fas fa-skull-crossbones"></i> Exploit</button>
+              <button class="nav-item" data-phase="web_attacks" onclick="loadPhase('web_attacks')"><i class="fas fa-globe"></i> Web Attacks</button>
+              <button class="nav-item" data-phase="privesc_windows" onclick="loadPhase('privesc_windows')"><i class="fab fa-windows"></i> PrivEsc Windows</button>
+              <button class="nav-item" data-phase="privesc_linux" onclick="loadPhase('privesc_linux')"><i class="fab fa-linux"></i> PrivEsc Linux</button>
+              <button class="nav-item" data-phase="pivoting" onclick="loadPhase('pivoting')"><i class="fas fa-network-wired"></i> Pivoting</button>
+              <button class="nav-item" data-phase="ad_attacks" onclick="loadPhase('ad_attacks')"><i class="fas fa-sitemap"></i> AD Attacks</button>
+              <button class="nav-item" data-phase="password_attacks" onclick="loadPhase('password_attacks')"><i class="fas fa-key"></i> Passwords</button>
+              <button class="nav-item" data-phase="metasploit" onclick="loadPhase('metasploit')"><i class="fas fa-terminal"></i> Metasploit</button>
+              <button class="nav-item" data-phase="av_evasion" onclick="loadPhase('av_evasion')"><i class="fas fa-shield-virus"></i> AV Evasion</button>
+              <button class="nav-item" data-phase="client_side" onclick="loadPhase('client_side')"><i class="fas fa-file-code"></i> Client-Side</button>
+              <button class="nav-item" data-phase="cloud_aws" onclick="loadPhase('cloud_aws')"><i class="fab fa-aws"></i> Cloud / AWS</button>
+            </div>
+          </div>
+          <!-- Grupo: ARSENAL -->
+          <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleNavGroup(this)">
+              <i class="fas fa-toolbox"></i> ARSENAL <i class="fas fa-chevron-down nav-chevron"></i>
+            </div>
+            <div class="nav-group-items">
+              <button class="nav-item" data-phase="revshells" onclick="loadPhase('revshells')"><i class="fas fa-dragon"></i> Rev Shells</button>
+              <button class="nav-item" data-phase="payloads" onclick="loadPhase('payloads')"><i class="fas fa-bomb"></i> Payloads</button>
+              <button class="nav-item" data-phase="cve" onclick="loadPhase('cve')"><i class="fas fa-bug"></i> CVE / Exploits</button>
+              <button class="nav-item" data-phase="snippets" onclick="loadPhase('snippets')"><i class="fas fa-bookmark"></i> Snippets</button>
+              <button class="nav-item" data-phase="tunnels" onclick="loadPhase('tunnels')"><i class="fas fa-route"></i> Tunnels</button>
+              <button class="nav-item" data-phase="ai" onclick="loadPhase('ai')"><i class="fas fa-microchip"></i> AI Assist</button>
+            </div>
+          </div>
+          <!-- Grupo: DATA -->
+          <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleNavGroup(this)">
+              <i class="fas fa-database"></i> DATA <i class="fas fa-chevron-down nav-chevron"></i>
+            </div>
+            <div class="nav-group-items">
+              <button class="nav-item nav-item-red" data-phase="findings" onclick="loadPhase('findings')"><i class="fas fa-bug"></i> Findings</button>
+              <button class="nav-item nav-item-gold" data-phase="loot" onclick="loadPhase('loot')"><i class="fas fa-gem"></i> Loot</button>
+              <button class="nav-item" data-phase="ports" onclick="loadPhase('ports')"><i class="fas fa-table-columns"></i> Port Map</button>
+              <button class="nav-item" data-phase="matrix" onclick="loadPhase('matrix')"><i class="fas fa-table"></i> Cred Matrix</button>
+              <button class="nav-item" data-phase="shots" onclick="loadPhase('shots')"><i class="fas fa-camera"></i> Screenshots</button>
+              <button class="nav-item" data-phase="path" onclick="loadPhase('path')"><i class="fas fa-diagram-project"></i> Attack Path</button>
+              <button class="nav-item" data-phase="checklist" onclick="loadPhase('checklist')"><i class="fas fa-clipboard-check"></i> Checklist</button>
+            </div>
+          </div>
+          <!-- Grupo: ENGINES -->
+          <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleNavGroup(this)">
+              <i class="fas fa-robot"></i> ENGINES <i class="fas fa-chevron-down nav-chevron"></i>
+            </div>
+            <div class="nav-group-items">
+              <button class="nav-item nav-item-green" data-phase="autopilot" onclick="loadPhase('autopilot')"><i class="fas fa-brain"></i> Autopilot</button>
+              <button class="nav-item" data-phase="auto" onclick="loadPhase('auto')"><i class="fas fa-robot"></i> Auto Rules</button>
+              <button class="nav-item" data-phase="osint" onclick="loadPhase('osint')"><i class="fas fa-binoculars"></i> OSINT</button>
+              <button class="nav-item" data-phase="bloodhound" onclick="loadPhase('bloodhound')"><i class="fas fa-paw"></i> BloodHound</button>
+              <button class="nav-item" data-phase="ldap" onclick="loadPhase('ldap')"><i class="fas fa-id-card-clip"></i> AD Enum</button>
+              <button class="nav-item" data-phase="sessions" onclick="loadPhase('sessions')"><i class="fas fa-plug-circle-bolt"></i> Sessions</button>
+            </div>
+          </div>
+          <!-- Grupo: PROJECT -->
+          <div class="nav-group">
+            <div class="nav-group-header" onclick="toggleNavGroup(this)">
+              <i class="fas fa-folder-open"></i> PROJECT <i class="fas fa-chevron-down nav-chevron"></i>
+            </div>
+            <div class="nav-group-items">
+              <button class="nav-item nav-item-blue" data-phase="dashboard" onclick="loadPhase('dashboard')"><i class="fas fa-gauge-high"></i> Dashboard</button>
+              <button class="nav-item" data-phase="terminal" onclick="loadPhase('terminal')"><i class="fas fa-square-terminal"></i> Terminal</button>
+              <button class="nav-item" data-phase="history" onclick="loadPhase('history')"><i class="fas fa-clock-rotate-left"></i> Historial</button>
+              <button class="nav-item" data-phase="map" onclick="loadPhase('map')"><i class="fas fa-map-location-dot"></i> Mapa</button>
+              <button class="nav-item" data-phase="timeline" onclick="loadPhase('timeline')"><i class="fas fa-timeline"></i> Timeline</button>
+              <button class="nav-item" data-phase="editor" onclick="loadPhase('editor')"><i class="fas fa-file-pen"></i> Editor</button>
+            </div>
+          </div>
+        </div>
+    </aside>
+
+    <!-- Área de contenido -->
+    <main class="content" id="main-content">
+
+        <!-- Vista vacía -->
+        <div id="empty-view" class="empty-view">
+            <i class="fas fa-shield-halved empty-icon"></i>
+            <h4 class="mt-3 mb-1">PentestSuite</h4>
+            <p class="text-muted">Selecciona un proyecto o crea uno nuevo para empezar</p>
+            <button class="btn btn-outline-success mt-2" onclick="showNewProjectModal()">
+                <i class="fas fa-plus"></i> Nuevo proyecto
+            </button>
+        </div>
+
+        <!-- Vista de proyecto -->
+        <div id="project-view" class="d-none">
+
+            <!-- Header del proyecto (compact, single row) -->
+            <div class="project-header" id="project-header">
+              <div class="ph-row1">
+                <!-- Identity -->
+                <div class="ph-identity">
+                  <span class="ph-name" id="ph-name"></span>
+                  <span class="ph-target" id="ph-targets"></span>
+                </div>
+                <div class="ph-sep"></div>
+                <!-- Global vars inline -->
+                <div class="global-vars-bar">
+                  <span class="gv-label">RHOST</span>
+                  <input class="gv-input" id="gv-rhost" type="text" placeholder="10.10.10.10" oninput="saveGlobalVar('rhost', this.value)">
+                  <span class="gv-sep">|</span>
+                  <span class="gv-label">LHOST</span>
+                  <input class="gv-input" id="gv-lhost" type="text" placeholder="192.168.45.5" oninput="saveGlobalVar('lhost', this.value)">
+                  <span class="gv-label">:</span>
+                  <input class="gv-input gv-input-sm" id="gv-lport" type="text" placeholder="4444" oninput="saveGlobalVar('lport', this.value)">
+                  <span class="gv-sep">|</span>
+                  <span class="gv-label">DOMAIN</span>
+                  <input class="gv-input" id="gv-domain" type="text" placeholder="corp.local" oninput="saveGlobalVar('domain', this.value)">
+                </div>
+                <!-- Search (only shows when in tools view) -->
+                <input type="text" class="form-control form-control-sm search-input" id="tool-search" placeholder="🔍 Buscar herramienta..." oninput="filterTools()" style="display:none;max-width:180px;">
+                <!-- Actions -->
+                <div class="ph-actions">
+                  <span id="jobs-running-indicator-inline" class="jobs-indicator d-none me-1">
+                    <span class="spinner-pulse"></span><span id="jobs-running-count-inline">0</span> running
+                  </span>
+                  <button class="btn btn-xs btn-outline-secondary" onclick="showNotesModal()" title="Notas"><i class="fas fa-sticky-note"></i></button>
+                  <div class="dropdown">
+                    <button class="btn btn-xs btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+                      <i class="fas fa-ellipsis"></i>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end py-1" style="font-size:12px;min-width:180px;">
+                      <li><a class="dropdown-item py-1" href="#" onclick="showProjectInfoModal();return false;"><i class="fas fa-circle-info me-2 text-muted"></i>Info proyecto</a></li>
+                      <li><a class="dropdown-item py-1" href="#" onclick="showScopeModal();return false;"><i class="fas fa-crosshairs me-2 text-muted"></i>Scope</a></li>
+                      <li><a class="dropdown-item py-1" href="#" onclick="showTransferModal();return false;"><i class="fas fa-file-arrow-up me-2 text-muted"></i>File Transfer</a></li>
+                      <li><hr class="dropdown-divider my-1"></li>
+                      <li><a class="dropdown-item py-1" href="#" onclick="exportMarkdown();return false;"><i class="fas fa-file-export me-2 text-muted"></i>Export MD</a></li>
+                      <li><a class="dropdown-item py-1" href="#" onclick="exportHTMLReport();return false;"><i class="fas fa-file-code me-2 text-muted"></i>Export HTML</a></li>
+                      <li><a class="dropdown-item py-1" href="#" onclick="exportPDFReport();return false;"><i class="fas fa-file-pdf me-2 text-muted"></i>Export PDF</a></li>
+                      <li><a class="dropdown-item py-1" href="#" onclick="exportWordReport();return false;"><i class="fas fa-file-word me-2 text-muted"></i>Export Word</a></li>
+                      <li><hr class="dropdown-divider my-1"></li>
+                      <li><a class="dropdown-item py-1 text-danger" href="#" onclick="confirmDeleteProject();return false;"><i class="fas fa-trash me-2"></i>Eliminar</a></li>
+                    </ul>
+                  </div>
+                  <button class="btn btn-xs btn-success fw-semibold" onclick="startFullRecon()" title="Full Recon"><i class="fas fa-rocket"></i> Full Recon</button>
+                </div>
+              </div>
+              <!-- Hidden tabs for JS phase tracking (kept for JS compatibility) -->
+              <div class="tabs-row" style="display:none">
+                <ul class="nav nav-pills" id="phase-tabs">
+                  <li class="nav-item"><button class="nav-link" data-phase="dashboard" onclick="loadPhase('dashboard')"></button></li>
+                  <li class="nav-item"><button class="nav-link active" data-phase="recon" onclick="loadPhase('recon')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="enum" onclick="loadPhase('enum')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="exploitation" onclick="loadPhase('exploitation')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="web_attacks" onclick="loadPhase('web_attacks')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="privesc_windows" onclick="loadPhase('privesc_windows')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="privesc_linux" onclick="loadPhase('privesc_linux')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="pivoting" onclick="loadPhase('pivoting')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="ad_attacks" onclick="loadPhase('ad_attacks')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="av_evasion" onclick="loadPhase('av_evasion')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="metasploit" onclick="loadPhase('metasploit')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="password_attacks" onclick="loadPhase('password_attacks')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="client_side" onclick="loadPhase('client_side')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="cloud_aws" onclick="loadPhase('cloud_aws')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="revshells" onclick="loadPhase('revshells')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="loot" onclick="loadPhase('loot')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="findings" onclick="loadPhase('findings')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="checklist" onclick="loadPhase('checklist')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="history" onclick="loadPhase('history')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="terminal" onclick="loadPhase('terminal')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="map" onclick="loadPhase('map')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="timeline" onclick="loadPhase('timeline')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="editor" onclick="loadPhase('editor')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="ports" onclick="loadPhase('ports')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="payloads" onclick="loadPhase('payloads')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="matrix" onclick="loadPhase('matrix')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="shots" onclick="loadPhase('shots')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="path" onclick="loadPhase('path')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="auto" onclick="loadPhase('auto')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="cve" onclick="loadPhase('cve')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="sessions" onclick="loadPhase('sessions')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="bloodhound" onclick="loadPhase('bloodhound')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="ldap" onclick="loadPhase('ldap')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="osint" onclick="loadPhase('osint')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="snippets" onclick="loadPhase('snippets')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="tunnels" onclick="loadPhase('tunnels')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="ai" onclick="loadPhase('ai')"></button></li>
+                  <li class="nav-item"><button class="nav-link" data-phase="autopilot" onclick="loadPhase('autopilot')"></button></li>
+                </ul>
+              </div>
+            </div>
+
+            <!-- Vista: Dashboard -->
+            <div id="dashboard-view" class="p-3 d-none">
+              <!-- Hero stat cards -->
+              <div class="dash-hero-row" id="dash-stats-row"></div>
+
+              <!-- Full Recon stepper -->
+              <div id="full-recon-stepper" class="d-none mb-3">
+                <div class="d-flex align-items-center gap-2 mb-2">
+                  <span class="fw-semibold"><i class="fas fa-rocket text-success"></i> Full Recon en curso</span>
+                  <button class="btn btn-xs btn-outline-danger ms-auto" onclick="cancelFullRecon()"><i class="fas fa-stop"></i> Cancelar</button>
+                </div>
+                <div class="recon-steps" id="recon-steps"></div>
+              </div>
+
+              <!-- Main grid: charts + critical findings -->
+              <div class="dash-main-grid">
+                <!-- Left: charts 2x2 -->
+                <div class="dash-charts-col">
+                  <div class="dash-charts-grid">
+                    <div class="dash-card">
+                      <div class="dash-card-title"><i class="fas fa-bug text-danger"></i> Findings por Severidad</div>
+                      <div style="position:relative;height:180px"><canvas id="chart-findings"></canvas></div>
+                    </div>
+                    <div class="dash-card">
+                      <div class="dash-card-title"><i class="fas fa-gem text-warning"></i> Loot por Tipo</div>
+                      <div style="position:relative;height:180px"><canvas id="chart-loot"></canvas></div>
+                    </div>
+                    <div class="dash-card">
+                      <div class="dash-card-title"><i class="fas fa-network-wired text-info"></i> Servicios Descubiertos</div>
+                      <div style="position:relative;height:180px"><canvas id="chart-ports"></canvas></div>
+                    </div>
+                    <div class="dash-card">
+                      <div class="dash-card-title"><i class="fas fa-shield-halved text-success"></i> Cobertura de Fases</div>
+                      <div style="position:relative;height:180px"><canvas id="chart-phases"></canvas></div>
+                    </div>
+                  </div>
+                </div>
+                <!-- Right: critical findings + quick actions -->
+                <div class="dash-right-col">
+                  <!-- Quick actions -->
+                  <div class="dash-card dash-quick-actions mb-3">
+                    <div class="dash-card-title"><i class="fas fa-bolt text-warning"></i> Acciones Rápidas</div>
+                    <div class="dash-actions-grid">
+                      <button class="dash-action-btn" onclick="loadPhase('autopilot')"><i class="fas fa-brain"></i><span>Autopilot</span></button>
+                      <button class="dash-action-btn" onclick="startFullRecon()"><i class="fas fa-rocket"></i><span>Full Recon</span></button>
+                      <button class="dash-action-btn" onclick="loadPhase('findings')"><i class="fas fa-bug"></i><span>Findings</span></button>
+                      <button class="dash-action-btn" onclick="loadPhase('terminal')"><i class="fas fa-terminal"></i><span>Terminal</span></button>
+                      <button class="dash-action-btn" onclick="exportHTMLReport()"><i class="fas fa-file-code"></i><span>Reporte</span></button>
+                      <button class="dash-action-btn" onclick="loadPhase('loot')"><i class="fas fa-gem"></i><span>Loot</span></button>
+                    </div>
+                  </div>
+                  <!-- Critical findings list -->
+                  <div class="dash-card dash-critical-findings">
+                    <div class="dash-card-title"><i class="fas fa-skull-crossbones text-danger"></i> Findings Críticos / Altos</div>
+                    <div id="dash-critical-list" class="dash-critical-list"></div>
+                  </div>
+                  <!-- Recent activity -->
+                  <div class="dash-card mt-3">
+                    <div class="dash-card-title"><i class="fas fa-clock-rotate-left text-blue"></i> Actividad Reciente</div>
+                    <div id="dash-recent-jobs" class="dash-recent-jobs"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Vista: Tools grid -->
+            <div id="tools-view" class="p-3">
+                <!-- Filtros de categoria (solo recon) -->
+                <div id="recon-cat-filters" class="d-none mb-3">
+                    <div class="d-flex flex-wrap gap-1 align-items-center">
+                        <span class="text-muted small me-1">Categoria:</span>
+                        <button class="btn btn-xs cat-filter-btn active" data-cat="">Todos (50)</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T1">T1 Host Discovery</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T2">T2 Port Scanning</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T3">T3 DNS Recon</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T4">T4 Subdomain Enum</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T5">T5 SSL/TLS</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T6">T6 Web Fingerprint</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T7">T7 Web Content</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T8">T8 OSINT</button>
+                        <button class="btn btn-xs cat-filter-btn" data-cat="T9">T9 Service Enum</button>
+                    </div>
+                </div>
+                <div class="row g-3" id="tools-grid"></div>
+            </div>
+
+            <!-- Vista: Historial -->
+            <div id="history-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0">Comandos guardados en este proyecto</h6>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-warning" onclick="bsSchedule.show()"><i class="fas fa-clock"></i> Programar scan</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearHistory()"><i class="fas fa-trash"></i> Limpiar todo</button>
+                    </div>
+                </div>
+                <div id="history-list"></div>
+                <!-- Scheduled scans -->
+                <div class="mt-4">
+                    <h6 class="text-muted mb-2"><i class="fas fa-clock-rotate-left text-warning"></i> Scans Programados</h6>
+                    <div id="schedules-section"></div>
+                </div>
+            </div>
+
+            <!-- Vista: RevShells -->
+            <div id="revshells-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-dragon text-danger"></i> Generador de Reverse Shells <small class="ms-2" style="font-size:11px">· usa LHOST/LPORT de arriba</small></h6>
+                </div>
+                <div id="revshells-list"></div>
+            </div>
+
+            <!-- Vista: Loot -->
+            <div id="loot-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-gem text-warning"></i> Loot Tracker</h6>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-warning" onclick="showHashCrackerModal()"><i class="fas fa-key"></i> Hash Cracker</button>
+                        <button class="btn btn-sm btn-outline-success" onclick="showAddLootModal()"><i class="fas fa-plus"></i> A&ntilde;adir loot</button>
+                    </div>
+                </div>
+                <div id="loot-list"></div>
+            </div>
+
+            <!-- Vista: Findings -->
+            <div id="findings-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div class="d-flex align-items-center gap-2">
+                        <h6 class="text-muted mb-0"><i class="fas fa-bug"></i> Findings</h6>
+                        <div id="findings-severity-bar" class="d-flex gap-1"></div>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="showSeverityTrendsModal()"><i class="fas fa-chart-bar"></i> Trends</button>
+                        <button class="btn btn-sm btn-outline-warning" id="enrich-btn" onclick="enrichProject()" title="Analiza Port Map contra base de datos de CVEs y searchsploit"><i class="fas fa-magnifying-glass-chart"></i> Enrich CVEs</button>
+                        <button class="btn btn-sm btn-outline-info" id="enrich-cvss-btn" onclick="enrichCVSS()" title="Asigna vectores CVSS v3.1 automáticamente a todos los findings"><i class="fas fa-shield-halved"></i> Enrich CVSS</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="showAddFindingModal()"><i class="fas fa-plus"></i> A&ntilde;adir finding</button>
+                    </div>
+                </div>
+                <div id="findings-list"></div>
+            </div>
+
+            <!-- Vista: Checklist -->
+            <div id="checklist-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <h6 class="text-muted mb-0"><i class="fas fa-clipboard-check text-success"></i> Checklist OSCP</h6>
+                    <button class="btn btn-sm btn-outline-danger" onclick="resetChecklist()"><i class="fas fa-rotate-left"></i> Reiniciar</button>
+                </div>
+                <div class="checklist-stats mb-1" id="checklist-stats"></div>
+                <div class="checklist-progress mb-3">
+                    <div class="checklist-progress-bar" id="checklist-progress-bar" style="width:0%"></div>
+                </div>
+                <div id="checklist-items"></div>
+            </div>
+
+            <!-- Vista: Terminal -->
+            <div id="terminal-view" class="d-none">
+                <!-- Workflows strip -->
+                <div class="workflows-strip" id="workflows-strip">
+                    <span class="wf-label">WORKFLOWS</span>
+                    <div id="workflows-list" class="d-flex gap-2 flex-wrap"></div>
+                </div>
+                <!-- Terminal layout -->
+                <div class="terminal-layout">
+                    <!-- Jobs panel -->
+                    <div class="terminal-jobs-panel">
+                        <div class="tjp-header">
+                            <span>JOBS</span>
+                            <button class="btn btn-link btn-sm p-0 text-muted" onclick="clearCompletedJobs()" title="Limpiar completados">
+                                <i class="fas fa-broom"></i>
+                            </button>
+                        </div>
+                        <div id="jobs-list">
+                            <div class="text-muted small p-3">Sin jobs activos</div>
+                        </div>
+                    </div>
+                    <!-- Output panel -->
+                    <div class="terminal-output-panel">
+                        <div class="top-bar" id="term-job-header">
+                            <div id="term-no-selection" class="text-muted small p-3">Selecciona un job para ver el output</div>
+                            <div id="term-job-info" class="d-none w-100">
+                                <div class="d-flex align-items-center gap-2 px-3 py-2 border-bottom border-dark">
+                                    <span id="term-job-status-icon"></span>
+                                    <div class="flex-grow-1 min-width-0">
+                                        <div class="fw-semibold small" id="term-job-name"></div>
+                                        <div class="term-cmd-preview" id="term-job-cmd"></div>
+                                    </div>
+                                    <div class="d-flex gap-1 flex-shrink-0">
+                                        <button class="btn btn-sm btn-outline-danger" id="btn-stop-job" onclick="stopSelectedJob()" title="Stop">
+                                            <i class="fas fa-stop"></i>
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-warning" id="btn-parse-output" onclick="parseJobOutput()" title="Analizar output (auto-loot)">
+                                            <i class="fas fa-microscope"></i> Parse
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-info" onclick="showEvidenceCollectorModal()" title="Guardar como evidencia de Finding">
+                                            <i class="fas fa-camera-retro"></i> Evidencia
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-purple" onclick="showAIAnalysisFromTerminal()" title="Analizar con IA (Ollama)">
+                                            <i class="fas fa-microchip"></i> AI
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="copyTerminalOutput()" title="Copiar output">
+                                            <i class="fas fa-copy"></i>
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-success" onclick="saveOutputToHistory()" title="Guardar en historial">
+                                            <i class="fas fa-floppy-disk"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- nmap progress bar -->
+                        <div id="nmap-progress-wrap" class="d-none" style="padding:4px 10px;background:#0a0e14;border-bottom:1px solid #21262d">
+                            <div class="d-flex align-items-center gap-2">
+                                <small class="text-muted" style="min-width:90px"><i class="fas fa-radar text-info"></i> <span id="nmap-progress-label">0%</span></small>
+                                <div style="flex:1;background:#21262d;border-radius:3px;height:6px;overflow:hidden">
+                                    <div id="nmap-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,#58a6ff,#3fb950);transition:width 0.4s ease;border-radius:3px"></div>
+                                </div>
+                                <small class="text-muted" id="nmap-progress-etc"></small>
+                            </div>
+                        </div>
+                        <!-- xterm.js container -->
+                        <div class="terminal-body" id="xterm-container"></div>
+                        <div class="term-footer">
+                            <div class="term-input-row">
+                                <span class="term-prompt">$</span>
+                                <input type="text" class="term-input" id="term-cmd-input"
+                                       placeholder="Ejecutar comando directo..."
+                                       onkeydown="if(event.key==='Enter') runDirectCommand()">
+                                <button class="btn btn-sm btn-outline-success" onclick="runDirectCommand()">
+                                    <i class="fas fa-play"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" id="btn-autoscroll"
+                                        onclick="toggleAutoScroll()" title="Auto-scroll ON/OFF"
+                                        style="min-width:36px">
+                                    <i class="fas fa-angles-down"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vista: Network Map -->
+            <div id="map-view" class="d-none map-view-container">
+                <div class="map-toolbar">
+                    <span class="gv-label">RED</span>
+                    <div class="map-legend">
+                        <span class="map-leg-item" style="--col:#8b949e">Descubierto</span>
+                        <span class="map-leg-item" style="--col:#d29922">Acceso inicial</span>
+                        <span class="map-leg-item" style="--col:#f0883e">Usuario</span>
+                        <span class="map-leg-item" style="--col:#f85149">Admin/Root</span>
+                    </div>
+                    <div class="ms-auto d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="showAddHostModal()"><i class="fas fa-plus"></i> Host</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="resetMapLayout()"><i class="fas fa-rotate"></i> Layout</button>
+                    </div>
+                </div>
+                <div class="map-body">
+                    <div id="network-map" class="map-canvas"></div>
+                    <div id="map-host-panel" class="map-host-panel d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong id="mhp-ip" class="text-success font-monospace"></strong>
+                            <button class="btn btn-sm btn-outline-danger" onclick="removeHostFromMap()"><i class="fas fa-trash"></i></button>
+                        </div>
+                        <div class="mb-2">
+                            <label class="form-label small">Estado</label>
+                            <select class="form-select form-select-sm" id="mhp-status" onchange="setHostStatus()">
+                                <option value="discovered">Descubierto</option>
+                                <option value="initial_access">Acceso inicial</option>
+                                <option value="user">Usuario</option>
+                                <option value="admin">Admin / Root</option>
+                            </select>
+                        </div>
+                        <div class="small text-muted mb-2" id="mhp-services"></div>
+                        <button class="btn btn-sm btn-outline-success w-100" onclick="focusProjectOnHost()">
+                            <i class="fas fa-crosshairs"></i> Usar como RHOST
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vista: Timeline -->
+            <div id="timeline-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-timeline text-info"></i> Timeline del proyecto</h6>
+                    <div class="d-flex gap-1">
+                        <button class="btn btn-sm btn-outline-secondary timeline-filter active" data-filter="all" onclick="filterTimeline('all')">Todo</button>
+                        <button class="btn btn-sm btn-outline-secondary timeline-filter" data-filter="command" onclick="filterTimeline('command')" title="Comandos"><i class="fas fa-terminal"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary timeline-filter" data-filter="job" onclick="filterTimeline('job')" title="Jobs ejecutados"><i class="fas fa-play"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary timeline-filter" data-filter="finding" onclick="filterTimeline('finding')" title="Findings"><i class="fas fa-bug"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary timeline-filter" data-filter="loot" onclick="filterTimeline('loot')" title="Loot"><i class="fas fa-gem"></i></button>
+                    </div>
+                </div>
+                <div id="timeline-list" class="timeline-list"></div>
+            </div>
+
+            <!-- Vista: YAML Editor -->
+            <div id="editor-view" class="d-none editor-view-container">
+                <div class="editor-sidebar">
+                    <div class="editor-sidebar-header">
+                        <span>FICHEROS YAML</span>
+                        <button class="btn btn-link btn-sm p-0 text-success" onclick="showNewYamlModal()" title="Nuevo fichero"><i class="fas fa-plus"></i></button>
+                    </div>
+                    <div id="yaml-file-list"></div>
+                </div>
+                <div class="editor-main">
+                    <div class="editor-topbar">
+                        <span id="editor-filename" class="text-muted small">Selecciona un fichero</span>
+                        <div class="d-flex gap-2 ms-auto align-items-center">
+                            <span id="editor-dirty-badge" class="dirty-badge d-none">modificado</span>
+                            <button class="btn btn-sm btn-outline-success" id="btn-save-yaml" onclick="saveYAML()" disabled>
+                                <i class="fas fa-floppy-disk"></i> Guardar
+                            </button>
+                        </div>
+                    </div>
+                    <textarea class="editor-textarea" id="yaml-editor" spellcheck="false"
+                              placeholder="Selecciona un fichero YAML de la lista izquierda..."
+                              oninput="onYamlEditorInput()"></textarea>
+                    <div class="editor-footer">
+                        <span class="text-muted small" id="editor-status">Listo</span>
+                        <span class="text-muted small ms-3"><kbd>Ctrl+S</kbd> para guardar</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vista: Port Map -->
+            <div id="ports-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-table-columns text-info"></i> Port Map</h6>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="importPortsFromLoot()"><i class="fas fa-file-import"></i> Importar Loot</button>
+                        <button class="btn btn-sm btn-outline-success" onclick="showAddPortModal()"><i class="fas fa-plus"></i> Puerto</button>
+                    </div>
+                </div>
+                <div id="ports-empty" class="text-center text-muted p-5 d-none">
+                    <i class="fas fa-network-wired fa-2x mb-3 d-block"></i>
+                    Sin puertos. Ejecuta nmap, parsea el output y los puertos aparecer&aacute;n aqu&iacute;.
+                </div>
+                <div class="table-responsive" id="ports-table-wrap" style="display:none">
+                    <table class="table table-dark table-sm table-hover port-table">
+                        <thead><tr><th>Host</th><th>Puerto</th><th>Proto</th><th>Servicio</th><th>Versi&oacute;n</th><th class="text-end">Acciones</th></tr></thead>
+                        <tbody id="ports-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Vista: Payload Generator -->
+            <div id="payloads-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="text-muted mb-0"><i class="fas fa-bomb text-danger"></i> Payload Generator</h6>
+                </div>
+                <div class="global-vars-bar mb-3">
+                    <span class="gv-label">VARS</span>
+                    <div class="gv-item"><label>LHOST</label><input class="gv-input" id="pl-lhost" type="text" placeholder="192.168.45.5" oninput="renderPayloads()"></div>
+                    <div class="gv-item"><label>LPORT</label><input class="gv-input gv-input-sm" id="pl-lport" type="text" placeholder="4444" oninput="renderPayloads()"></div>
+                    <div class="gv-item"><label>ARCH</label>
+                        <select class="gv-input" id="pl-arch" onchange="renderPayloads()">
+                            <option value="x64">x64</option><option value="x86">x86</option>
+                        </select>
+                    </div>
+                    <div class="gv-item"><label>OUTFILE</label><input class="gv-input" id="pl-outfile" type="text" placeholder="/tmp/shell.exe" oninput="renderPayloads()"></div>
+                </div>
+                <div class="row g-3" id="payloads-grid"></div>
+            </div>
+
+            <!-- Vista: Credential Matrix -->
+            <div id="matrix-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-table text-warning"></i> Credential Matrix</h6>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="importCredsFromLoot()"><i class="fas fa-file-import"></i> Importar Loot</button>
+                        <button class="btn btn-sm btn-outline-success" onclick="showMatrixConfigModal()"><i class="fas fa-sliders"></i> Configurar</button>
+                    </div>
+                </div>
+                <div id="matrix-wrap"></div>
+            </div>
+
+            <!-- Vista: Screenshots -->
+            <div id="shots-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-camera" style="color:var(--purple)"></i> Screenshots</h6>
+                    <button class="btn btn-sm btn-outline-success" onclick="showTakeScreenshotModal()"><i class="fas fa-camera"></i> Capturar URL</button>
+                </div>
+                <div id="shots-gallery" class="shots-gallery"></div>
+            </div>
+
+            <!-- Vista: Attack Path -->
+            <div id="path-view" class="d-none path-view-container">
+                <div class="map-toolbar">
+                    <span class="gv-label">ATTACK PATH</span>
+                    <div class="d-flex gap-1 ms-auto">
+                        <button class="btn btn-sm btn-outline-info" onclick="showAddPathNodeModal()"><i class="fas fa-circle-nodes"></i> Nodo</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="showAddPathEdgeModal()"><i class="fas fa-arrow-right-long"></i> Arista</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearAttackPath()"><i class="fas fa-trash"></i></button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="saveAttackPath(true)"><i class="fas fa-floppy-disk"></i></button>
+                    </div>
+                </div>
+                <div id="attack-path-canvas" class="map-canvas"></div>
+            </div>
+
+            <!-- Vista: Smart Automation Engine -->
+            <div id="auto-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div>
+                        <h6 class="mb-0"><i class="fas fa-robot" style="color:var(--green)"></i> Smart Automation Engine</h6>
+                        <small class="text-muted">Dispara workflows automáticamente según los puertos del Port Map</small>
+                    </div>
+                    <button class="btn btn-sm btn-outline-success" onclick="runAutoFromPorts()"><i class="fas fa-play"></i> Auto-Run ahora</button>
+                </div>
+                <div class="row g-3 mb-3" id="auto-rules-grid"></div>
+                <div class="border-top border-dark pt-3">
+                    <h6 class="text-muted small mb-2"><i class="fas fa-history"></i> LOG DE AUTOMACIONES</h6>
+                    <div id="auto-log" class="auto-log"></div>
+                </div>
+            </div>
+
+            <!-- Vista: CVE / Exploit Matcher -->
+            <div id="cve-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-bomb text-danger"></i> CVE / Exploit Matcher <small class="ms-2">(via searchsploit)</small></h6>
+                </div>
+                <div class="row g-2 mb-3">
+                    <div class="col-md-8">
+                        <div class="input-group">
+                            <span class="input-group-text bg-dark border-secondary"><i class="fas fa-magnifying-glass text-muted"></i></span>
+                            <input type="text" class="form-control font-monospace" id="cve-search-input"
+                                   placeholder="Apache 2.4.49 / OpenSSH 8.2 / EternalBlue / SMB..."
+                                   onkeydown="if(event.key==='Enter') searchExploits()">
+                            <button class="btn btn-outline-danger" onclick="searchExploits()"><i class="fas fa-search"></i> Buscar</button>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <button class="btn btn-outline-secondary w-100" onclick="searchFromPorts()">
+                            <i class="fas fa-magic-wand-sparkles"></i> Auto desde Port Map
+                        </button>
+                    </div>
+                </div>
+                <div id="cve-results-area"></div>
+            </div>
+
+            <!-- Vista: Session Manager -->
+            <div id="sessions-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-plug-circle-bolt text-success"></i> Session / Listener Manager</h6>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadSessionsView()"><i class="fas fa-rotate"></i></button>
+                        <button class="btn btn-sm btn-outline-success" onclick="showNewListenerModal()"><i class="fas fa-plus"></i> Nuevo Listener</button>
+                    </div>
+                </div>
+                <div class="row g-3" id="listeners-grid">
+                    <div class="col-12 text-muted small text-center py-4">Sin listeners activos</div>
+                </div>
+            </div>
+
+            <!-- Vista: BloodHound Visualizer -->
+            <div id="bloodhound-view" class="d-none bh-view-container">
+                <div class="map-toolbar">
+                    <span class="gv-label">BLOODHOUND</span>
+                    <div class="bh-legend ms-3 d-flex gap-3">
+                        <span class="bh-leg" style="--c:#58a6ff">Users</span>
+                        <span class="bh-leg" style="--c:#3fb950">Computers</span>
+                        <span class="bh-leg" style="--c:#f0883e">Groups</span>
+                        <span class="bh-leg" style="--c:#f85149">Domains</span>
+                        <span class="bh-leg" style="--c:#d29922">OUs</span>
+                    </div>
+                    <div class="ms-auto d-flex gap-2">
+                        <input type="file" id="bh-file-input" accept=".json" class="d-none" onchange="loadBloodHoundFile()">
+                        <button class="btn btn-sm btn-outline-warning" onclick="document.getElementById('bh-file-input').click()">
+                            <i class="fas fa-upload"></i> Importar JSON
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="clearBloodHound()"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>
+                <div class="bh-body">
+                    <div id="bh-canvas" class="bh-canvas">
+                        <div class="text-center text-muted py-5">
+                            <i class="fas fa-paw fa-3x mb-3 d-block" style="color:#f0883e; opacity:.4"></i>
+                            <div>Importa un fichero <strong>computers.json</strong>, <strong>users.json</strong> o <strong>groups.json</strong> de SharpHound/BloodHound</div>
+                        </div>
+                    </div>
+                    <div id="bh-node-panel" class="bh-node-panel d-none">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <strong id="bh-node-name" class="text-info" style="font-size:13px;word-break:break-all"></strong>
+                            <button class="btn btn-link btn-sm p-0 text-muted" onclick="document.getElementById('bh-node-panel').classList.add('d-none')"><i class="fas fa-xmark"></i></button>
+                        </div>
+                        <div id="bh-node-type" class="mb-2"></div>
+                        <div id="bh-node-details" class="bh-node-details"></div>
+                        <hr class="border-dark">
+                        <button class="btn btn-xs btn-outline-success w-100" onclick="bhNodeToLoot()"><i class="fas fa-gem"></i> Guardar en Loot</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vista: AD Explorer / LDAP -->
+            <div id="ldap-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-id-card-clip text-info"></i> AD Explorer (LDAP)</h6>
+                    <button class="btn btn-xs btn-outline-secondary" onclick="prefillLdapFromProject()"><i class="fas fa-wand-magic-sparkles"></i> Auto-rellenar</button>
+                </div>
+                <div class="ldap-config-bar mb-3">
+                    <div class="ldap-config-field"><label>DC IP</label><input class="form-control form-control-sm font-monospace" id="ldap-dc" placeholder="10.10.10.10"></div>
+                    <div class="ldap-config-field"><label>Dominio</label><input class="form-control form-control-sm font-monospace" id="ldap-domain" placeholder="corp.local"></div>
+                    <div class="ldap-config-field"><label>Usuario</label><input class="form-control form-control-sm" id="ldap-user" placeholder="jsmith (opcional)"></div>
+                    <div class="ldap-config-field"><label>Contraseña</label><input type="password" class="form-control form-control-sm" id="ldap-pass" placeholder="Password1"></div>
+                </div>
+                <div class="d-flex flex-wrap gap-2 mb-3">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="adExplore('base')"><i class="fas fa-server"></i> Base DN</button>
+                    <button class="btn btn-sm btn-outline-info" onclick="adExplore('users_anon')"><i class="fas fa-users"></i> Usuarios (Anon)</button>
+                    <button class="btn btn-sm btn-outline-info" onclick="adExplore('users')"><i class="fas fa-user-shield"></i> Usuarios (Auth)</button>
+                    <button class="btn btn-sm btn-outline-warning" onclick="adExplore('groups_anon')"><i class="fas fa-layer-group"></i> Grupos (Anon)</button>
+                    <button class="btn btn-sm btn-outline-warning" onclick="adExplore('groups')"><i class="fas fa-layer-group"></i> Grupos (Auth)</button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="adExplore('admins')"><i class="fas fa-crown"></i> Domain Admins</button>
+                    <button class="btn btn-sm btn-outline-success" onclick="adExplore('computers')"><i class="fas fa-desktop"></i> Equipos</button>
+                    <button class="btn btn-sm btn-outline-success" onclick="adExplore('spns')"><i class="fas fa-ticket"></i> SPNs (Kerberoast)</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="adExplore('asrep')"><i class="fas fa-user-secret"></i> AS-REP Users</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="adExplore('gpos')"><i class="fas fa-scroll"></i> GPOs</button>
+                </div>
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <small class="text-muted" id="ldap-status">Sin queries ejecutadas</small>
+                    <div class="d-flex gap-1">
+                        <button class="btn btn-xs btn-outline-secondary" onclick="copyLdapOutput()"><i class="fas fa-copy"></i></button>
+                        <button class="btn btn-xs btn-outline-warning" onclick="saveLdapToLoot()"><i class="fas fa-gem"></i> Loot</button>
+                        <button class="btn btn-xs btn-outline-danger" onclick="document.getElementById('ldap-output').innerHTML=''"><i class="fas fa-trash"></i></button>
+                    </div>
+                </div>
+                <div id="ldap-output" class="ldap-output font-monospace small"></div>
+            </div>
+
+            <!-- Vista: OSINT Dashboard -->
+            <div id="osint-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-binoculars text-warning"></i> OSINT Dashboard</h6>
+                    <button class="btn btn-sm btn-outline-danger" onclick="document.getElementById('osint-results').innerHTML=''"><i class="fas fa-trash"></i> Limpiar</button>
+                </div>
+                <div class="osint-config-bar mb-3">
+                    <div class="flex-grow-1">
+                        <label class="form-label small mb-1">Dominio / Target</label>
+                        <input class="form-control font-monospace" id="osint-domain" placeholder="empresa.com">
+                    </div>
+                    <div class="d-flex align-items-end">
+                        <button class="btn btn-outline-warning" onclick="osintRunAll()"><i class="fas fa-rocket"></i> Run All</button>
+                    </div>
+                </div>
+                <div class="osint-tools-grid mb-3">
+                    <button class="osint-tool-btn" onclick="osintRun('harvester')"><i class="fas fa-seedling fa-lg mb-1"></i><span>theHarvester</span><small>emails, subdomains</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('subfinder')"><i class="fas fa-search fa-lg mb-1"></i><span>Subfinder</span><small>subdomains</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('dnsx')"><i class="fas fa-server fa-lg mb-1"></i><span>dnsx</span><small>DNS records</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('whois')"><i class="fas fa-address-card fa-lg mb-1"></i><span>WHOIS</span><small>registro dominio</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('dnsrecon')"><i class="fas fa-chart-network fa-lg mb-1"></i><span>DNSRecon</span><small>zone transfer</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('wafw00f')"><i class="fas fa-shield-halved fa-lg mb-1"></i><span>WafW00f</span><small>WAF detection</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('amass')"><i class="fas fa-network-wired fa-lg mb-1"></i><span>Amass</span><small>passive recon</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('nuclei_web')"><i class="fas fa-atom fa-lg mb-1"></i><span>Nuclei</span><small>web vulns scan</small></button>
+                    <button class="osint-tool-btn" onclick="osintRun('gau')"><i class="fas fa-link fa-lg mb-1"></i><span>GAU</span><small>all known URLs</small></button>
+                </div>
+                <div id="osint-results"></div>
+            </div>
+
+            <!-- Vista: Snippets Library -->
+            <div id="snippets-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 class="text-muted mb-0"><i class="fas fa-bookmark text-info"></i> Snippets Library — Comandos favoritos</h6>
+                    <button class="btn btn-sm btn-outline-success" onclick="showAddSnippetModal()"><i class="fas fa-plus"></i> Nuevo snippet</button>
+                </div>
+                <div class="d-flex gap-2 mb-3">
+                    <div class="input-group">
+                        <span class="input-group-text bg-dark border-secondary"><i class="fas fa-search text-muted"></i></span>
+                        <input type="text" class="form-control" id="snippets-search" placeholder="Buscar snippets..." oninput="filterSnippets()">
+                    </div>
+                    <select class="form-select" style="max-width:160px" id="snippets-cat-filter" onchange="filterSnippets()">
+                        <option value="">Todas categorías</option>
+                        <option value="recon">Recon</option>
+                        <option value="enum">Enum</option>
+                        <option value="exploitation">Exploitation</option>
+                        <option value="privesc">PrivEsc</option>
+                        <option value="ad">AD / Kerberos</option>
+                        <option value="web">Web</option>
+                        <option value="pivoting">Pivoting</option>
+                        <option value="password">Passwords</option>
+                        <option value="custom">Custom</option>
+                    </select>
+                </div>
+                <div class="row g-3" id="snippets-grid"></div>
+            </div>
+
+            <!-- Vista: Tunnel / Proxy Manager -->
+            <div id="tunnels-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <h6 class="text-muted mb-0"><i class="fas fa-route text-warning"></i> Tunnel / Proxy Manager</h6>
+                    <small class="text-muted">Vars: LHOST, LPORT, RHOST de arriba</small>
+                </div>
+                <div class="tunnel-vars-bar mb-3">
+                    <div class="tunnel-var"><label>User</label><input class="form-control form-control-sm" id="tun-user" placeholder="user"></div>
+                    <div class="tunnel-var"><label>SSH Port</label><input class="form-control form-control-sm" id="tun-sshport" value="22" placeholder="22"></div>
+                    <div class="tunnel-var"><label>Subnet</label><input class="form-control form-control-sm" id="tun-subnet" placeholder="172.16.10.0"></div>
+                    <div class="tunnel-var"><label>Fwd Port</label><input class="form-control form-control-sm" id="tun-fwdport" placeholder="8080"></div>
+                </div>
+                <div class="row g-3 mb-4" id="tunnels-grid"></div>
+                <div class="border-top border-dark pt-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="text-muted small mb-0">TÚNELES ACTIVOS (jobs)</h6>
+                        <button class="btn btn-xs btn-outline-secondary" onclick="loadTunnelJobs()"><i class="fas fa-rotate"></i></button>
+                    </div>
+                    <div id="tunnel-jobs-list" class="text-muted small">Cargando...</div>
+                </div>
+            </div>
+
+            <!-- Vista: AI / Ollama -->
+            <div id="ai-view" class="p-3 d-none">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div>
+                        <h6 class="mb-0"><i class="fas fa-microchip" style="color:var(--purple)"></i> AI Analysis — Ollama Local</h6>
+                        <small class="text-muted">Requiere <code>ollama serve</code> en el sistema · <span id="ai-status-badge"></span></small>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="checkOllamaStatus()"><i class="fas fa-rotate"></i> Check Ollama</button>
+                </div>
+                <div class="ai-config-bar mb-3">
+                    <div class="ai-config-field">
+                        <label>Modelo</label>
+                        <select class="form-select form-select-sm" id="ai-model">
+                            <option value="llama3">llama3</option>
+                            <option value="llama3:8b">llama3:8b</option>
+                            <option value="mistral">mistral</option>
+                            <option value="codellama">codellama</option>
+                            <option value="gemma2">gemma2</option>
+                            <option value="phi3">phi3</option>
+                        </select>
+                    </div>
+                    <div class="ai-config-field">
+                        <label>Tipo de análisis</label>
+                        <select class="form-select form-select-sm" id="ai-type">
+                            <option value="analyze">Analizar output</option>
+                            <option value="next_steps">Próximos pasos</option>
+                            <option value="explain">Explicar</option>
+                            <option value="finding">Generar Finding</option>
+                            <option value="custom">Prompt personalizado</option>
+                        </select>
+                    </div>
+                    <div class="ai-config-field flex-grow-1">
+                        <label>Texto / Output a analizar</label>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="aiImportFromTerminal()"><i class="fas fa-terminal"></i> Desde Terminal</button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="aiImportFromLoot()"><i class="fas fa-gem"></i> Desde Loot</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="ai-custom-prompt-row" class="mb-3 d-none">
+                    <label class="form-label small">Prompt personalizado</label>
+                    <input type="text" class="form-control" id="ai-custom-prompt" placeholder="Escribe tu prompt aquí... se añadirá el texto como contexto">
+                </div>
+                <div class="mb-3">
+                    <textarea class="form-control font-monospace" id="ai-input-text" rows="8" placeholder="Pega aquí el output a analizar..."></textarea>
+                </div>
+                <div class="d-flex gap-2 mb-3">
+                    <button class="btn btn-outline-info" onclick="runAIAnalysis()"><i class="fas fa-play"></i> Analizar</button>
+                    <button class="btn btn-outline-secondary" onclick="document.getElementById('ai-input-text').value='';document.getElementById('ai-response').innerHTML=''">Limpiar</button>
+                </div>
+                <div id="ai-response" class="ai-response-box"></div>
+            </div>
+
+            <!-- Vista: Autopilot -->
+            <div id="autopilot-view" class="p-3 d-none">
+                <!-- Header controls -->
+                <div class="ap-header">
+                    <div class="ap-title"><i class="fas fa-brain text-purple"></i> Autonomous Pentest Engine</div>
+                    <div class="ap-controls d-flex gap-2 align-items-center flex-wrap">
+                        <!-- Mode selector -->
+                        <div class="ap-mode-group">
+                            <button class="ap-mode-btn active" data-mode="normal" onclick="apSetMode('normal')"><i class="fas fa-gauge"></i> Normal</button>
+                            <button class="ap-mode-btn" data-mode="stealth" onclick="apSetMode('stealth')"><i class="fas fa-ghost"></i> Stealth</button>
+                            <button class="ap-mode-btn" data-mode="aggressive" onclick="apSetMode('aggressive')"><i class="fas fa-fire"></i> Aggressive</button>
+                        </div>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="apToggleConfig()"><i class="fas fa-sliders"></i> Config</button>
+                        <button id="ap-start-btn" class="btn btn-success fw-bold" onclick="apStart()"><i class="fas fa-play"></i> Iniciar Autopiloto</button>
+                        <button id="ap-stop-btn" class="btn btn-danger fw-bold d-none" onclick="apStop()"><i class="fas fa-stop"></i> Detener</button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="apOpenLivingReport()"><i class="fas fa-file-code"></i> Living Report</button>
+                        <button class="btn btn-sm btn-outline-warning" onclick="apDownloadPdf()"><i class="fas fa-file-pdf"></i> PDF</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="apShowMemoryStats()"><i class="fas fa-brain"></i> Memoria</button>
+                    </div>
+                </div>
+
+                <!-- Config panel (collapsed by default) -->
+                <div id="ap-config-panel" class="ap-config-panel d-none mb-3">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label small fw-semibold">Targets adicionales (IPs / CIDRs, uno por línea)</label>
+                            <textarea class="form-control font-monospace" id="ap-extra-targets" rows="4" placeholder="10.10.10.5&#10;192.168.1.0/24&#10;10.10.11.20"></textarea>
+                            <small class="text-muted">Si vacío, usa los targets del proyecto</small>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small fw-semibold">Ollama Model</label>
+                            <input type="text" class="form-control" id="ap-ollama-model" value="llama3" placeholder="llama3">
+                            <label class="form-label small fw-semibold mt-2">Living Report (cada X seg)</label>
+                            <input type="number" class="form-control" id="ap-living-interval" value="300" min="60" max="3600">
+                            <label class="form-label small fw-semibold mt-2">Anthropic API Key <span class="text-muted">(narrativa IA en Word)</span></label>
+                            <input type="password" class="form-control font-monospace" id="ap-anthropic-key" placeholder="sk-ant-...">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small fw-semibold">Info de modo</label>
+                            <div id="ap-mode-info" class="ap-mode-info"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Phase progress bar -->
+                <div class="ap-phase-bar" id="ap-phase-bar">
+                    <div class="ap-phase-step" id="ph-osint"><i class="fas fa-search"></i> OSINT</div>
+                    <div class="ap-phase-arrow">›</div>
+                    <div class="ap-phase-step" id="ph-scan"><i class="fas fa-radar"></i> SCAN</div>
+                    <div class="ap-phase-arrow">›</div>
+                    <div class="ap-phase-step" id="ph-enum"><i class="fas fa-list-magnifying-glass"></i> ENUM</div>
+                    <div class="ap-phase-arrow">›</div>
+                    <div class="ap-phase-step" id="ph-exploit"><i class="fas fa-skull-crossbones"></i> EXPLOIT</div>
+                    <div class="ap-phase-arrow">›</div>
+                    <div class="ap-phase-step" id="ph-post"><i class="fas fa-flag"></i> POST</div>
+                    <div class="ms-auto d-flex align-items-center gap-2">
+                        <span id="ap-current-action" class="text-muted small font-monospace"></span>
+                        <span id="ap-status-badge" class="badge bg-secondary">Inactivo</span>
+                    </div>
+                </div>
+
+                <!-- Session stats bar -->
+                <div class="ap-stats-bar" id="ap-stats-bar">
+                    <div class="ap-stat"><i class="fas fa-clock"></i> <span id="ap-timer">00:00:00</span></div>
+                    <div class="ap-stat"><i class="fas fa-terminal text-info"></i> <span id="ap-stat-cmds">0</span> cmds</div>
+                    <div class="ap-stat"><i class="fas fa-wifi text-success"></i> <span id="ap-stat-ports">0</span> puertos</div>
+                    <div class="ap-stat"><i class="fas fa-key text-warning"></i> <span id="ap-stat-creds">0</span> creds</div>
+                    <div class="ap-stat"><i class="fas fa-gem text-purple"></i> <span id="ap-stat-loot">0</span> loot</div>
+                    <div class="ap-stat ap-stat-vulns">
+                        <i class="fas fa-bug text-danger"></i>
+                        <span id="ap-stat-findings" class="fw-bold">0</span> vulns
+                        <span class="ap-sev-pills ms-1" id="ap-sev-pills"></span>
+                    </div>
+                    <div class="ap-stat"><i class="fas fa-list-check text-muted"></i> <span id="ap-stat-queue">0</span> cola</div>
+                    <div class="ap-stat"><i class="fas fa-database text-cyan"></i> <span id="ap-stat-mem-hosts">0</span> mem</div>
+                    <div class="ap-stat"><i class="fas fa-project-diagram text-orange"></i> <span id="ap-stat-pivots">0</span> pivots</div>
+                </div>
+
+                <!-- Main grid: brain log + right panels -->
+                <div class="ap-main-grid">
+                    <!-- Brain log panel -->
+                    <div class="ap-brain-panel">
+                        <div class="ap-panel-title d-flex align-items-center gap-2">
+                            <i class="fas fa-brain text-purple"></i> Brain Log
+                            <span id="ap-log-count" class="text-muted ms-1 small"></span>
+                            <button class="btn btn-xs btn-outline-secondary ms-auto" onclick="document.getElementById('ap-brain-log').innerHTML='';_setText('ap-log-count','')">Limpiar</button>
+                        </div>
+                        <div id="ap-brain-log" class="ap-brain-log font-monospace"></div>
+                    </div>
+
+                    <!-- Right panels -->
+                    <div class="ap-right-col">
+                        <!-- Live Findings -->
+                        <div class="ap-panel ap-livefindings-panel">
+                            <div class="ap-panel-title d-flex align-items-center gap-2">
+                                <i class="fas fa-bug text-danger"></i> Vulnerabilidades Detectadas
+                                <span id="ap-live-findings-count" class="badge bg-danger ms-1">0</span>
+                                <button class="btn btn-xs btn-outline-secondary ms-auto" onclick="loadPhase('findings')">Ver todas →</button>
+                            </div>
+                            <div id="ap-live-findings" class="ap-live-findings"></div>
+                        </div>
+
+                        <!-- Risk Heatmap -->
+                        <div class="ap-panel ap-heatmap-panel">
+                            <div class="ap-panel-title"><i class="fas fa-fire text-danger"></i> Risk Heatmap</div>
+                            <div id="ap-heatmap" class="ap-heatmap"></div>
+                        </div>
+
+                        <!-- Attack Timeline Gantt -->
+                        <div class="ap-panel ap-gantt-panel">
+                            <div class="ap-panel-title"><i class="fas fa-bars-progress text-info"></i> Attack Timeline</div>
+                            <div style="position:relative;max-height:180px;overflow:hidden"><canvas id="ap-gantt-chart"></canvas></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Split terminal -->
+                <div class="ap-split-terminal-wrap mt-3">
+                    <div class="ap-panel-title d-flex align-items-center gap-2">
+                        <i class="fas fa-square-terminal text-success"></i> Split Terminal
+                        <button class="btn btn-xs btn-outline-secondary ms-auto" onclick="apSplitSelectJob(0)" title="Seleccionar job izquierdo">← Job A</button>
+                        <button class="btn btn-xs btn-outline-secondary" onclick="apSplitSelectJob(1)" title="Seleccionar job derecho">Job B →</button>
+                    </div>
+                    <div class="ap-split-terminals">
+                        <div id="ap-xterm-left" class="ap-xterm-pane"></div>
+                        <div id="ap-xterm-right" class="ap-xterm-pane"></div>
+                    </div>
+                </div>
+
+                <!-- ═══ AutoPwn Engine ═══ -->
+                <div class="ap-panel autopwn-panel mt-3">
+                    <div class="ap-panel-title d-flex align-items-center gap-2">
+                        <i class="fas fa-skull-crossbones text-danger"></i>
+                        <span>AutoPwn Engine</span>
+                        <span class="badge bg-danger ms-1">BETA</span>
+                        <div class="ms-auto d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-warning" onclick="autoPwnGenerate()">
+                                <i class="fas fa-wand-magic-sparkles"></i> Generar RC Script
+                            </button>
+                            <button class="btn btn-sm btn-danger fw-bold d-none" id="autopwn-run-btn" onclick="autoPwnRun()">
+                                <i class="fas fa-bolt"></i> Ejecutar AutoPwn
+                            </button>
+                            <button class="btn btn-xs btn-outline-secondary" onclick="autoPwnCopyScript()">
+                                <i class="fas fa-copy"></i> Copiar
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Stats bar -->
+                    <div class="autopwn-stats d-none" id="autopwn-stats">
+                        <div class="autopwn-stat text-danger"><i class="fas fa-skull-crossbones"></i> <span id="apwn-exploits">0</span> exploits CVE</div>
+                        <div class="autopwn-stat text-warning"><i class="fas fa-satellite-dish"></i> <span id="apwn-scanners">0</span> scanners/port</div>
+                        <div class="autopwn-stat text-info"><i class="fas fa-crosshairs"></i> RHOST: <span id="apwn-rhost">—</span></div>
+                        <div class="autopwn-stat text-success"><i class="fas fa-home"></i> LHOST: <span id="apwn-lhost">—</span></div>
+                        <div class="autopwn-stat text-purple"><i class="fas fa-plug"></i> LPORT: <span id="apwn-lport">—</span></div>
+                    </div>
+
+                    <!-- Script preview -->
+                    <div class="autopwn-script-wrap d-none" id="autopwn-script-wrap">
+                        <div class="d-flex align-items-center justify-content-between px-2 py-1" style="background:rgba(0,0,0,.3);border-radius:4px 4px 0 0;">
+                            <span class="text-muted small font-monospace" id="autopwn-rc-path"></span>
+                            <span class="text-muted small">msfconsole -q -r <span id="autopwn-rc-path2"></span></span>
+                        </div>
+                        <pre class="autopwn-script" id="autopwn-script-content"></pre>
+                    </div>
+
+                    <!-- Guide text -->
+                    <div class="text-muted small p-3" id="autopwn-guide">
+                        <i class="fas fa-info-circle me-1"></i>
+                        AutoPwn lee tu <strong>Port Map + Loot</strong> y genera un resource script de Metasploit con:
+                        <ul class="mt-1 mb-0">
+                            <li>Exploits para cada CVE detectado (EternalBlue, Log4Shell, BlueKeep, Spring4Shell...)</li>
+                            <li>Scanners de credenciales por defecto en todos los puertos abiertos</li>
+                            <li>Multi/handler pre-configurado con LHOST/LPORT de las vars globales</li>
+                        </ul>
+                        <span class="text-warning mt-1 d-block"><i class="fas fa-triangle-exclamation"></i> Solo usar en entornos autorizados. Requiere Metasploit instalado.</span>
+                    </div>
+                </div>
+
+                <!-- ═══ Greenbone / OpenVAS ═══ -->
+                <div class="ap-panel mt-3" id="greenbone-panel">
+                    <div class="ap-panel-title d-flex align-items-center gap-2">
+                        <i class="fas fa-bug-slash text-success"></i>
+                        <span>Greenbone / OpenVAS</span>
+                        <span class="badge bg-success ms-1">CVE Scanner</span>
+                        <div class="ms-auto d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-info" onclick="gbCheckStatus()">
+                                <i class="fas fa-rotate"></i> Estado
+                            </button>
+                            <button class="btn btn-sm btn-outline-warning" onclick="gbImport()">
+                                <i class="fas fa-file-import"></i> Importar Findings
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Config row -->
+                    <div class="p-2 d-flex flex-wrap gap-2 align-items-end">
+                        <div>
+                            <label class="form-label small mb-0 text-muted">GVM Socket</label>
+                            <input type="text" id="gb-socket" class="form-control form-control-sm font-monospace"
+                                   value="/run/gvmd/gvmd.sock" style="width:220px">
+                        </div>
+                        <div>
+                            <label class="form-label small mb-0 text-muted">Usuario</label>
+                            <input type="text" id="gb-user" class="form-control form-control-sm" value="admin" style="width:100px">
+                        </div>
+                        <div>
+                            <label class="form-label small mb-0 text-muted">Contraseña</label>
+                            <input type="password" id="gb-pass" class="form-control form-control-sm" value="admin" style="width:100px">
+                        </div>
+                        <div>
+                            <label class="form-label small mb-0 text-muted">Target IP</label>
+                            <input type="text" id="gb-target" class="form-control form-control-sm font-monospace"
+                                   placeholder="auto desde vars" style="width:140px">
+                        </div>
+                        <div>
+                            <label class="form-label small mb-0 text-muted">Perfil</label>
+                            <select id="gb-config" class="form-select form-select-sm" style="width:160px">
+                                <option value="full_fast">Full and Fast</option>
+                                <option value="full_fast_ult">Full and Fast Ultimate</option>
+                                <option value="host_discovery">Host Discovery</option>
+                                <option value="web_app">Web App</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-sm btn-success fw-bold" onclick="gbStart()" id="gb-start-btn">
+                            <i class="fas fa-play"></i> Iniciar Scan
+                        </button>
+                    </div>
+
+                    <!-- Status row -->
+                    <div id="gb-status-row" class="px-2 pb-2 d-none">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="text-muted small">Estado:</span>
+                            <span id="gb-status-badge" class="badge bg-secondary">—</span>
+                            <div class="progress flex-grow-1" style="height:6px">
+                                <div id="gb-progress-bar" class="progress-bar bg-success" style="width:0%"></div>
+                            </div>
+                            <span id="gb-progress-pct" class="text-muted small">0%</span>
+                        </div>
+                        <div class="text-muted small mt-1" id="gb-task-info"></div>
+                    </div>
+
+                    <!-- Results summary -->
+                    <div id="gb-results-row" class="px-2 pb-2 d-none">
+                        <span class="text-success small"><i class="fas fa-check-circle"></i> <span id="gb-imported-count">0</span> findings importados al proyecto.</span>
+                    </div>
+
+                    <!-- Guide -->
+                    <div class="text-muted small p-2" id="gb-guide">
+                        <i class="fas fa-info-circle me-1"></i>
+                        Requiere <code>gvm-cli</code> y Greenbone/OpenVAS corriendo en Kali
+                        (<code>sudo gvm-start</code>). El scan crea un target en GVM, lanza la tarea
+                        y permite importar los findings directamente al tracker del proyecto.
+                        <div class="mt-1 text-warning"><i class="fas fa-triangle-exclamation"></i>
+                            <strong>Full and Fast</strong> puede tardar 20-60 min según el host.</div>
+                    </div>
+                </div>
+
+                <!-- Job list -->
+                <div class="ap-panel mt-3">
+                    <div class="ap-panel-title"><i class="fas fa-list text-muted"></i> Jobs del Autopiloto</div>
+                    <div id="ap-job-list" class="ap-job-list"></div>
+                </div>
+            </div><!-- /autopilot-view -->
+
+        </div><!-- /project-view -->
+    </main>
+</div>
+
+<!-- ══════════════════════════════ MODALS ══════════════════════════════ -->
+
+<!-- Modal: Nuevo Proyecto -->
+<div class="modal fade" id="modalNewProject" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-folder-plus text-success"></i> Nuevo proyecto</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3"><label class="form-label">Nombre <span class="text-danger">*</span></label><input type="text" class="form-control" id="np-name" placeholder="Auditoría Interna Q1"></div>
+                <div class="mb-3"><label class="form-label">Cliente / Empresa</label><input type="text" class="form-control" id="np-client" placeholder="Empresa S.A."></div>
+                <div class="row">
+                    <div class="col mb-3"><label class="form-label">IPs / Rangos</label><input type="text" class="form-control" id="np-targets" placeholder="192.168.1.0/24"><div class="form-text">Separados por coma</div></div>
+                    <div class="col mb-3"><label class="form-label">Dominios</label><input type="text" class="form-control" id="np-domains" placeholder="corp.local"></div>
+                </div>
+                <div class="mb-3"><label class="form-label">Descripción / Scope</label><textarea class="form-control" id="np-scope" rows="2" placeholder="Red interna, rango 10.0.0.0/8..."></textarea></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="createProject()"><i class="fas fa-plus"></i> Crear proyecto</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Constructor de Comandos -->
+<div class="modal fade" id="modalCommand" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div><h5 class="modal-title mb-0" id="cmd-title"></h5><small class="text-muted" id="cmd-desc"></small></div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="cmd-params"></div>
+                <div class="mt-4">
+                    <label class="form-label text-muted small fw-bold">COMANDO GENERADO</label>
+                    <div class="cmd-display" id="cmd-display">
+                        <code id="cmd-output"></code>
+                        <button class="btn btn-sm btn-outline-success ms-2 flex-shrink-0" onclick="copyCommand()" title="Copiar"><i class="fas fa-copy"></i></button>
+                    </div>
+                </div>
+                <div id="cmd-notes-wrap" class="mt-2 d-none">
+                    <small class="text-warning"><i class="fas fa-triangle-exclamation"></i> <span id="cmd-notes-text"></span></small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                <button type="button" class="btn btn-outline-primary" onclick="saveToHistory()"><i class="fas fa-floppy-disk"></i> Historial</button>
+                <button type="button" class="btn btn-outline-success" onclick="copyAndClose()"><i class="fas fa-copy"></i> Copiar</button>
+                <button type="button" class="btn btn-danger" onclick="executeCommand()" title="Ejecutar en el servidor (Kali)">
+                    <i class="fas fa-play"></i> Ejecutar
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Workflow Runner -->
+<div class="modal fade" id="modalWorkflow" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="wf-modal-title"><i class="fas fa-play-circle text-info"></i> Ejecutar Workflow</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small" id="wf-modal-desc"></p>
+                <div class="mb-3">
+                    <label class="form-label small text-muted fw-bold">PASOS DEL WORKFLOW</label>
+                    <div id="wf-steps-list" class="wf-steps-preview"></div>
+                </div>
+                <hr>
+                <div class="row g-2">
+                    <div class="col-md-6 mb-2">
+                        <label class="form-label">RHOST <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="wf-rhost" placeholder="10.10.10.10">
+                    </div>
+                    <div class="col-md-6 mb-2">
+                        <label class="form-label">LHOST</label>
+                        <input type="text" class="form-control" id="wf-lhost" placeholder="192.168.45.5">
+                    </div>
+                    <div class="col-md-6 mb-2">
+                        <label class="form-label">LPORT</label>
+                        <input type="text" class="form-control" id="wf-lport" placeholder="4444">
+                    </div>
+                    <div class="col-md-6 mb-2">
+                        <label class="form-label">DOMAIN</label>
+                        <input type="text" class="form-control" id="wf-domain" placeholder="corp.local">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-danger" onclick="confirmRunWorkflow()">
+                    <i class="fas fa-play"></i> Lanzar workflow
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Parse Output (auto-loot) -->
+<div class="modal fade" id="modalParsedLoot" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-microscope text-warning"></i> Resultados del análisis</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="parsed-suggestions" class="mb-3 d-none"></div>
+                <div id="parsed-loot-container">
+                    <p class="text-muted small">Selecciona los items a guardar en Loot:</p>
+                    <div id="parsed-loot-list"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                <button type="button" class="btn btn-success" onclick="saveParsedLoot()"><i class="fas fa-gem"></i> Guardar seleccionados</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Finding -->
+<div class="modal fade" id="modalFinding" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="fi-modal-title"><i class="fas fa-bug text-danger"></i> Añadir Finding</h5>
+                <div class="d-flex gap-2 align-items-center">
+                    <div class="dropdown">
+                        <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" onclick="loadFindingTemplates()">
+                            <i class="fas fa-layer-group"></i> Template
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" id="finding-templates-menu" style="max-height:360px;overflow-y:auto"></ul>
+                    </div>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label">Título <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="fi-title" placeholder="SQL Injection en formulario de login">
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Severidad</label>
+                        <select class="form-select" id="fi-severity">
+                            <option value="critical">🔴 Critical</option>
+                            <option value="high">🟠 High</option>
+                            <option value="medium" selected>🟡 Medium</option>
+                            <option value="low">🟢 Low</option>
+                            <option value="info">🔵 Info</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Estado</label>
+                        <select class="form-select" id="fi-status">
+                            <option value="open">Open</option>
+                            <option value="verified">Verified</option>
+                            <option value="false_positive">False Positive</option>
+                            <option value="closed">Closed</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">CVSS Score</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="fi-cvss" placeholder="9.8" min="0" max="10" step="0.1">
+                            <button class="btn btn-outline-secondary btn-sm" type="button" onclick="toggleCVSSCalc()" title="Calculadora CVSS 3.1"><i class="fas fa-calculator"></i></button>
+                        </div>
+                    </div>
+                    <div class="col-12 d-none" id="cvss-calc-panel">
+                        <div class="cvss-calc-card">
+                            <div class="cvss-calc-header">
+                                <span>Calculadora CVSS 3.1 Base Score</span>
+                                <span class="cvss-score-display" id="cvss-calc-score">—</span>
+                            </div>
+                            <div class="cvss-metrics">
+                                <div class="cvss-metric"><label>Attack Vector</label><div class="cvss-btns" id="cvss-AV">
+                                    <button class="cvss-btn active" data-val="N" onclick="setCVSS('AV','N',this)">Network</button>
+                                    <button class="cvss-btn" data-val="A" onclick="setCVSS('AV','A',this)">Adjacent</button>
+                                    <button class="cvss-btn" data-val="L" onclick="setCVSS('AV','L',this)">Local</button>
+                                    <button class="cvss-btn" data-val="P" onclick="setCVSS('AV','P',this)">Physical</button>
+                                </div></div>
+                                <div class="cvss-metric"><label>Attack Complexity</label><div class="cvss-btns" id="cvss-AC">
+                                    <button class="cvss-btn active" data-val="L" onclick="setCVSS('AC','L',this)">Low</button>
+                                    <button class="cvss-btn" data-val="H" onclick="setCVSS('AC','H',this)">High</button>
+                                </div></div>
+                                <div class="cvss-metric"><label>Privileges Required</label><div class="cvss-btns" id="cvss-PR">
+                                    <button class="cvss-btn active" data-val="N" onclick="setCVSS('PR','N',this)">None</button>
+                                    <button class="cvss-btn" data-val="L" onclick="setCVSS('PR','L',this)">Low</button>
+                                    <button class="cvss-btn" data-val="H" onclick="setCVSS('PR','H',this)">High</button>
+                                </div></div>
+                                <div class="cvss-metric"><label>User Interaction</label><div class="cvss-btns" id="cvss-UI">
+                                    <button class="cvss-btn active" data-val="N" onclick="setCVSS('UI','N',this)">None</button>
+                                    <button class="cvss-btn" data-val="R" onclick="setCVSS('UI','R',this)">Required</button>
+                                </div></div>
+                                <div class="cvss-metric"><label>Scope</label><div class="cvss-btns" id="cvss-S">
+                                    <button class="cvss-btn active" data-val="U" onclick="setCVSS('S','U',this)">Unchanged</button>
+                                    <button class="cvss-btn" data-val="C" onclick="setCVSS('S','C',this)">Changed</button>
+                                </div></div>
+                                <div class="cvss-metric"><label>Confidentiality</label><div class="cvss-btns" id="cvss-C">
+                                    <button class="cvss-btn" data-val="N" onclick="setCVSS('C','N',this)">None</button>
+                                    <button class="cvss-btn active" data-val="L" onclick="setCVSS('C','L',this)">Low</button>
+                                    <button class="cvss-btn" data-val="H" onclick="setCVSS('C','H',this)">High</button>
+                                </div></div>
+                                <div class="cvss-metric"><label>Integrity</label><div class="cvss-btns" id="cvss-I">
+                                    <button class="cvss-btn" data-val="N" onclick="setCVSS('I','N',this)">None</button>
+                                    <button class="cvss-btn active" data-val="L" onclick="setCVSS('I','L',this)">Low</button>
+                                    <button class="cvss-btn" data-val="H" onclick="setCVSS('I','H',this)">High</button>
+                                </div></div>
+                                <div class="cvss-metric"><label>Availability</label><div class="cvss-btns" id="cvss-A">
+                                    <button class="cvss-btn" data-val="N" onclick="setCVSS('A','N',this)">None</button>
+                                    <button class="cvss-btn active" data-val="L" onclick="setCVSS('A','L',this)">Low</button>
+                                    <button class="cvss-btn" data-val="H" onclick="setCVSS('A','H',this)">High</button>
+                                </div></div>
+                            </div>
+                            <div class="d-flex gap-2 mt-2">
+                                <button class="btn btn-sm btn-outline-success" onclick="applyCVSSScore()"><i class="fas fa-check"></i> Aplicar score</button>
+                                <small class="text-muted align-self-center" id="cvss-vector-str"></small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">CVE</label>
+                        <input type="text" class="form-control" id="fi-cve" placeholder="CVE-2023-XXXXX">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Hosts afectados</label>
+                        <input type="text" class="form-control" id="fi-hosts" placeholder="192.168.1.100, 192.168.1.101">
+                        <div class="form-text">Separados por coma</div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Descripción</label>
+                        <textarea class="form-control" id="fi-description" rows="3" placeholder="Describe la vulnerabilidad, impacto y contexto..."></textarea>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Evidencia</label>
+                        <textarea class="form-control font-monospace" id="fi-evidence" rows="4" placeholder="Pega aquí el output del tool, payload, respuesta HTTP..."></textarea>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Remediación</label>
+                        <textarea class="form-control" id="fi-remediation" rows="2" placeholder="Recomendaciones de remediación..."></textarea>
+                    </div>
+                </div>
+                <input type="hidden" id="fi-editing-id">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-danger" onclick="saveFinding()"><i class="fas fa-save"></i> Guardar finding</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Info del Proyecto -->
+<div class="modal fade" id="modalProjectInfo" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-circle-info text-primary"></i> Información del proyecto</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="project-info-body"></div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button></div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Notas -->
+<div class="modal fade" id="modalNotes" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-sticky-note text-warning"></i> Notas del proyecto</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <textarea class="form-control" id="notes-textarea" rows="14" placeholder="Escribe aquí tus notas..."></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="saveNotes()"><i class="fas fa-floppy-disk"></i> Guardar notas</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Añadir Loot -->
+<div class="modal fade" id="modalLoot" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-gem text-warning"></i> Añadir Loot</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3"><label class="form-label">Tipo</label>
+                    <select class="form-select" id="loot-type">
+                        <option value="credential">Credencial (user:pass)</option>
+                        <option value="hash">Hash (NTLM, Kerberoast...)</option>
+                        <option value="flag">Flag (local.txt / proof.txt)</option>
+                        <option value="key">Clave / API Key / Token</option>
+                        <option value="note">Nota genérica</option>
+                    </select>
+                </div>
+                <div class="mb-3"><label class="form-label">Valor <span class="text-danger">*</span></label><input type="text" class="form-control" id="loot-value" placeholder="admin:Password123!"></div>
+                <div class="mb-3"><label class="form-label">Descripción</label><input type="text" class="form-control" id="loot-desc" placeholder="Credencial del panel de admin"></div>
+                <div class="mb-3"><label class="form-label">Fuente / Target</label><input type="text" class="form-control" id="loot-source" placeholder="192.168.1.10 / login.php"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="saveLoot()"><i class="fas fa-plus"></i> Añadir</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Multi-Target -->
+<div class="modal fade" id="modalMultiTarget" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-layer-group text-info"></i> Ejecución Multi-Target</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Comando template <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control font-monospace" id="mt-command" placeholder="nmap -sV --open {rhost}">
+                    <div class="form-text">Usa <code>{rhost}</code> como placeholder para la IP de cada target</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Nombre de la herramienta</label>
+                    <input type="text" class="form-control" id="mt-tool" placeholder="nmap">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Targets <span class="text-danger">*</span></label>
+                    <div id="mt-targets-checkboxes" class="mt-targets-grid mb-2"></div>
+                    <input type="text" class="form-control mt-1" id="mt-extra-targets" placeholder="IPs adicionales separadas por coma (10.10.10.1, 10.10.10.2...)">
+                </div>
+                <div class="alert alert-secondary py-2 small mb-0">
+                    <i class="fas fa-bolt text-warning"></i> Los jobs se ejecutan en <strong>paralelo</strong> — uno por target.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-danger" onclick="executeMultiTarget()">
+                    <i class="fas fa-play"></i> Ejecutar todos
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Schedule -->
+<div class="modal fade" id="modalSchedule" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-clock text-warning"></i> Programar scan</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Nombre</label>
+                    <input type="text" class="form-control" id="sc-name" placeholder="Nmap diario">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Comando <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control font-monospace" id="sc-command" placeholder="nmap -sV 10.10.10.10">
+                </div>
+                <div class="row g-2">
+                    <div class="col-md-6 mb-2">
+                        <label class="form-label">Fecha y hora <span class="text-danger">*</span></label>
+                        <input type="datetime-local" class="form-control" id="sc-datetime">
+                    </div>
+                    <div class="col-md-6 mb-2">
+                        <label class="form-label">Repetición</label>
+                        <select class="form-select" id="sc-repeat">
+                            <option value="once">Una vez</option>
+                            <option value="hourly">Cada hora</option>
+                            <option value="daily">Diariamente</option>
+                            <option value="weekly">Semanalmente</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-warning" onclick="saveSchedule()"><i class="fas fa-clock"></i> Programar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Global Search (Ctrl+K) -->
+<div class="modal fade" id="modalSearch" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-body p-0">
+                <div class="search-input-wrap">
+                    <i class="fas fa-magnifying-glass search-icon"></i>
+                    <input type="text" class="search-global-input" id="global-search-input"
+                           placeholder="Buscar credenciales, IPs, findings, comandos..."
+                           oninput="performGlobalSearch()" autocomplete="off">
+                    <kbd class="search-esc-hint">ESC</kbd>
+                </div>
+                <div id="global-search-results" class="search-results-list"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Output Diff -->
+<div class="modal fade" id="modalDiff" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-code-compare text-info"></i> Output Diff</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label small">Job A (base)</label>
+                        <select class="form-select form-select-sm" id="diff-job-a" onchange="renderDiff()"></select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label small">Job B (comparar)</label>
+                        <select class="form-select form-select-sm" id="diff-job-b" onchange="renderDiff()"></select>
+                    </div>
+                </div>
+                <div id="diff-output" class="diff-output"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Add Host to Map -->
+<div class="modal fade" id="modalAddHost" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-server text-success"></i> Añadir host al mapa</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">IP / Hostname <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control font-monospace" id="ah-ip" placeholder="10.10.10.10">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Etiqueta (opcional)</label>
+                    <input type="text" class="form-control" id="ah-label" placeholder="DC01, WebServer...">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Estado inicial</label>
+                    <select class="form-select" id="ah-status">
+                        <option value="discovered">Descubierto</option>
+                        <option value="initial_access">Acceso inicial</option>
+                        <option value="user">Usuario</option>
+                        <option value="admin">Admin / Root</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="confirmAddHost()"><i class="fas fa-plus"></i> Añadir</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: New YAML file -->
+<div class="modal fade" id="modalNewYaml" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-file-plus text-success"></i> Nuevo fichero YAML</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label">Nombre del fichero <span class="text-danger">*</span></label>
+                <div class="input-group">
+                    <input type="text" class="form-control" id="ny-name" placeholder="mi_herramienta">
+                    <span class="input-group-text text-muted">.yaml</span>
+                </div>
+                <div class="form-text">Solo letras, números y guiones bajos</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="createNewYamlFile()"><i class="fas fa-plus"></i> Crear</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Add Port -->
+<div class="modal fade" id="modalAddPort" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-plus text-success"></i> Añadir Puerto</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2">
+                    <div class="col-12"><label class="form-label">Host IP</label><input type="text" class="form-control font-monospace" id="ap-host" placeholder="10.10.10.10"></div>
+                    <div class="col-md-5"><label class="form-label">Puerto</label><input type="number" class="form-control" id="ap-port" placeholder="80" min="1" max="65535"></div>
+                    <div class="col-md-7"><label class="form-label">Protocolo</label><select class="form-select" id="ap-proto"><option value="tcp">tcp</option><option value="udp">udp</option></select></div>
+                    <div class="col-md-6"><label class="form-label">Servicio</label><input type="text" class="form-control" id="ap-service" placeholder="http"></div>
+                    <div class="col-md-6"><label class="form-label">Versi&oacute;n</label><input type="text" class="form-control" id="ap-version" placeholder="Apache 2.4.49"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="addPort()"><i class="fas fa-plus"></i> A&ntilde;adir</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Take Screenshot -->
+<div class="modal fade" id="modalTakeScreenshot" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-camera" style="color:var(--purple)"></i> Capturar Screenshot</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <label class="form-label">URL <span class="text-danger">*</span></label>
+                <input type="text" class="form-control" id="ts-url" placeholder="http://10.10.10.10:8080">
+                <div class="form-text">Requiere <code>gowitness</code> instalado en el sistema</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="confirmTakeScreenshot()"><i class="fas fa-camera"></i> Capturar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Hash Cracker -->
+<div class="modal fade" id="modalHashCracker" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-key text-warning"></i> Hash Cracker</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Hashes <span class="text-muted small">(uno por l&iacute;nea)</span></label>
+                    <div id="hc-hash-list" class="mb-1"></div>
+                    <textarea class="form-control font-monospace" id="hc-hashes" rows="5" placeholder="Pega hashes aqu&iacute; o usa Importar de Loot"></textarea>
+                    <button class="btn btn-sm btn-outline-secondary mt-1" onclick="importHashesFromLoot()"><i class="fas fa-gem"></i> Importar de Loot</button>
+                </div>
+                <div class="row g-2">
+                    <div class="col-md-4">
+                        <label class="form-label">Herramienta</label>
+                        <select class="form-select" id="hc-tool" onchange="updateHashCrackerUI()">
+                            <option value="hashcat">Hashcat</option>
+                            <option value="john">John</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Tipo de Hash</label>
+                        <select class="form-select" id="hc-mode">
+                            <option value="1000">NTLM (1000)</option>
+                            <option value="5600">NetNTLMv2 (5600)</option>
+                            <option value="13100">Kerberoast (13100)</option>
+                            <option value="18200">AS-REP (18200)</option>
+                            <option value="3200">bcrypt (3200)</option>
+                            <option value="0">MD5 (0)</option>
+                            <option value="100">SHA1 (100)</option>
+                            <option value="1400">SHA256 (1400)</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Wordlist</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control form-control-sm font-monospace" id="hc-wordlist" placeholder="/usr/share/wordlists/rockyou.txt">
+                            <button class="btn btn-sm btn-outline-secondary" onclick="showWordlistBrowser('hc-wordlist')" title="Explorar"><i class="fas fa-folder-open"></i></button>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label small">Par&aacute;metros extra</label>
+                        <input type="text" class="form-control form-control-sm font-monospace" id="hc-extra" placeholder="--rules=best64">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-warning" onclick="runHashCracker()"><i class="fas fa-play"></i> Crackear</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Wordlist Browser -->
+<div class="modal fade" id="modalWordlistBrowser" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-folder-open text-warning"></i> Wordlist Browser</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body p-0">
+                <div class="wl-breadcrumb px-3 py-2 border-bottom border-dark" id="wl-breadcrumb">
+                    <span class="text-muted small">Selecciona una wordlist</span>
+                </div>
+                <div id="wl-file-list" class="wl-file-list"></div>
+            </div>
+            <div class="modal-footer">
+                <div class="me-auto small text-muted font-monospace text-truncate" id="wl-selected-path" style="max-width:400px">No seleccionado</div>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" id="wl-select-btn" onclick="confirmWordlistSelect()" disabled>Seleccionar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Credential Matrix Config -->
+<div class="modal fade" id="modalMatrixConfig" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-sliders text-warning"></i> Configurar Credential Matrix</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Usuarios <span class="text-muted small">(uno por l&iacute;nea)</span></label>
+                    <textarea class="form-control font-monospace" id="mc-users" rows="6" placeholder="admin&#10;administrator&#10;user&#10;jsmith"></textarea>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Servicios</label>
+                    <div id="mc-services-check" class="d-flex flex-wrap gap-2 mb-2"></div>
+                    <input type="text" class="form-control form-control-sm" id="mc-service-custom" placeholder="Servicio personalizado (ej: winrm)">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="saveMatrixConfig()"><i class="fas fa-check"></i> Guardar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Add Attack Path Node -->
+<div class="modal fade" id="modalPathNode" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-circle-nodes text-info"></i> A&ntilde;adir Nodo</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Etiqueta <span class="text-danger">*</span></label>
+                    <input type="text" class="form-control" id="pn-label" placeholder="DC01 / admin:Password1 / SMB 445">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Tipo</label>
+                    <select class="form-select" id="pn-type">
+                        <option value="attacker">&#128304; Atacante</option>
+                        <option value="target">&#128308; Target / Host</option>
+                        <option value="credential">&#128994; Credencial</option>
+                        <option value="service">&#128998; Servicio</option>
+                        <option value="pivot">&#128995; Pivot</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-info" onclick="addPathNode()"><i class="fas fa-plus"></i> A&ntilde;adir</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Add Attack Path Edge -->
+<div class="modal fade" id="modalPathEdge" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-arrow-right-long"></i> A&ntilde;adir Arista</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3"><label class="form-label">Desde <span class="text-danger">*</span></label><select class="form-select" id="pe-from"></select></div>
+                <div class="mb-3"><label class="form-label">Hasta <span class="text-danger">*</span></label><select class="form-select" id="pe-to"></select></div>
+                <div class="mb-3"><label class="form-label">T&eacute;cnica / Label</label><input type="text" class="form-control" id="pe-label" placeholder="SMB Relay / SSH / PTH / DCSync"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="addPathEdge()"><i class="fas fa-plus"></i> A&ntilde;adir</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Severity Trends -->
+<div class="modal fade" id="modalTrends" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-chart-bar text-info"></i> Severity Trends &mdash; Comparativa de Proyectos</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <canvas id="trends-chart" height="100"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Target Scope Manager -->
+<div class="modal fade" id="modalScope" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-crosshairs text-warning"></i> Target Scope Manager</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">IPs / CIDRs en scope <span class="text-success small">(incluir)</span></label>
+                        <textarea class="form-control font-monospace" id="scope-includes" rows="8"
+                                  placeholder="10.10.10.0/24&#10;192.168.1.100&#10;192.168.1.0/24&#10;target.com"></textarea>
+                        <div class="form-text">Un rango/IP/dominio por línea. Soporta CIDR.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">IPs excluidas <span class="text-danger small">(excluir)</span></label>
+                        <textarea class="form-control font-monospace" id="scope-excludes" rows="5"
+                                  placeholder="192.168.1.1&#10;10.10.10.1"></textarea>
+                        <div class="form-text">IPs/rangos fuera de scope</div>
+                        <div class="mt-3">
+                            <label class="form-label">Quick-check IP</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control font-monospace" id="scope-check-ip" placeholder="10.10.10.5">
+                                <button class="btn btn-outline-secondary" onclick="checkIPScope()">Verificar</button>
+                            </div>
+                            <div id="scope-check-result" class="mt-2 small"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-warning" onclick="saveScope()"><i class="fas fa-save"></i> Guardar scope</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Evidence Collector -->
+<div class="modal fade" id="modalEvidenceCollector" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-camera-retro text-info"></i> Evidence Auto-Collector</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Asociar a Finding</label>
+                    <select class="form-select" id="ec-finding-select">
+                        <option value="__new__">➕ Crear nuevo finding</option>
+                    </select>
+                </div>
+                <div id="ec-new-finding-fields" class="d-none mb-3">
+                    <div class="row g-2">
+                        <div class="col-md-8"><input type="text" class="form-control" id="ec-new-title" placeholder="Título del finding"></div>
+                        <div class="col-md-4">
+                            <select class="form-select" id="ec-new-severity">
+                                <option value="critical">Critical</option>
+                                <option value="high">High</option>
+                                <option value="medium" selected>Medium</option>
+                                <option value="low">Low</option>
+                                <option value="info">Info</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Evidencia capturada</label>
+                    <textarea class="form-control font-monospace" id="ec-evidence-text" rows="10" style="font-size:11px"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-info" onclick="saveEvidence()"><i class="fas fa-camera-retro"></i> Guardar evidencia</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Add Snippet -->
+<div class="modal fade" id="modalAddSnippet" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="snippet-modal-title"><i class="fas fa-bookmark text-info"></i> Nuevo Snippet</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-3">
+                    <div class="col-12">
+                        <label class="form-label">Título <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="sn-title" placeholder="Nmap Full TCP con scripts">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Comando <span class="text-danger">*</span></label>
+                        <textarea class="form-control font-monospace" id="sn-command" rows="3" placeholder="nmap -sC -sV -p- --min-rate 3000 {rhost} -oN /tmp/nmap_{rhost}.txt"></textarea>
+                        <div class="form-text">Puedes usar <code>{rhost}</code>, <code>{lhost}</code>, <code>{lport}</code>, <code>{domain}</code></div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Categoría</label>
+                        <select class="form-select" id="sn-category">
+                            <option value="recon">Recon</option>
+                            <option value="enum">Enum</option>
+                            <option value="exploitation">Exploitation</option>
+                            <option value="privesc">PrivEsc</option>
+                            <option value="ad">AD / Kerberos</option>
+                            <option value="web">Web</option>
+                            <option value="pivoting">Pivoting</option>
+                            <option value="password">Passwords</option>
+                            <option value="custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Tags <span class="text-muted small">(separados por coma)</span></label>
+                        <input type="text" class="form-control" id="sn-tags" placeholder="nmap, scan, tcp">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Notas</label>
+                        <input type="text" class="form-control" id="sn-notes" placeholder="Descripción breve o notas adicionales">
+                    </div>
+                </div>
+                <input type="hidden" id="sn-editing-id">
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="saveSnippet()"><i class="fas fa-save"></i> Guardar</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: File Transfer Helper -->
+<div class="modal fade" id="modalTransfer" tabindex="-1">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-file-arrow-up text-info"></i> File Transfer Helper</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="row g-2 mb-3">
+                    <div class="col-md-4">
+                        <label class="form-label small">LHOST (tu IP de atacante)</label>
+                        <input class="form-control form-control-sm font-monospace" id="tf-lhost" placeholder="192.168.45.5" oninput="renderTransferCommands()">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label small">Puerto servidor</label>
+                        <input type="number" class="form-control form-control-sm" id="tf-port" value="80" oninput="renderTransferCommands()">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small">Fichero a transferir</label>
+                        <input class="form-control form-control-sm font-monospace" id="tf-filename" placeholder="shell.exe / linpeas.sh" oninput="renderTransferCommands()">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label small">OS Objetivo</label>
+                        <select class="form-select form-select-sm" id="tf-os" onchange="renderTransferCommands()">
+                            <option value="windows">Windows</option>
+                            <option value="linux">Linux</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="alert alert-dark py-2 mb-3 d-flex align-items-center gap-3">
+                    <span class="text-muted small">Iniciar servidor en atacante:</span>
+                    <code id="tf-server-cmd" class="flex-grow-1"></code>
+                    <button class="btn btn-xs btn-outline-secondary flex-shrink-0" onclick="copyTfServer()"><i class="fas fa-copy"></i></button>
+                </div>
+                <div id="tf-commands-container" class="tf-grid"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                <button type="button" class="btn btn-outline-success" onclick="launchTransferServer()"><i class="fas fa-play"></i> Lanzar servidor HTTP</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: New Listener -->
+<div class="modal fade" id="modalNewListener" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-plug-circle-bolt text-success"></i> Nuevo Listener</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Tipo de listener</label>
+                    <select class="form-select" id="nl-type">
+                        <option value="nc">nc -lvnp (netcat básico)</option>
+                        <option value="rlwrap">rlwrap nc (shell mejorada)</option>
+                        <option value="socat">socat PTY (shell completa)</option>
+                        <option value="python">Python socket listener</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Puerto LPORT</label>
+                    <input type="number" class="form-control font-monospace" id="nl-port" value="4444" min="1" max="65535">
+                </div>
+                <div class="alert alert-secondary py-2 small">
+                    <i class="fas fa-info-circle text-info"></i> El listener se ejecuta como job en el backend y aparece en la lista de Sessions.
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                <button type="button" class="btn btn-success" onclick="createListener()"><i class="fas fa-play"></i> Iniciar listener</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

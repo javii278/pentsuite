@@ -1,0 +1,833 @@
+tools:
+
+  # ─────────────────────────────────────────────
+  # 1. HOST / NETWORK DISCOVERY
+  # ─────────────────────────────────────────────
+
+  - id: nmap_ping_sweep
+    name: "1. Nmap - Ping Sweep (Host Discovery)"
+    description: "Descubrimiento de hosts activos en la red sin escanear puertos. Primer paso de cualquier recon."
+    command: "nmap -sn {network} -oG - | grep 'Up' | awk '{print $2}'"
+    params:
+      - name: network
+        label: "Red / CIDR"
+        placeholder: "192.168.1.0/24"
+        required: true
+    tags: [recon, discovery, hosts, nmap, T1]
+    notes: "TTL 64=Linux | TTL 128=Windows | TTL 255=Router. Combinar con arp-scan en red local."
+
+  - id: arp_scan
+    name: "2. ARP-Scan (LAN Host Discovery)"
+    description: "Descubrimiento de hosts en red local mediante ARP. Más fiable que ICMP en redes con firewall."
+    command: "sudo arp-scan --localnet --interface={interface}"
+    params:
+      - name: interface
+        label: "Interfaz de red"
+        placeholder: "eth0"
+        default: "eth0"
+        required: true
+    tags: [recon, arp, discovery, LAN, T1]
+    notes: "Solo funciona en red local. Revela MAC + fabricante. Ideal para redes con ICMP bloqueado."
+
+  - id: netdiscover
+    name: "3. Netdiscover (Pasive ARP Recon)"
+    description: "Escucha tráfico ARP pasivamente para detectar hosts. Sin enviar paquetes."
+    command: "sudo netdiscover -r {network} -i {interface} -P"
+    params:
+      - name: network
+        label: "Red / CIDR"
+        placeholder: "192.168.1.0/24"
+        required: true
+      - name: interface
+        label: "Interfaz"
+        placeholder: "eth0"
+        default: "eth0"
+    tags: [recon, arp, passive, LAN, T1]
+
+  - id: masscan_discovery
+    name: "4. Masscan - Ultra Fast Port Scan"
+    description: "Escaneo de puertos extremadamente rápido. Ideal para grandes rangos de red."
+    command: "sudo masscan {target} -p{ports} --rate={rate} -oG {output}"
+    params:
+      - name: target
+        label: "Target (IP o CIDR)"
+        placeholder: "10.10.10.0/24"
+        required: true
+      - name: ports
+        label: "Puertos"
+        placeholder: "1-65535"
+        default: "1-65535"
+      - name: rate
+        label: "Paquetes/seg"
+        placeholder: "1000"
+        default: "1000"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "masscan.txt"
+        default: "masscan.txt"
+    tags: [recon, masscan, ports, fast, T1]
+    notes: "rate=10000+ puede saturar la red. Empezar con 1000. Combinar con nmap para versiones."
+
+  - id: ping_ttl
+    name: "5. OS Detection via TTL (Ping)"
+    description: "Detecta el sistema operativo por el valor TTL del ping ICMP."
+    command: "ping -c 4 {target}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+    tags: [recon, ping, os-detection, ttl, T1]
+    notes: "TTL ~64 = Linux/Unix | TTL ~128 = Windows | TTL ~255 = Cisco/Router"
+
+  - id: traceroute
+    name: "6. Traceroute (Network Path)"
+    description: "Traza la ruta de paquetes hasta el destino. Revela firewalls y segmentación."
+    command: "traceroute {target}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+    tags: [recon, network, traceroute, routing, T1]
+
+  - id: nmap_ipv6
+    name: "7. Nmap - IPv6 Scan"
+    description: "Escaneo de hosts y puertos sobre IPv6. Muchos firewalls olvidan filtrar IPv6."
+    command: "nmap -6 -sV -sC {target_ipv6} -oN {output}"
+    params:
+      - name: target_ipv6
+        label: "Target IPv6"
+        placeholder: "fe80::1 o 2001:db8::1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "ipv6_scan"
+        default: "ipv6_scan"
+    tags: [recon, nmap, ipv6, network, T1]
+    notes: "Descubrir IPv6 local: ip -6 addr. Descubrir vecinos: ip -6 neigh"
+
+  # ─────────────────────────────────────────────
+  # 2. PORT SCANNING & SERVICE DETECTION
+  # ─────────────────────────────────────────────
+
+  - id: nmap_quick
+    name: "8. Nmap - Quick Scan (Top 1000)"
+    description: "Escaneo rápido de los 1000 puertos más comunes con versiones y scripts default."
+    command: "nmap -sV -sC --open {target} -oN {output}"
+    params:
+      - name: target
+        label: "Target (IP o hostname)"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "quick_scan"
+        default: "quick_scan"
+    tags: [recon, nmap, quick, ports, T2]
+
+  - id: nmap_full
+    name: "9. Nmap - Full Port Scan (65535)"
+    description: "Escaneo completo de todos los puertos con detección de versión. Ningún puerto se escapa."
+    command: "nmap -sV -sC -p- --min-rate 5000 {target} -oN {output}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "full_scan"
+        default: "full_scan"
+    tags: [recon, nmap, full, ports, thorough, T2]
+    notes: "Más lento pero exhaustivo. --min-rate 5000 lo acelera. Usar en CTF/labs."
+
+  - id: nmap_udp
+    name: "10. Nmap - UDP Scan (Top 200)"
+    description: "Escaneo de los 200 puertos UDP más comunes. SNMP, DNS, NTP, TFTP suelen estar ocultos aquí."
+    command: "sudo nmap -sU -sV --top-ports 200 {target} -oN {output}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "udp_scan"
+        default: "udp_scan"
+    tags: [recon, nmap, udp, ports, T2]
+    notes: "Requiere sudo. Los UDP son lentos. Revisar: DNS(53), SNMP(161), NFS(2049), TFTP(69)."
+
+  - id: nmap_os_detect
+    name: "11. Nmap - OS Detection (Aggressive)"
+    description: "Detección agresiva de SO, versión, scripts y traceroute. Máxima información en un solo scan."
+    command: "sudo nmap -A -O {target} -oN {output}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "os_detect"
+        default: "os_detect"
+    tags: [recon, nmap, os-detection, aggressive, T2]
+    notes: "-A = -sV -sC -O --traceroute. Muy ruidoso. Requiere sudo para OS detection."
+
+  - id: nmap_vuln
+    name: "12. Nmap - Vulnerability Scripts (NSE vuln)"
+    description: "Escaneo NSE con scripts de categoría 'vuln'. Detecta EternalBlue, Shellshock, Heartbleed..."
+    command: "nmap --script vuln {target} -oN {output}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "vuln_scan"
+        default: "vuln_scan"
+    tags: [recon, nmap, nse, vuln, T2]
+    notes: "Puede activar IDS/IPS. Usar en entornos controlados. Más ruidoso que -sC."
+
+  - id: banner_grab_nc
+    name: "13. Banner Grabbing (Netcat)"
+    description: "Captura el banner del servicio enviando una petición HTTP o conexión TCP vacía."
+    command: "echo '' | nc -nv -w2 {target} {port}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: port
+        label: "Puerto"
+        placeholder: "80"
+        required: true
+    tags: [recon, banner, netcat, service, T2]
+    notes: "Para HTTP: 'HEAD / HTTP/1.0\\r\\n\\r\\n'. Para FTP/SMTP: nc directo muestra banner."
+
+  # ─────────────────────────────────────────────
+  # 3. DNS RECONNAISSANCE
+  # ─────────────────────────────────────────────
+
+  - id: dig_any
+    name: "14. DIG - All DNS Records"
+    description: "Consulta todos los registros DNS de un dominio (A, MX, TXT, NS, CNAME, SOA)."
+    command: "dig {domain} ANY +noall +answer"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+    tags: [recon, dns, dig, records, T3]
+
+  - id: dig_axfr
+    name: "15. DIG - Zone Transfer (AXFR)"
+    description: "Intento de transferencia de zona DNS completa. Si funciona: todos los registros del dominio."
+    command: "dig @{nameserver} {domain} AXFR"
+    params:
+      - name: nameserver
+        label: "Servidor DNS (NS del dominio)"
+        placeholder: "ns1.example.com"
+        required: true
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+    tags: [recon, dns, axfr, zone-transfer, T3]
+    notes: "Buscar NS con: dig example.com NS. Si éxito: gold mine de subdominios e IPs internas."
+
+  - id: dnsrecon
+    name: "16. DNSRecon - Full DNS Enum"
+    description: "Enumeración DNS completa: STD records, brute-force, zona, reversa, SRV, PTR, caché."
+    command: "dnsrecon -d {domain} -t {type} -o {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: type
+        label: "Tipo de scan"
+        placeholder: "std"
+        default: "std"
+        notes: "std | axfr | brt | goo | snoop | zonewalk"
+      - name: output
+        label: "Fichero salida (JSON)"
+        placeholder: "dnsrecon.json"
+        default: "dnsrecon.json"
+    tags: [recon, dns, dnsrecon, enum, T3]
+    notes: "Tipos: std (all records), axfr (zone transfer), brt (bruteforce), goo (Google)."
+
+  - id: dnsx_resolve
+    name: "17. DNSX - Mass DNS Resolution"
+    description: "Resuelve lista de subdominios masivamente. Filtra los activos de una lista de amass/subfinder."
+    command: "cat {input_file} | dnsx -silent -a -cname -resp -o {output}"
+    params:
+      - name: input_file
+        label: "Fichero con subdominios"
+        placeholder: "subdomains.txt"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "resolved.txt"
+        default: "resolved.txt"
+    tags: [recon, dns, dnsx, resolution, T3]
+    notes: "Combinar con: subfinder -d domain -o subs.txt && cat subs.txt | dnsx -silent"
+
+  - id: fierce
+    name: "18. Fierce - DNS Brute Force"
+    description: "Brute force de subdominios DNS con wordlist. También prueba zona transfer automáticamente."
+    command: "fierce --domain {domain} --wordlist {wordlist} --subdomains-only"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: wordlist
+        label: "Wordlist de subdominios"
+        placeholder: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+        default: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+    tags: [recon, dns, fierce, bruteforce, T3]
+
+  - id: dnsenum
+    name: "19. DNSenum - DNS Enumeration + Google"
+    description: "Enumera DNS + intenta AXFR + Google scraping de subdominios + brute force."
+    command: "dnsenum --enum {domain} -f {wordlist} -o {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+        default: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+      - name: output
+        label: "Fichero salida (XML)"
+        placeholder: "dnsenum.xml"
+        default: "dnsenum.xml"
+    tags: [recon, dns, dnsenum, google, T3]
+
+  # ─────────────────────────────────────────────
+  # 4. SUBDOMAIN ENUMERATION
+  # ─────────────────────────────────────────────
+
+  - id: subfinder
+    name: "20. Subfinder - Passive Subdomain Enum"
+    description: "Descubrimiento rápido de subdominios usando +40 fuentes pasivas (Shodan, VirusTotal, etc)."
+    command: "subfinder -d {domain} -o {output} -v -all"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "subdomains.txt"
+        default: "subdomains.txt"
+    tags: [recon, subdomains, subfinder, passive, T4]
+
+  - id: amass_passive
+    name: "21. Amass - Passive Subdomain Enum"
+    description: "Enumeración pasiva de subdominios sin contactar el objetivo. Usa OSINT e inteligencia de TI."
+    command: "amass enum -passive -d {domain} -o {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "amass_passive.txt"
+        default: "amass_passive.txt"
+    tags: [recon, subdomains, amass, passive, osint, T4]
+
+  - id: amass_active
+    name: "22. Amass - Active Subdomain Enum + Brute"
+    description: "Enumeración activa de subdominios con brute force DNS. Más completo que pasivo."
+    command: "amass enum -active -d {domain} -brute -w {wordlist} -o {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt"
+        default: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "amass_active.txt"
+        default: "amass_active.txt"
+    tags: [recon, subdomains, amass, active, bruteforce, T4]
+    notes: "Contacta directamente al objetivo. Más ruidoso. Configurar API keys en ~/.config/amass/."
+
+  - id: crt_sh
+    name: "23. crt.sh - Certificate Transparency"
+    description: "Busca subdominios en logs de Certificate Transparency (SSL certs públicos). 100% pasivo."
+    command: "curl -s 'https://crt.sh/?q=%.{domain}&output=json' | jq -r '.[].name_value' | sort -u | tee {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "crtsh_subs.txt"
+        default: "crtsh_subs.txt"
+    tags: [recon, subdomains, ssl, certificate-transparency, passive, T4]
+    notes: "No contacta el objetivo. Revela subdominios históricos y staging/dev environments."
+
+  - id: gobuster_vhost
+    name: "24. Gobuster - Virtual Host Discovery"
+    description: "Brute force de Virtual Hosts (subdominios) en un servidor web. Revela vhosts no publicados."
+    command: "gobuster vhost -u {url} -w {wordlist} --append-domain -t 50 -o {output}"
+    params:
+      - name: url
+        label: "URL base (con protocolo)"
+        placeholder: "http://10.10.10.1"
+        required: true
+      - name: wordlist
+        label: "Wordlist de vhosts"
+        placeholder: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+        default: "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "vhosts.txt"
+        default: "vhosts.txt"
+    tags: [recon, vhost, gobuster, web, T4]
+    notes: "Añadir el dominio a /etc/hosts primero. Usar --append-domain para generar sub.domain.com."
+
+  # ─────────────────────────────────────────────
+  # 5. SSL/TLS ANALYSIS
+  # ─────────────────────────────────────────────
+
+  - id: sslscan
+    name: "25. SSLScan - SSL/TLS Cipher Analysis"
+    description: "Analiza ciphers, protocolos (SSLv2/3, TLS 1.0/1.1), certificado y vulnerabilidades SSL."
+    command: "sslscan {target}:{port}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "example.com"
+        required: true
+      - name: port
+        label: "Puerto HTTPS"
+        placeholder: "443"
+        default: "443"
+    tags: [recon, ssl, tls, ciphers, sslscan, T5]
+    notes: "Detecta: POODLE, BEAST, FREAK, Heartbleed, DROWN. Revisar ciphers débiles y versiones."
+
+  - id: testssl
+    name: "26. testssl.sh - TLS Deep Analysis"
+    description: "Análisis completo de TLS/SSL: vulns, ciphers, forward secrecy, HSTS, OCSP stapling."
+    command: "testssl.sh --color 0 {target}:{port} | tee {output}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "example.com"
+        required: true
+      - name: port
+        label: "Puerto"
+        placeholder: "443"
+        default: "443"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "testssl_output.txt"
+        default: "testssl_output.txt"
+    tags: [recon, ssl, tls, testssl, vulnerabilities, T5]
+    notes: "Más completo que sslscan. Instalar: git clone https://github.com/drwetter/testssl.sh"
+
+  - id: openssl_cert
+    name: "27. OpenSSL - Certificate Info"
+    description: "Extrae info del certificado SSL: Subject, SAN (subdominios!), fechas, emisor, chain."
+    command: "echo | openssl s_client -connect {target}:{port} 2>/dev/null | openssl x509 -noout -text"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "example.com"
+        required: true
+      - name: port
+        label: "Puerto"
+        placeholder: "443"
+        default: "443"
+    tags: [recon, ssl, certificate, openssl, san, T5]
+    notes: "Los Subject Alternative Names (SAN) revelan todos los dominios del cert. ¡Gold mine!"
+
+  # ─────────────────────────────────────────────
+  # 6. WEB FINGERPRINTING & TECHNOLOGY DETECTION
+  # ─────────────────────────────────────────────
+
+  - id: whatweb
+    name: "28. WhatWeb - Technology Fingerprinting"
+    description: "Fingerprinting de tecnologías web: CMS, framework, servidor, versiones, plugins."
+    command: "whatweb -v -a 3 {url}"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "http://example.com"
+        required: true
+    tags: [recon, web, fingerprint, whatweb, T6]
+    notes: "-a 3 = agresivo. -a 1 = stealth. Revela: WordPress, Drupal, Apache version, PHP version."
+
+  - id: wafw00f
+    name: "29. WAFw00f - WAF Detection"
+    description: "Detecta y fingerprinta Web Application Firewalls (Cloudflare, ModSecurity, Akamai...)."
+    command: "wafw00f {url} -a"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "https://example.com"
+        required: true
+    tags: [recon, web, waf, detection, T6]
+
+  - id: curl_headers
+    name: "30. cURL - HTTP Headers Analysis"
+    description: "Obtiene cabeceras HTTP: versión servidor, cookies, headers de seguridad ausentes."
+    command: "curl -I -L -k {url}"
+    params:
+      - name: url
+        label: "URL"
+        placeholder: "http://example.com"
+        required: true
+    tags: [recon, web, curl, headers, http, T6]
+    notes: "Buscar: Server, X-Powered-By, Set-Cookie (flags), X-Frame-Options, HSTS, CSP ausentes."
+
+  - id: httpx_probe
+    name: "31. HTTPX - HTTP Probe on Subdomains"
+    description: "Sondea listas de subdominios/IPs para detectar servidores HTTP/HTTPS activos. Filtra y clasifica."
+    command: "cat {input_file} | httpx -title -tech-detect -status-code -follow-redirects -o {output}"
+    params:
+      - name: input_file
+        label: "Fichero con hosts/subdominios"
+        placeholder: "subdomains.txt"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "httpx_results.txt"
+        default: "httpx_results.txt"
+    tags: [recon, web, httpx, probe, T6]
+    notes: "Combinar con subfinder: subfinder -d domain -silent | httpx -title -tech-detect"
+
+  - id: nikto_scan
+    name: "32. Nikto - Web Vulnerability Scanner"
+    description: "Scanner de vulnerabilidades web: directorios peligrosos, versiones inseguras, misconfigs, headers."
+    command: "nikto -h {url} -o {output} -Format txt"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "http://192.168.1.1"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "nikto_scan.txt"
+        default: "nikto_scan.txt"
+    tags: [recon, web, nikto, vulnerabilities, T6]
+    notes: "Muy ruidoso pero detecta: CGI vulns, default files, misconfigs, outdated software."
+
+  - id: wpscan
+    name: "33. WPScan - WordPress Recon"
+    description: "Enumera WordPress: versión, plugins vulnerables, temas, usuarios, config expuesta."
+    command: "wpscan --url {url} --enumerate {enumerate} --api-token {api_token}"
+    params:
+      - name: url
+        label: "URL del sitio WordPress"
+        placeholder: "http://example.com"
+        required: true
+      - name: enumerate
+        label: "Qué enumerar"
+        placeholder: "u,vp,vt,dbe"
+        default: "u,vp,vt,dbe"
+        notes: "u=users, vp=vuln plugins, vt=vuln themes, dbe=DB exports"
+      - name: api_token
+        label: "API Token WPScan (opcional)"
+        placeholder: "TOKEN_AQUI"
+        default: ""
+    tags: [recon, web, wordpress, wpscan, cms, T6]
+    notes: "Registrarse en wpscan.io para API key gratuita (da info CVE de plugins)."
+
+  # ─────────────────────────────────────────────
+  # 7. WEB CONTENT DISCOVERY
+  # ─────────────────────────────────────────────
+
+  - id: gobuster_dir
+    name: "34. Gobuster - Directory Bruteforce"
+    description: "Brute force de directorios y ficheros web. Descubre rutas ocultas, admin panels, backups."
+    command: "gobuster dir -u {url} -w {wordlist} -x {extensions} -t 50 -o {output}"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "http://example.com"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"
+        default: "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt"
+      - name: extensions
+        label: "Extensiones"
+        placeholder: "php,txt,html,bak,zip,xml"
+        default: "php,txt,html,bak,zip"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "gobuster_dirs.txt"
+        default: "gobuster_dirs.txt"
+    tags: [recon, web, gobuster, directory, bruteforce, T7]
+
+  - id: ffuf_dir
+    name: "35. FFUF - Fast Web Fuzzer (Dirs/Files)"
+    description: "Fuzzer web ultra rápido. Descubre directorios, params, LFI paths, endpoints de API."
+    command: "ffuf -u {url}/FUZZ -w {wordlist} -e {extensions} -mc 200,301,302,403 -o {output} -of csv"
+    params:
+      - name: url
+        label: "URL objetivo (sin trailing /)"
+        placeholder: "http://example.com"
+        required: true
+      - name: wordlist
+        label: "Wordlist"
+        placeholder: "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
+        default: "/usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt"
+      - name: extensions
+        label: "Extensiones"
+        placeholder: ".php,.html,.txt,.bak"
+        default: ".php,.html,.txt,.bak"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "ffuf_results.csv"
+        default: "ffuf_results.csv"
+    tags: [recon, web, ffuf, fuzzing, directory, T7]
+    notes: "Para LFI: -u url?page=FUZZ -w /usr/share/seclists/Fuzzing/LFI/LFI-Jhaddix.txt"
+
+  - id: gau_urls
+    name: "36. GAU - Get All URLs (Wayback + APIs)"
+    description: "Extrae URLs históricas de Wayback Machine, CommonCrawl, VirusTotal, URLScan. Pasivo."
+    command: "gau {domain} | tee {output}"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "gau_urls.txt"
+        default: "gau_urls.txt"
+    tags: [recon, web, gau, wayback, osint, passive, T7]
+    notes: "Post-procesado: cat gau_urls.txt | grep '\\.php' | grep '='  para endpoints con params."
+
+  - id: hakrawler
+    name: "37. Hakrawler - Web Crawler"
+    description: "Crawler web rápido que extrae links, forms, JS files, endpoints de una aplicación."
+    command: "echo {url} | hakrawler -depth {depth} -insecure | tee {output}"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "https://example.com"
+        required: true
+      - name: depth
+        label: "Profundidad de crawl"
+        placeholder: "2"
+        default: "2"
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "hakrawler.txt"
+        default: "hakrawler.txt"
+    tags: [recon, web, crawler, hakrawler, T7]
+
+  - id: js_endpoints
+    name: "38. JS Endpoint Extraction (LinkFinder)"
+    description: "Extrae endpoints de APIs y rutas desde ficheros JavaScript. Revela APIs internas."
+    command: "python3 /opt/LinkFinder/linkfinder.py -i {url} -d -o cli | tee {output}"
+    params:
+      - name: url
+        label: "URL objetivo (dominio completo)"
+        placeholder: "https://example.com"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "js_endpoints.txt"
+        default: "js_endpoints.txt"
+    tags: [recon, web, javascript, endpoints, api, T7]
+    notes: "Instalar: git clone https://github.com/GerbenJavado/LinkFinder. También: getJS + subjs."
+
+  - id: robots_sitemap
+    name: "39. Robots.txt / Sitemap.xml Analysis"
+    description: "Lee robots.txt y sitemap.xml. Revelan rutas prohibidas (que suelen ser las más interesantes)."
+    command: "curl -s {url}/robots.txt && echo '---SITEMAP---' && curl -s {url}/sitemap.xml"
+    params:
+      - name: url
+        label: "URL objetivo"
+        placeholder: "http://example.com"
+        required: true
+    tags: [recon, web, robots, sitemap, T7]
+    notes: "Disallow en robots.txt = rutas a probar. sitemap.xml = mapa completo del sitio."
+
+  # ─────────────────────────────────────────────
+  # 8. OSINT & EXTERNAL INTELLIGENCE
+  # ─────────────────────────────────────────────
+
+  - id: whois
+    name: "40. WHOIS - Domain/IP Registration"
+    description: "Información de registro del dominio o IP: propietario, organización, fechas, nameservers, ASN."
+    command: "whois {target}"
+    params:
+      - name: target
+        label: "Dominio o IP"
+        placeholder: "example.com"
+        required: true
+    tags: [recon, osint, domain, whois, T8]
+
+  - id: theharvester
+    name: "41. theHarvester - OSINT Email/Subdomains"
+    description: "Recolecta emails, subdominios, hosts, empleados, IPs desde buscadores y fuentes públicas."
+    command: "theHarvester -d {domain} -b all -l 500 -f {output}"
+    params:
+      - name: domain
+        label: "Dominio objetivo"
+        placeholder: "example.com"
+        required: true
+      - name: output
+        label: "Fichero de salida (sin extensión)"
+        placeholder: "harvester_results"
+        default: "harvester_results"
+    tags: [recon, osint, emails, subdomains, theharvester, T8]
+
+  - id: asn_lookup
+    name: "42. ASN Lookup - IP Range Discovery"
+    description: "Descubre todos los rangos de IP asociados a una organización via ASN. Amplía el scope."
+    command: "curl -s 'https://api.bgpview.io/asn/{asn}/prefixes' | jq '.data.ipv4_prefixes[].prefix'"
+    params:
+      - name: asn
+        label: "Número ASN (sin AS)"
+        placeholder: "15169"
+        required: true
+    tags: [recon, osint, asn, ip-range, network, T8]
+    notes: "Buscar ASN de empresa: whois -h whois.radb.net -- '-i origin AS15169' o search en bgp.he.net"
+
+  - id: spf_dmarc_check
+    name: "43. SPF/DKIM/DMARC Check (Email Security)"
+    description: "Comprueba configuración de seguridad de email. Ausencia = posible email spoofing."
+    command: "dig {domain} TXT | grep -E 'spf|dmarc|dkim' ; dig _dmarc.{domain} TXT"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "example.com"
+        required: true
+    tags: [recon, osint, email, spf, dmarc, spoofing, T8]
+    notes: "Sin DMARC = spoofing posible. SPF ~all (softfail) = bypass posible. Explotar con swaks."
+
+  - id: google_dorks
+    name: "44. Google Dorks - Sensitive Data Search"
+    description: "Búsqueda de información sensible indexada en Google: configs, backups, logins, docs internos."
+    command: "echo 'Usar en navegador: site:{domain} (filetype:pdf OR filetype:xls OR filetype:sql OR intitle:\"index of\" OR inurl:admin OR inurl:login OR inurl:.git OR inurl:backup)'"
+    params:
+      - name: domain
+        label: "Dominio objetivo"
+        placeholder: "example.com"
+        required: true
+    tags: [recon, osint, google, dorks, T8]
+    notes: "Dorks útiles: site:domain filetype:env | inurl:wp-config | intitle:'phpinfo' | inurl:.git/config"
+
+  - id: shodan_cli
+    name: "45. Shodan CLI - Internet-Facing Assets"
+    description: "Busca en Shodan dispositivos, servicios y vuln expuestos de una organización/IP/dominio."
+    command: "shodan search 'hostname:{domain}' --fields ip_str,port,transport,product,version | tee {output}"
+    params:
+      - name: domain
+        label: "Dominio o org"
+        placeholder: "example.com"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "shodan_results.txt"
+        default: "shodan_results.txt"
+    tags: [recon, osint, shodan, internet, T8]
+    notes: "Requiere: shodan init API_KEY. Alternativas: shodan host IP | shodan search 'org:Company'"
+
+  - id: github_dorking
+    name: "46. GitHub Dorking - Secrets & Leaks"
+    description: "Busca credenciales, API keys, config files y código interno en repositorios GitHub/GitLab."
+    command: "trufflehog github --org={org} --only-verified 2>&1 | tee {output}"
+    params:
+      - name: org
+        label: "Organización en GitHub"
+        placeholder: "targetcompany"
+        required: true
+      - name: output
+        label: "Fichero de salida"
+        placeholder: "trufflehog_results.txt"
+        default: "trufflehog_results.txt"
+    tags: [recon, osint, github, secrets, leaks, T8]
+    notes: "También: gitleaks detect. Manual: github.com/search?q=org%3Atarget+password+filename%3A.env"
+
+  # ─────────────────────────────────────────────
+  # 9. SERVICE-SPECIFIC ENUMERATION
+  # ─────────────────────────────────────────────
+
+  - id: snmp_enum
+    name: "47. SNMP Enumeration (onesixtyone + snmpwalk)"
+    description: "Brute force de community strings SNMP y enumeración completa del dispositivo."
+    command: "onesixtyone -c /usr/share/seclists/Discovery/SNMP/common-snmp-community-strings.txt {target} && snmpwalk -v {version} -c {community} {target}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: version
+        label: "Versión SNMP"
+        placeholder: "2c"
+        default: "2c"
+        notes: "1 | 2c | 3"
+      - name: community
+        label: "Community string"
+        placeholder: "public"
+        default: "public"
+    tags: [recon, snmp, enum, udp, T9]
+    notes: "SNMP en UDP/161. Con community=public: info de rutas, ARP, interfaces, procesos, usuarios."
+
+  - id: smtp_enum
+    name: "48. SMTP User Enumeration (smtp-user-enum)"
+    description: "Enumera usuarios válidos en servidor SMTP usando VRFY, EXPN o RCPT TO."
+    command: "smtp-user-enum -M {method} -U {wordlist} -t {target} -p {port}"
+    params:
+      - name: method
+        label: "Método"
+        placeholder: "VRFY"
+        default: "VRFY"
+        notes: "VRFY | EXPN | RCPT"
+      - name: wordlist
+        label: "Wordlist de usuarios"
+        placeholder: "/usr/share/seclists/Usernames/Names/names.txt"
+        default: "/usr/share/seclists/Usernames/Names/names.txt"
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+      - name: port
+        label: "Puerto SMTP"
+        placeholder: "25"
+        default: "25"
+    tags: [recon, smtp, email, enum, T9]
+    notes: "Combinar con Nmap: nmap -p 25 --script smtp-enum-users,smtp-commands {target}"
+
+  - id: nmap_smb_enum
+    name: "49. Nmap - SMB Full Scripts"
+    description: "Enumeración SMB completa: shares, usuarios, SO, seguridad, vulnerabilidades (EternalBlue)."
+    command: "nmap -p 445 --script smb-enum-shares,smb-enum-users,smb-os-discovery,smb-security-mode,smb-vuln-ms17-010 {target}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+    tags: [recon, nmap, nse, smb, windows, T9]
+    notes: "smb-vuln-ms17-010 = EternalBlue. smb-enum-users revela usuarios del dominio."
+
+  - id: nmap_rpc_nfs
+    name: "50. NFS/RPC Enumeration"
+    description: "Enumera endpoints RPC y shares NFS expuestos. Suele contener ficheros sensibles."
+    command: "nmap -p 111,2049 --script nfs-ls,nfs-showmount,nfs-statfs,rpcinfo {target} && showmount -e {target}"
+    params:
+      - name: target
+        label: "Target"
+        placeholder: "192.168.1.1"
+        required: true
+    tags: [recon, nfs, rpc, enum, linux, T9]
+    notes: "NFS/111/2049. Si hay share: mount -t nfs {target}:/share /mnt/nfs. Buscar keys SSH, configs."
