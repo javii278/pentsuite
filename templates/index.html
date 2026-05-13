@@ -921,7 +921,11 @@
                             <small class="text-muted">Si vacío, usa los targets del proyecto</small>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label small fw-semibold">Ollama Model</label>
+                            <label class="form-label small fw-semibold">LHOST <span class="text-danger">*</span> <span class="text-muted">(tu IP atacante)</span></label>
+                            <input type="text" class="form-control font-monospace" id="ap-lhost" placeholder="Auto-detect (tun0/eth0)">
+                            <label class="form-label small fw-semibold mt-2">LPORT <span class="text-muted">(reverse shell)</span></label>
+                            <input type="number" class="form-control" id="ap-lport" value="4444" min="1" max="65535">
+                            <label class="form-label small fw-semibold mt-2">Ollama Model</label>
                             <input type="text" class="form-control" id="ap-ollama-model" value="llama3" placeholder="llama3">
                             <label class="form-label small fw-semibold mt-2">Living Report (cada X seg)</label>
                             <input type="number" class="form-control" id="ap-living-interval" value="300" min="60" max="3600">

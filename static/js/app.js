@@ -5178,6 +5178,8 @@ async function apStart() {
     const ollamaModel = document.getElementById('ap-ollama-model')?.value || 'llama3';
     const livingInterval = parseInt(document.getElementById('ap-living-interval')?.value || '300');
     const anthropicKey = document.getElementById('ap-anthropic-key')?.value || '';
+    const lhost = (document.getElementById('ap-lhost')?.value || '').trim();
+    const lport = document.getElementById('ap-lport')?.value || '4444';
 
     if (anthropicKey) {
         await fetch('/api/config/anthropic-key', {
@@ -5188,7 +5190,7 @@ async function apStart() {
 
     const res = await fetch(`/api/projects/${state.activeProject.id}/autopilot/start`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: AP.mode, targets, ollama_model: ollamaModel, living_interval: livingInterval }),
+        body: JSON.stringify({ mode: AP.mode, targets, ollama_model: ollamaModel, living_interval: livingInterval, lhost, lport }),
     });
     const data = await res.json();
     if (data.error) { toast(data.error, 'error'); return; }
