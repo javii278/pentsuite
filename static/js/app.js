@@ -861,11 +861,43 @@ function startSSEStream(jobId, offset) {
 }
 
 function startJobsPolling() {
+    let _prevFindingsCount = 0;
     setInterval(async () => {
         if (state.activePhase === 'terminal' && state.activeProject) {
             await refreshJobsList();
         }
         updateRunningIndicator();
+
+        // Auto-refresh findings + ports when a workflow is running
+        const runningCount = state.jobs.filter(j => j.status === 'running').length;
+        if (runningCount > 0 && state.activeProject) {
+            try {
+                const res = await fetch(`/api/projects/${state.activeProject.id}/findings`);
+                if (res.ok) {
+                    const fresh = await res.json();
+                    const oldCount = _prevFindingsCount < 0
+                        ? fresh.length  // first tick: set baseline silently
+                        : _prevFindingsCount;
+                    _prevFindingsCount = fresh.length;
+                    if (fresh.length !== oldCount) {
+                        state.activeProject.findings = fresh;
+                        if (state.activePhase === 'findings') renderFindings();
+                        if (fresh.length > oldCount) {
+                            toast(`+${fresh.length - oldCount} finding(s) auto-detectado(s)`, 'success');
+                        }
+                    }
+                }
+                const pr = await fetch(`/api/projects/${state.activeProject.id}`);
+                if (pr.ok) {
+                    const proj = await pr.json();
+                    if ((proj.port_map || []).length !== (state.activeProject.port_map || []).length) {
+                        state.activeProject.port_map = proj.port_map || [];
+                    }
+                }
+            } catch (_) {}
+        } else {
+            _prevFindingsCount = -1;  // reset when no workflows running
+        }
     }, 3000);
 }
 
@@ -1138,7 +1170,7 @@ async function loadWorkflows() {
 
 function renderWorkflowsStrip() {
     const el = document.getElementById('workflows-list');
-    const COLORS = { blue: 'var(--blue)', orange: 'var(--orange)', yellow: 'var(--yellow)', red: 'var(--red)', green: 'var(--green)', purple: 'var(--purple)' };
+    const COLORS = { blue: 'var(--blue)', orange: 'var(--orange)', yellow: 'var(--yellow)', red: 'var(--red)', green: 'var(--green)', purple: 'var(--purple)', violet: '#bc8cff' };
     el.innerHTML = state.workflows.map(wf => `
         <button class="wf-card" onclick="showRunWorkflowModal('${h(wf.id)}')" title="${h(wf.description)}"
                 style="border-color:${COLORS[wf.color]||'var(--muted)'}">
@@ -1408,6 +1440,16 @@ function renderFindings() {
     el.innerHTML = sorted.map(f => {
         const col = SEV_COLORS[f.severity] || '#8b949e';
         const hosts = (f.hosts || []).join(', ') || '—';
+        const exploitId = `exploit-${f.id}`;
+        const exploitBlock = f.exploit_cmd ? `
+            <div class="mt-2">
+                <div class="d-flex align-items-center gap-2 mb-1">
+                    <span style="color:#f85149;font-size:0.75rem;font-weight:600"><i class="fas fa-crosshairs"></i> AUTO-EXPLOIT</span>
+                    <button class="btn btn-xs btn-outline-danger py-0 px-1" onclick="copyExploit('${f.id}')" title="Copiar comando MSF"><i class="fas fa-copy"></i></button>
+                    <button class="btn btn-xs btn-outline-warning py-0 px-1" onclick="runExploit('${f.id}')" title="Ejecutar en Terminal"><i class="fas fa-terminal"></i> Run</button>
+                </div>
+                <pre id="${exploitId}" class="exploit-cmd-block mb-0">${h(f.exploit_cmd)}</pre>
+            </div>` : '';
         return `
         <div class="finding-card" style="border-left:3px solid ${col}">
             <div class="d-flex align-items-start gap-2">
@@ -1420,8 +1462,10 @@ function renderFindings() {
                         ${f.mitre_technique ? `<span class="finding-tag mitre-tag" title="${h(f.mitre_name||'')}"><i class="fas fa-shield-alt"></i> ATT&amp;CK ${h(f.mitre_technique)}</span>` : ''}
                         <span class="finding-tag"><i class="fas fa-crosshairs"></i> ${h(hosts)}</span>
                         <span class="finding-status-tag status-${h(f.status)}">${h(f.status)}</span>
+                        ${f.exploit_cmd ? `<span class="finding-tag" style="color:#f85149;border-color:#f8514950"><i class="fas fa-bolt"></i> exploit listo</span>` : ''}
                     </div>
                     ${f.description ? `<div class="finding-desc mt-1">${h(f.description)}</div>` : ''}
+                    ${exploitBlock}
                 </div>
                 <div class="d-flex gap-1 flex-shrink-0">
                     <button class="btn btn-sm btn-outline-secondary" onclick="editFinding('${h(f.id)}')" title="Editar"><i class="fas fa-pen"></i></button>
@@ -1499,6 +1543,22 @@ async function deleteFinding(findingId) {
     state.activeProject.findings = (state.activeProject.findings || []).filter(f => f.id !== findingId);
     renderFindings();
     toast('Finding eliminado', 'info');
+}
+
+function copyExploit(findingId) {
+    const f = (state.activeProject.findings || []).find(fi => fi.id === findingId);
+    if (!f?.exploit_cmd) return;
+    navigator.clipboard.writeText(f.exploit_cmd).then(() => toast('Exploit command copiado', 'success'));
+}
+
+async function runExploit(findingId) {
+    const f = (state.activeProject.findings || []).find(fi => fi.id === findingId);
+    if (!f?.exploit_cmd) return;
+    const cmd = `msfconsole -q -x "${f.exploit_cmd.replace(/\n/g, '; ')}"`;
+    if (!state.activeProject) return;
+    switchPhase('terminal');
+    await runCommand(cmd, `Exploit: ${f.title}`);
+    toast('Exploit lanzado en Terminal', 'warning');
 }
 
 // ── Checklist ──────────────────────────────────────────────────────────────

