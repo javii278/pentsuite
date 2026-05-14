@@ -4719,6 +4719,26 @@ class AutonomousEngine:
         self.lport = str(lport)
 
         self._running = False
+        self._thread = None
+        self._brain_log: list = []
+        self._brain_log_lock = threading.Lock()
+        self._job_queue: queue.PriorityQueue = queue.PriorityQueue()
+        self._completed_jobs: list = []
+        self._started_at = None
+        self.stats = {"commands_run": 0, "creds_found": 0, "ports_discovered": 0, "loot_items": 0, "findings_count": 0}
+        self._known_services: dict = {}
+        self._queued: dict = {}
+        self.timeline: list = []
+        self.heatmap: dict = {}
+        self._cred_map: dict = {}
+        self._pivot_targets: set = set()
+        self._all_scanned: set = set()
+        self._project_lock = threading.Lock()
+        self._admin_creds: dict = {}
+        self._domain: str = ""
+        self._worker_threads: list = []
+        self._gtfo_done: set = set()
+        self._cred_reuse_tried: set = set()
 
     @staticmethod
     def _detect_lhost():
@@ -4743,27 +4763,6 @@ class AutonomousEngine:
                 return s.getsockname()[0]
         except Exception:
             return "YOUR_LHOST"
-        self._thread = None
-        self._brain_log: list = []
-        self._brain_log_lock = threading.Lock()
-        self._job_queue: queue.PriorityQueue = queue.PriorityQueue()
-        self._completed_jobs: list = []
-        self._started_at = None
-        self.stats = {"commands_run": 0, "creds_found": 0, "ports_discovered": 0, "loot_items": 0, "findings_count": 0}
-        self._known_services: dict = {}
-        self._queued: dict = {}
-        self.timeline: list = []
-        self.heatmap: dict = {}
-        # Feature 1/2/7/10 support
-        self._cred_map: dict = {}          # "target:user" -> password
-        self._pivot_targets: set = set()   # IPs discovered via pivot
-        self._all_scanned: set = set()     # prevent re-scanning same target
-        self._project_lock = threading.Lock()
-        self._admin_creds: dict = {}       # target -> {user, pwd, ntlm, domain}
-        self._domain: str = ""
-        self._worker_threads: list = []
-        self._gtfo_done: set = set()       # prevent duplicate GTFOBins runs per target
-        self._cred_reuse_tried: set = set()  # dedup cred+target combos
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -6434,6 +6433,382 @@ class AutonomousEngine:
         self._running = False
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CLAUDE AI-DRIVEN AUTOPILOT ENGINE
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ClaudePentestEngine:
+    """Claude AI-driven autonomous pentesting engine.
+    Simple sequential loop: nmap discovery → Claude decides each step → execute → repeat.
+    This is the primary engine when ANTHROPIC_API_KEY is set.
+    """
+
+    MAX_STEPS = 30
+
+    SYSTEM_PROMPT = (
+        "You are an expert autonomous pentester executing a real penetration test. "
+        "Analyze tool output and decide the NEXT single action to take.\n\n"
+        "Respond ONLY with valid JSON (no markdown, no explanation):\n"
+        "{\n"
+        '  "findings": [\n'
+        '    {"title": "...", "severity": "critical|high|medium|low|info", '
+        '"description": "...", "cve": ""}\n'
+        "  ],\n"
+        '  "next_action": {\n'
+        '    "type": "command|done",\n'
+        '    "command": "full shell command to execute",\n'
+        '    "tool": "nmap|nuclei|nikto|metasploit|hydra|enum4linux|crackmapexec|other",\n'
+        '    "reason": "why this action"\n'
+        "  }\n"
+        "}\n\n"
+        "Rules:\n"
+        "- If you find exploitable vulns, attempt exploitation immediately\n"
+        "- Use msfconsole -q -x '...; exit' for Metasploit modules\n"
+        "- If you have root/shell, set type=done and summarize\n"
+        "- Never repeat a command already run\n"
+        "- Prioritize: critical vulns > high vulns > enumeration"
+    )
+
+    def __init__(self, project_id, targets, mode="normal", lhost="", lport="4444", **kwargs):
+        self.project_id = project_id
+        self.targets = targets
+        self.mode = mode
+        self.lhost = lhost or self._detect_lhost()
+        self.lport = str(lport)
+        self._running = False
+        self._thread = None
+        self._brain_log: list = []
+        self._brain_log_lock = threading.Lock()
+        self._project_lock = threading.Lock()
+        self._started_at = None
+        self.stats = {"commands_run": 0, "findings_count": 0, "exploits_run": 0, "ports_discovered": 0}
+        self.timeline: list = []
+        self.heatmap: dict = {}
+
+    @staticmethod
+    def _detect_lhost():
+        try:
+            import socket as _sock
+            with _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return "YOUR_LHOST"
+
+    def _log(self, msg):
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        with self._brain_log_lock:
+            self._brain_log.append(line)
+            if len(self._brain_log) > 2000:
+                self._brain_log = self._brain_log[-1500:]
+
+    def _run_cmd(self, name, command, target, timeout=300):
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id, "project_id": self.project_id,
+            "tool": f"[Claude] {name}", "phase": "autopilot",
+            "command": command, "status": "running", "output": [],
+            "started_at": datetime.now().isoformat(), "finished_at": None,
+            "pid": None, "return_code": None, "proc": None, "autopilot": True,
+        }
+        with JOBS_LOCK:
+            JOBS[job_id] = job
+        _kill_timer = None
+        try:
+            proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1)
+            job["proc"] = proc
+            job["pid"] = proc.pid
+            if timeout:
+                def _kill():
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                    self._log(f"TIMEOUT {name} (>{timeout}s)")
+                _kill_timer = threading.Timer(timeout, _kill)
+                _kill_timer.start()
+            for line in proc.stdout:
+                job["output"].append(line.rstrip("\n"))
+                if not self._running:
+                    proc.terminate()
+                    break
+            proc.wait()
+            job["return_code"] = proc.returncode
+            job["status"] = "completed" if proc.returncode == 0 else "error"
+        except Exception as e:
+            job["output"].append(f"[ERROR] {e}")
+            job["status"] = "error"
+        finally:
+            if _kill_timer:
+                _kill_timer.cancel()
+            job["finished_at"] = datetime.now().isoformat()
+            job.pop("proc", None)
+        self.stats["commands_run"] += 1
+        output = "\n".join(job["output"])
+        self.timeline.append({
+            "name": name, "target": target,
+            "start": job["started_at"], "end": job["finished_at"],
+            "status": job["status"],
+        })
+        return output, job_id
+
+    def _ask_claude(self, tool_output, target, context_summary):
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return None
+        user_msg = (
+            f"Target: {target}\nLHOST (attacker IP): {self.lhost}\nLPORT: {self.lport}\n\n"
+            f"Pentest context so far:\n{context_summary[:3000]}\n\n"
+            f"Latest tool output:\n{tool_output[:4000]}\n\n"
+            "Decide the next action. If the output reveals exploitable vulnerabilities, "
+            "provide the exact exploit command. If we already have a shell or root, "
+            "set type to 'done'."
+        )
+        try:
+            import urllib.request
+            payload = json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 1024,
+                "system": self.SYSTEM_PROMPT,
+                "messages": [{"role": "user", "content": user_msg}],
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=payload,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = json.loads(resp.read())
+            text = body["content"][0]["text"].strip()
+            text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
+            text = re.sub(r'\s*```$', '', text, flags=re.MULTILINE)
+            return json.loads(text)
+        except Exception as e:
+            self._log(f"CLAUDE API ERROR: {e}")
+            return None
+
+    def _save_findings(self, findings, target):
+        if not findings:
+            return
+        with self._project_lock:
+            project = read_project(self.project_id)
+            if not project:
+                return
+            existing = {f.get("title", "") for f in project.get("findings", [])}
+            now_iso = datetime.now().isoformat()
+            vars_dict = {"lhost": self.lhost, "lport": self.lport}
+            added = 0
+            for f in findings:
+                title = f.get("title", "")
+                if not title or title in existing:
+                    continue
+                f["id"] = str(uuid.uuid4())
+                f["status"] = "open"
+                f["hosts"] = [target]
+                f["created_at"] = now_iso
+                f["source"] = "claude-autopilot"
+                _enrich_finding_cvss(f)
+                _auto_mitre_tag(f)
+                _attach_msf_command(f, target, vars_dict)
+                project.setdefault("findings", []).append(f)
+                existing.add(title)
+                added += 1
+            if added:
+                write_project(project)
+                self.stats["findings_count"] += added
+                self._log(f"CLAUDE [{target}] +{added} findings guardados")
+
+    def _save_ports(self, output, target):
+        parsed = _parse_tool_output("nmap", output, target, "nmap")
+        open_ports = parsed.get("open_ports", [])
+        if not open_ports:
+            return open_ports
+        with self._project_lock:
+            project = read_project(self.project_id)
+            if not project:
+                return open_ports
+            existing = {(p.get("host", ""), p.get("port")) for p in project.get("ports", [])}
+            now_iso = datetime.now().isoformat()
+            for p in open_ports:
+                if (target, p["port"]) not in existing:
+                    project.setdefault("ports", []).append({
+                        "host": target, "port": p["port"],
+                        "proto": p.get("proto", "tcp"),
+                        "service": p["service"], "version": p["version"],
+                        "timestamp": now_iso,
+                    })
+                    existing.add((target, p["port"]))
+                    MEMORY.remember_host(target, p["port"], p["service"], p["version"])
+            write_project(project)
+        self.stats["ports_discovered"] += len(open_ports)
+        return open_ports
+
+    def _capture_evidence(self, output, target, name, command):
+        EXPLOIT_MARKERS = [
+            (r'uid=0\(root\)', "RCE Confirmado — Shell como root", "critical", "", 10.0),
+            (r'uid=\d+\(\w+\).*gid=\d+', "RCE Confirmado — Ejecución de Comandos", "critical", "", 9.8),
+            (r'Pwn3d!', "Acceso Admin Confirmado (Pwn3d!)", "critical", "", 9.8),
+            (r'Administrator:500:[a-fA-F0-9]{32}:[a-fA-F0-9]{32}', "Hashes NTLM Volcados", "critical", "", 9.0),
+            (r'meterpreter\s+>', "Meterpreter Shell Abierta", "critical", "", 10.0),
+            (r'Command shell session.*opened', "Shell Reversa via Metasploit", "critical", "", 10.0),
+            (r'root\.txt[:\s]+[a-fA-F0-9]{32}', "Flag Root Capturada", "critical", "", 10.0),
+            (r'230 Login successful', "FTP Anonymous Login Confirmado", "high", "", 7.5),
+            (r'vsftpd.*backdoor|VSFTPD_BACKDOOR', "vsftpd 2.3.4 Backdoor RCE", "critical", "", 10.0),
+        ]
+        for pattern, title, severity, cve, cvss in EXPLOIT_MARKERS:
+            if re.search(pattern, output, re.IGNORECASE | re.DOTALL):
+                with self._project_lock:
+                    project = read_project(self.project_id)
+                    if not project:
+                        return
+                    full_title = f"[Exploit] {title} @ {target}"
+                    if full_title not in {f.get("title") for f in project.get("findings", [])}:
+                        finding = {
+                            "id": str(uuid.uuid4()),
+                            "title": full_title,
+                            "severity": severity, "status": "open",
+                            "cve": cve, "cvss": cvss,
+                            "description": f"Exploitation confirmed by Claude Autopilot in step '{name}'.",
+                            "evidence": f"Command: {command}\n\nOutput:\n{output[:3000]}",
+                            "hosts": [target], "source": "claude-autopilot",
+                            "created_at": datetime.now().isoformat(),
+                        }
+                        _auto_mitre_tag(finding)
+                        project.setdefault("findings", []).append(finding)
+                        write_project(project)
+                        self.stats["findings_count"] += 1
+                        self._log(f"EVIDENCE [{target}] {title}")
+                break
+
+    def _loop_target(self, target):
+        self._log(f"[Claude] Iniciando pentest autónomo → {target}")
+        context_parts = [f"Target: {target}", f"Attacker LHOST: {self.lhost}:{self.lport}"]
+
+        cfg = MODE_CONFIG.get(self.mode, MODE_CONFIG["normal"])
+        nmap_cmd = (
+            f"nmap -sV -sC --open -{cfg['nmap_timing']} {cfg.get('nmap_extra', '')} "
+            f"--script-timeout 30s {target} 2>/dev/null"
+        )
+        self._log(f"[Claude] Fase 1: Descubrimiento nmap → {target}")
+        output, _ = self._run_cmd("nmap-initial", nmap_cmd, target, timeout=300)
+
+        open_ports = self._save_ports(output, target)
+        if open_ports:
+            port_summary = ", ".join(f"{p['port']}/{p['service']}" for p in open_ports[:15])
+            context_parts.append(f"Puertos abiertos: {port_summary}")
+            self._log(f"[Claude] {len(open_ports)} puertos: {port_summary}")
+            try:
+                proj = read_project(self.project_id)
+                if proj:
+                    ap = proj.get("attack_path", {"nodes": [], "edges": []})
+                    ids = {n["id"] for n in ap["nodes"]}
+                    if "attacker" not in ids:
+                        ap["nodes"].append({"id": "attacker", "label": "Attacker", "color": "#3fb950", "shape": "box"})
+                    if target not in ids:
+                        ap["nodes"].append({"id": target, "label": target, "color": "#f0883e", "shape": "ellipse"})
+                        ap["edges"].append({"from": "attacker", "to": target, "label": "scan"})
+                    proj["attack_path"] = ap
+                    with self._project_lock:
+                        write_project(proj)
+            except Exception:
+                pass
+        else:
+            self._log(f"[Claude] Sin puertos abiertos en {target}")
+
+        for step in range(self.MAX_STEPS):
+            if not self._running:
+                break
+            context_summary = "\n".join(context_parts[-25:])
+            decision = self._ask_claude(output, target, context_summary)
+            if not decision:
+                self._log(f"[Claude] Sin respuesta IA en paso {step + 1} — abortando loop")
+                break
+            findings = decision.get("findings", [])
+            if findings:
+                self._save_findings(findings, target)
+                for f in findings:
+                    context_parts.append(f"FINDING: {f.get('severity','?').upper()} — {f.get('title','?')}")
+            next_action = decision.get("next_action", {})
+            action_type = next_action.get("type", "done")
+            reason = next_action.get("reason", "")
+            self._log(f"[Claude] Paso {step + 1}: {action_type} — {reason[:100]}")
+            if action_type == "done":
+                self._log(f"[Claude] Pentest completado en {target} ({step + 1} pasos)")
+                break
+            command = next_action.get("command", "").strip()
+            if not command:
+                self._log(f"[Claude] Sin comando en paso {step + 1}")
+                break
+            if any(bad in command for bad in ["rm -rf /", "mkfs ", "dd if=/dev/zero"]):
+                self._log(f"[Claude] BLOQUEADO comando destructivo: {command[:80]}")
+                break
+            step_name = next_action.get("tool", "step") + f"-step{step + 1}"
+            is_heavy = any(t in command for t in ["msfconsole", "hydra", "hashcat", "john", "sqlmap"])
+            timeout = 600 if is_heavy else 300
+            self._log(f"[Claude] Ejecutando ({step_name}): {command[:120]}")
+            output, _ = self._run_cmd(step_name, command, target, timeout=timeout)
+            if "exploit" in command.lower() or "msfconsole" in command:
+                self.stats["exploits_run"] += 1
+            self._capture_evidence(output, target, step_name, command)
+            output_preview = output[:600].replace("\n", " | ")
+            context_parts.append(f"Paso {step + 1} [{step_name}]: {output_preview}")
+
+        self._log(f"[Claude] Finalizado → {target}")
+
+    def _loop(self):
+        try:
+            for target in self.targets:
+                if not self._running:
+                    break
+                self._loop_target(target)
+        except Exception as e:
+            self._log(f"[Claude] ERROR CRÍTICO: {e}")
+        finally:
+            self._running = False
+            self._log("[Claude] Engine detenido")
+
+    def start(self):
+        self._running = True
+        self._started_at = datetime.now().isoformat()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        self._log(f"[Claude] Engine iniciado — targets: {self.targets}, modo: {self.mode}")
+
+    def stop(self):
+        self._running = False
+        self._log("[Claude] Deteniendo engine...")
+
+    def get_status(self):
+        elapsed = 0
+        if self._started_at:
+            elapsed = int((datetime.now() - datetime.fromisoformat(self._started_at)).total_seconds())
+        return {
+            "running": self._running,
+            "mode": self.mode,
+            "targets": self.targets,
+            "stats": self.stats,
+            "queue_size": 0,
+            "completed_jobs": self.stats.get("commands_run", 0),
+            "timeline": self.timeline[-100:],
+            "heatmap": self.heatmap,
+            "elapsed_seconds": elapsed,
+            "started_at": self._started_at,
+            "memory": MEMORY.get_stats(),
+            "pivot_networks": 0,
+            "engine": "claude",
+        }
+
+    def get_log_since(self, offset):
+        with self._brain_log_lock:
+            return self._brain_log[offset:]
+
+
 @app.route("/api/memory/stats")
 @api_login_required
 def memory_stats_api():
@@ -6470,19 +6845,30 @@ def autopilot_start(project_id):
     with AUTOPILOT_LOCK:
         eng = AUTOPILOT_ENGINES.get(project_id)
         if eng and eng._running:
-            # Allow force-restart if explicitly requested or queue is empty (engine stalled)
-            queue_empty = eng._job_queue.empty() and not eng._pivot_targets
+            queue_empty = (not getattr(eng, "_job_queue", None) or eng._job_queue.empty()) \
+                          and not getattr(eng, "_pivot_targets", None)
             if not force and not queue_empty:
                 return jsonify({"error": "Already running"}), 409
             eng.stop()
-        engine = AutonomousEngine(project_id, targets_raw, mode,
-                                  data.get("ollama_model", "llama3"),
-                                  int(data.get("living_interval", 300)),
-                                  lhost=data.get("lhost", ""),
-                                  lport=data.get("lport", "4444"))
+        use_claude = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+        if use_claude:
+            engine = ClaudePentestEngine(
+                project_id, targets_raw, mode,
+                lhost=data.get("lhost", ""),
+                lport=data.get("lport", "4444"),
+            )
+        else:
+            engine = AutonomousEngine(
+                project_id, targets_raw, mode,
+                data.get("ollama_model", "llama3"),
+                int(data.get("living_interval", 300)),
+                lhost=data.get("lhost", ""),
+                lport=data.get("lport", "4444"),
+            )
         AUTOPILOT_ENGINES[project_id] = engine
         engine.start()
-    return jsonify({"ok": True, "mode": mode, "targets": targets_raw}), 202
+    engine_type = "claude" if use_claude else "autonomous"
+    return jsonify({"ok": True, "mode": mode, "targets": targets_raw, "engine": engine_type}), 202
 
 
 @app.route("/api/projects/<project_id>/autopilot/stop", methods=["POST"])
