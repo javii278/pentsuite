@@ -170,10 +170,10 @@
                   </span>
                   <button class="btn btn-xs btn-outline-secondary" onclick="showNotesModal()" title="Notas"><i class="fas fa-sticky-note"></i></button>
                   <div class="dropdown">
-                    <button class="btn btn-xs btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
+                    <button class="btn btn-xs btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" data-bs-strategy="fixed">
                       <i class="fas fa-ellipsis"></i>
                     </button>
-                    <ul class="dropdown-menu dropdown-menu-end py-1" style="font-size:12px;min-width:180px;">
+                    <ul class="dropdown-menu dropdown-menu-end py-1" style="font-size:12px;min-width:190px;z-index:9999;">
                       <li><a class="dropdown-item py-1" href="#" onclick="showProjectInfoModal();return false;"><i class="fas fa-circle-info me-2 text-muted"></i>Info proyecto</a></li>
                       <li><a class="dropdown-item py-1" href="#" onclick="showScopeModal();return false;"><i class="fas fa-crosshairs me-2 text-muted"></i>Scope</a></li>
                       <li><a class="dropdown-item py-1" href="#" onclick="showTransferModal();return false;"><i class="fas fa-file-arrow-up me-2 text-muted"></i>File Transfer</a></li>

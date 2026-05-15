@@ -15083,7 +15083,67 @@ GVM_SCAN_CONFIGS = {
     "web_app":         "aa8f9c78-0f47-4c92-b5b1-a3d70c94b9c5",  # many configs vary — verify with get_scan_configs
 }
 GVM_OPENVAS_SCANNER = "08b69003-5fc2-4037-a479-93b440211c73"
-GVM_ALL_TCP_PORT_LIST = "33d0cd82-57c6-11e1-8ed1-406186ea4fc5"
+GVM_ALL_TCP_PORT_LIST = "33d0cd82-57c6-11e1-8ed1-406186ea4fc5"  # fallback only
+
+# Runtime cache: once resolved, store the working ID so we don't query every time
+_gvm_port_list_cache: dict = {}
+
+
+def _gvm_resolve_port_list(socket_path, gmp_user, gmp_pass):
+    """
+    Return the UUID of the best available TCP port list in this GVM installation.
+    Priority:
+      1. Cached result (per socket_path)
+      2. "All IANA assigned TCP" / "All TCP" by name
+      3. Any port_list whose name contains "TCP"
+      4. First port_list found
+      5. Hardcoded fallback constant
+    """
+    cache_key = socket_path
+    if cache_key in _gvm_port_list_cache:
+        return _gvm_port_list_cache[cache_key]
+
+    try:
+        root = _gvm_exec(socket_path, gmp_user, gmp_pass, "<get_port_lists/>")
+        port_lists = []
+        for pl in root.findall(".//port_list"):
+            pl_id   = pl.get("id", "")
+            pl_name = (pl.findtext("name") or "").strip()
+            if pl_id and pl_name:
+                port_lists.append((pl_id, pl_name))
+
+        if not port_lists:
+            return GVM_ALL_TCP_PORT_LIST
+
+        # Priority 1: exact well-known names
+        for preferred in (
+            "All IANA assigned TCP",
+            "All IANA assigned TCP and UDP",
+            "All TCP",
+            "All TCP and Nmap top 100 UDP",
+        ):
+            for pl_id, pl_name in port_lists:
+                if pl_name.lower() == preferred.lower():
+                    _gvm_port_list_cache[cache_key] = pl_id
+                    return pl_id
+
+        # Priority 2: name contains "TCP" (case-insensitive)
+        for pl_id, pl_name in port_lists:
+            if "tcp" in pl_name.lower() and "iana" in pl_name.lower():
+                _gvm_port_list_cache[cache_key] = pl_id
+                return pl_id
+        for pl_id, pl_name in port_lists:
+            if "tcp" in pl_name.lower():
+                _gvm_port_list_cache[cache_key] = pl_id
+                return pl_id
+
+        # Priority 3: first available
+        pl_id = port_lists[0][0]
+        _gvm_port_list_cache[cache_key] = pl_id
+        return pl_id
+
+    except Exception:
+        return GVM_ALL_TCP_PORT_LIST
 
 
 def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
@@ -15320,12 +15380,15 @@ def greenbone_scan(project_id):
     ts = datetime.now().strftime("%Y%m%d%H%M%S")
 
     try:
-        # 1. Create target
+        # 1. Resolve the correct port_list UUID for this GVM installation
+        port_list_id = _gvm_resolve_port_list(socket_path, gmp_user, gmp_pass)
+
+        # 2. Create target
         target_xml = (
             f"<create_target>"
             f"<name>PentestSuite-{target_ip}-{ts}</name>"
             f"<hosts>{target_ip}</hosts>"
-            f"<port_list id='{GVM_ALL_TCP_PORT_LIST}'/>"
+            f"<port_list id='{port_list_id}'/>"
             f"</create_target>"
         )
         root = _gvm_exec(socket_path, gmp_user, gmp_pass, target_xml)
@@ -15333,7 +15396,7 @@ def greenbone_scan(project_id):
         if not target_id:
             return jsonify({"error": "GVM target creation failed", "detail": ET.tostring(root, encoding="unicode")[:300]}), 500
 
-        # 2. Create task
+        # 3. Create task
         task_xml = (
             f"<create_task>"
             f"<name>PentestSuite-{target_ip}-{ts}</name>"
@@ -15347,7 +15410,7 @@ def greenbone_scan(project_id):
         if not task_id:
             return jsonify({"error": "GVM task creation failed"}), 500
 
-        # 3. Start task
+        # 4. Start task
         start_xml = f"<start_task task_id='{task_id}'/>"
         root = _gvm_exec(socket_path, gmp_user, gmp_pass, start_xml)
         report_id = ""
