@@ -14270,7 +14270,7 @@ def greenbone_state(project_id):
 # ═══════════════════════════════════════════════════════════════════════════
 # TIER 3 — H1: Multi-tenant SaaS model (organizations, API keys, plan limits)
 # ═══════════════════════════════════════════════════════════════════════════
-ORGS_FILE = DATA_DIR / "organizations.json"
+ORGS_FILE = BASE_DIR / "data" / "organizations.json"
 
 def _load_orgs():
     if ORGS_FILE.exists():
@@ -14772,7 +14772,7 @@ def get_finding_compliance(project_id, finding_id):
 # ═══════════════════════════════════════════════════════════════════════════
 # TIER 3 — H4: Continuous monitoring (schedule scans, CVE alerting)
 # ═══════════════════════════════════════════════════════════════════════════
-MONITORS_FILE = DATA_DIR / "monitors.json"
+MONITORS_FILE = BASE_DIR / "data" / "monitors.json"
 
 def _load_monitors():
     if MONITORS_FILE.exists():
