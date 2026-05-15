@@ -9846,6 +9846,342 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                     }], target)
 
     # ─────────────────────────────────────────────────────────────────────────
+    # Category D: OSINT — theHarvester, testssl, Shodan, Google dorks, IPv6
+    # ─────────────────────────────────────────────────────────────────────────
+    def _osint_recon(self, target, open_ports, accumulated_output):
+        """Full OSINT reconnaissance: email harvesting, SSL audit, Shodan, Google dorks, IPv6."""
+        import ipaddress, socket
+        self._log(f"[Claude] OSINT: iniciando reconocimiento externo completo → {target}")
+
+        # Resolve domain/IP and determine apex domain
+        is_ip = False
+        try:
+            ipaddress.ip_address(target)
+            is_ip = True
+        except ValueError:
+            pass
+
+        apex = target if not is_ip else ""
+        if not is_ip:
+            parts = target.rstrip(".").split(".")
+            apex = ".".join(parts[-2:]) if len(parts) >= 2 else target
+
+        # ── D1: theHarvester — emails, subdomains, employees ─────────────
+        self._log(f"[Claude] OSINT-D1: theHarvester → {apex or target}")
+        if apex:
+            harv_out, _ = self._run_cmd(
+                "theharvester",
+                f"theHarvester -d {apex} -b google,bing,yahoo,duckduckgo,crtsh,hackertarget,otx "
+                f"-l 200 2>/dev/null | head -80; "
+                f"# Also try subfinder for DNS\n"
+                f"subfinder -d {apex} -silent 2>/dev/null | head -30",
+                target, timeout=120,
+            )
+            if harv_out.strip():
+                accumulated_output.append(f"=== theHarvester {apex} ===\n{harv_out[:1500]}")
+                # Extract emails
+                emails = list(set(re.findall(r'[\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,}', harv_out)))
+                # Extract subdomains
+                subs = list(set(re.findall(r'[\w\-]+\.' + re.escape(apex), harv_out, re.IGNORECASE)))
+                if emails:
+                    self._log(f"[Claude] OSINT-D1: {len(emails)} emails encontrados")
+                    self._save_findings([{
+                        "title": f"OSINT: Emails Corporativos Expuestos — {apex}",
+                        "severity": "medium",
+                        "description": (
+                            f"theHarvester encontró {len(emails)} emails en fuentes públicas para {apex}.\n"
+                            f"Emails: {', '.join(emails[:15])}\n"
+                            f"Riesgo: phishing dirigido, password spray, credential stuffing."
+                        ),
+                        "cve": "",
+                    }], target)
+                if subs:
+                    self._log(f"[Claude] OSINT-D1: {len(subs)} subdominios encontrados")
+                    self._save_findings([{
+                        "title": f"OSINT: Subdominios Descubiertos — {apex}",
+                        "severity": "low",
+                        "description": (
+                            f"Subdominios públicos encontrados para {apex}:\n"
+                            f"{chr(10).join(subs[:20])}"
+                        ),
+                        "cve": "",
+                    }], target)
+                # Google dork on found emails — password spraying hints
+                for email in emails[:3]:
+                    domain_part = email.split("@")[1] if "@" in email else ""
+                    if domain_part:
+                        # Try to find password breach info
+                        breach_out, _ = self._run_cmd(
+                            f"email-breach-{email[:20].replace('@','_')}",
+                            f"curl -sL 'https://haveibeenpwned.com/api/v3/breachedaccount/{email}' "
+                            f"-H 'hibp-api-key: free' 2>/dev/null | head -3; "
+                            f"# dehashed style check\n"
+                            f"curl -sL --max-time 5 "
+                            f"'https://api.dehashed.com/search?query={email}' 2>/dev/null | head -3",
+                            target, timeout=15,
+                        )
+                        if breach_out.strip() and "Name" in breach_out:
+                            self._save_findings([{
+                                "title": f"OSINT: Email en Breaches — {email}",
+                                "severity": "high",
+                                "description": f"Email {email} encontrado en bases de datos de brechas.\n{breach_out[:300]}",
+                                "cve": "",
+                            }], target)
+
+        # ── D2: testssl.sh — SSL/TLS full audit ──────────────────────────
+        ssl_ports = [p for p in open_ports if p["port"] in (443, 8443, 465, 587, 993, 995, 8080, 636, 3389)]
+        if ssl_ports:
+            self._log(f"[Claude] OSINT-D2: testssl.sh → SSL/TLS audit")
+            for sp in ssl_ports[:2]:
+                ssl_out, _ = self._run_cmd(
+                    f"testssl-{sp['port']}",
+                    f"testssl.sh --quiet --warnings off --fast --color 0 "
+                    f"{target}:{sp['port']} 2>/dev/null | head -80; "
+                    f"# Fallback: sslscan\n"
+                    f"sslscan --no-colour {target}:{sp['port']} 2>/dev/null | head -60; "
+                    f"# Fallback: openssl quick check\n"
+                    f"echo | timeout 5 openssl s_client -connect {target}:{sp['port']} 2>/dev/null | "
+                    f"openssl x509 -noout -subject -issuer -dates -fingerprint 2>/dev/null",
+                    target, timeout=90,
+                )
+                if ssl_out.strip():
+                    accumulated_output.append(f"=== SSL/TLS {target}:{sp['port']} ===\n{ssl_out[:1000]}")
+                    # Detect critical SSL issues
+                    ssl_issues = []
+                    if re.search(r'BEAST|POODLE|CRIME|BREACH|DROWN|FREAK|LOGJAM|SWEET32', ssl_out, re.IGNORECASE):
+                        ssl_issues.append("Vulnerabilidad SSL clásica detectada (BEAST/POODLE/DROWN/etc.)")
+                    if re.search(r'SSLv2|SSLv3|TLSv1\.0|TLSv1\.1', ssl_out, re.IGNORECASE):
+                        ssl_issues.append("Protocolos obsoletos habilitados (SSLv2/SSLv3/TLS1.0/TLS1.1)")
+                    if re.search(r'HEARTBLEED|heartbleed', ssl_out, re.IGNORECASE):
+                        ssl_issues.append("Heartbleed (CVE-2014-0160) VULNERABLE")
+                    if re.search(r'expired|not valid after.*202[0-3]', ssl_out, re.IGNORECASE):
+                        ssl_issues.append("Certificado SSL expirado o próximo a expirar")
+                    if re.search(r'self.signed|self signed', ssl_out, re.IGNORECASE):
+                        ssl_issues.append("Certificado autofirmado — posible interceptación MITM")
+                    if re.search(r'RC4|DES|3DES|EXPORT|aNULL|eNULL|NULL cipher', ssl_out, re.IGNORECASE):
+                        ssl_issues.append("Cipher suites débiles habilitados (RC4/3DES/EXPORT/NULL)")
+                    if re.search(r'ROBOT|DROWN|ticketbleed', ssl_out, re.IGNORECASE):
+                        ssl_issues.append("Ataque ROBOT/DROWN/Ticketbleed detectado")
+                    if ssl_issues:
+                        self._save_findings([{
+                            "title": f"SSL/TLS Misconfiguration @ {target}:{sp['port']}",
+                            "severity": "high" if any("VULNERABLE" in i or "Heartbleed" in i for i in ssl_issues) else "medium",
+                            "description": f"Problemas SSL/TLS detectados en {target}:{sp['port']}:\n" + "\n".join(f"• {i}" for i in ssl_issues),
+                            "cve": "CVE-2014-0160" if any("Heartbleed" in i for i in ssl_issues) else "",
+                        }], target)
+
+        # ── D3: Shodan passive intel (no API key needed via CLI) ──────────
+        self._log(f"[Claude] OSINT-D3: Shodan/Censys passive intel → {target}")
+        # Try shodan CLI first, fallback to direct API curl, then internetdb (free no-key)
+        shodan_out, _ = self._run_cmd(
+            "shodan-host",
+            # internetdb.shodan.io is free, no key required
+            f"curl -sL --max-time 10 'https://internetdb.shodan.io/{target}' 2>/dev/null; "
+            f"echo ''; "
+            f"shodan host {target} 2>/dev/null | head -40; "
+            f"# Censys free search\n"
+            f"curl -sL --max-time 10 'https://search.censys.io/api/v1/view/ipv4/{target}' 2>/dev/null | head -20",
+            target, timeout=30,
+        )
+        if shodan_out.strip() and ('"ports"' in shodan_out or "Open ports" in shodan_out or "vulns" in shodan_out):
+            accumulated_output.append(f"=== Shodan/InternetDB {target} ===\n{shodan_out[:800]}")
+            # Extract Shodan-reported CVEs
+            shodan_cves = re.findall(r'CVE-\d{4}-\d+', shodan_out)
+            shodan_ports = re.findall(r'"ports":\s*\[([^\]]+)\]', shodan_out)
+            if shodan_cves:
+                self._save_findings([{
+                    "title": f"OSINT: Vulnerabilidades Conocidas en Shodan — {target}",
+                    "severity": "high",
+                    "description": (
+                        f"Shodan/InternetDB reporta las siguientes CVEs para {target}:\n"
+                        f"{', '.join(set(shodan_cves[:15]))}\n\n"
+                        f"Puertos abiertos según Shodan: {shodan_ports[0] if shodan_ports else 'N/A'}"
+                    ),
+                    "cve": shodan_cves[0] if shodan_cves else "",
+                }], target)
+            elif shodan_ports:
+                self._save_findings([{
+                    "title": f"OSINT: Exposición de Servicios en Internet — {target}",
+                    "severity": "info",
+                    "description": f"Shodan confirma puertos públicos abiertos en {target}: {shodan_ports[0]}\n{shodan_out[:300]}",
+                    "cve": "",
+                }], target)
+
+        # ── D4: Google dorks ──────────────────────────────────────────────
+        if apex:
+            self._log(f"[Claude] OSINT-D4: Google dorks → {apex}")
+            dorks = [
+                (f"site:{apex} filetype:pdf OR filetype:doc OR filetype:xls OR filetype:ppt",
+                 "Documentos corporativos indexados en Google"),
+                (f"site:{apex} inurl:admin OR inurl:login OR inurl:portal OR inurl:panel OR inurl:dashboard",
+                 "Paneles de administración expuestos"),
+                (f"site:{apex} intext:password OR intext:passwd OR intext:api_key OR intext:secret",
+                 "Credenciales/secretos en páginas públicas"),
+                (f"site:{apex} ext:sql OR ext:bak OR ext:log OR ext:conf OR ext:env OR ext:cfg",
+                 "Archivos sensibles indexados (.sql/.bak/.log/.env)"),
+                (f'"{apex}" "index of" OR "parent directory" OR "directory listing"',
+                 "Directory listing activo"),
+            ]
+            http_ports_exist = any(p["port"] in (80, 443, 8080, 8443) for p in open_ports)
+            if http_ports_exist:
+                for dork_query, dork_desc in dorks:
+                    _enc = dork_query.replace(" ", "+").replace('"', '%22').replace(":", "%3A")
+                    dork_out, _ = self._run_cmd(
+                        f"google-dork-{hash(dork_query) % 9999}",
+                        f"curl -sL --max-time 10 "
+                        f"-H 'User-Agent: Mozilla/5.0 (compatible; Googlebot/2.1)' "
+                        f"'https://www.google.com/search?q={_enc}&num=10' 2>/dev/null | "
+                        f"grep -oP '(?<=<cite>)[^<]+' | head -10; "
+                        f"# Bing as fallback\n"
+                        f"curl -sL --max-time 8 "
+                        f"-H 'User-Agent: Mozilla/5.0' "
+                        f"'https://www.bing.com/search?q={_enc}&count=10' 2>/dev/null | "
+                        f"grep -oP '(?<=<cite>)[^<]+' | head -10",
+                        target, timeout=20,
+                    )
+                    if dork_out.strip() and apex in dork_out:
+                        urls_found = re.findall(r'https?://[\w\./\-\?=&%_]+', dork_out)
+                        if urls_found:
+                            self._save_findings([{
+                                "title": f"Google Dork: {dork_desc} — {apex}",
+                                "severity": "medium",
+                                "description": (
+                                    f"Dork: {dork_query}\n\n"
+                                    f"URLs encontradas:\n" + "\n".join(f"• {u}" for u in urls_found[:8])
+                                ),
+                                "cve": "",
+                            }], target)
+
+        # ── D5: IPv6 scanning & discovery ─────────────────────────────────
+        self._log(f"[Claude] OSINT-D5: IPv6 scan → {target}")
+        # Resolve IPv6 for domain targets
+        ipv6_addr = ""
+        if apex:
+            try:
+                ipv6_results = socket.getaddrinfo(target, None, socket.AF_INET6)
+                if ipv6_results:
+                    ipv6_addr = ipv6_results[0][4][0]
+                    self._log(f"[Claude] OSINT-D5: IPv6 resuelto → {ipv6_addr}")
+            except Exception:
+                pass
+        # Also try AAAA record lookup
+        if not ipv6_addr and apex:
+            ipv6_lookup, _ = self._run_cmd(
+                "ipv6-dns",
+                f"dig AAAA {apex} +short 2>/dev/null | head -3; "
+                f"host -t AAAA {apex} 2>/dev/null | head -3",
+                target, timeout=10,
+            )
+            ipv6_match = re.search(r'([0-9a-f:]{4,}:[0-9a-f:]{1,})', ipv6_lookup, re.IGNORECASE)
+            if ipv6_match:
+                ipv6_addr = ipv6_match.group(1)
+        if ipv6_addr:
+            self._save_findings([{
+                "title": f"OSINT: Dirección IPv6 Activa — {target}",
+                "severity": "info",
+                "description": f"Host {target} accesible via IPv6: {ipv6_addr}\n"
+                               f"Los firewalls que solo filtran IPv4 pueden dejar IPv6 desprotegido.",
+                "cve": "",
+            }], target)
+            # Scan IPv6 address
+            ipv6_scan_out, _ = self._run_cmd(
+                "ipv6-portscan",
+                f"nmap -6 -sV -T4 --open -p 22,80,443,8080,8443,445,3389,21,25,587,993 "
+                f"{ipv6_addr} 2>/dev/null | head -30",
+                target, timeout=90,
+            )
+            if ipv6_scan_out.strip() and "open" in ipv6_scan_out:
+                accumulated_output.append(f"=== IPv6 Scan {ipv6_addr} ===\n{ipv6_scan_out[:600]}")
+                # Check if IPv6 has MORE open ports than IPv4 (firewall bypass)
+                ipv6_ports = re.findall(r'(\d+)/tcp\s+open', ipv6_scan_out)
+                ipv4_ports = {str(p["port"]) for p in open_ports}
+                extra_ipv6 = [p for p in ipv6_ports if p not in ipv4_ports]
+                if extra_ipv6:
+                    self._save_findings([{
+                        "title": f"IPv6 Firewall Bypass — Puertos Extra: {', '.join(extra_ipv6)} @ {target}",
+                        "severity": "high",
+                        "description": (
+                            f"La dirección IPv6 {ipv6_addr} expone puertos adicionales no visibles en IPv4:\n"
+                            f"Puertos extra: {', '.join(extra_ipv6)}\n"
+                            f"Indica que las reglas de firewall no cubren IPv6."
+                        ),
+                        "cve": "",
+                    }], target)
+
+        # ── D6: WHOIS + DNS full recon ─────────────────────────────────────
+        self._log(f"[Claude] OSINT-D6: WHOIS + DNS recon → {target}")
+        whois_dns_out, _ = self._run_cmd(
+            "whois-dns",
+            f"whois {apex or target} 2>/dev/null | grep -iE 'registrar|admin|tech|name server|expires|created|updated|email' | head -20; "
+            f"echo '--- DNS Records ---'; "
+            f"dig ANY {apex or target} +noall +answer 2>/dev/null | head -20; "
+            f"dig TXT {apex or target} +short 2>/dev/null | head -10; "
+            f"dig MX {apex or target} +short 2>/dev/null | head -5; "
+            f"dig NS {apex or target} +short 2>/dev/null | head -5; "
+            f"# SPF/DMARC check for email security\n"
+            f"dig TXT _dmarc.{apex or target} +short 2>/dev/null | head -3; "
+            f"dig TXT _domainkey.{apex or target} +short 2>/dev/null | head -3",
+            target, timeout=30,
+        )
+        if whois_dns_out.strip():
+            accumulated_output.append(f"=== WHOIS/DNS {apex or target} ===\n{whois_dns_out[:800]}")
+            # Check for missing SPF/DMARC (email spoofing possible)
+            missing_email_sec = []
+            if "v=spf1" not in whois_dns_out.lower():
+                missing_email_sec.append("SPF ausente — email spoofing posible")
+            if "v=dmarc1" not in whois_dns_out.lower():
+                missing_email_sec.append("DMARC ausente — phishing más efectivo")
+            if missing_email_sec:
+                self._save_findings([{
+                    "title": f"OSINT: Email Security Misconfiguration — {apex or target}",
+                    "severity": "medium",
+                    "description": (
+                        f"Configuración de email deficiente para {apex or target}:\n"
+                        f"{chr(10).join(f'• {i}' for i in missing_email_sec)}\n\n"
+                        f"Permite spoofing del dominio para phishing dirigido."
+                    ),
+                    "cve": "",
+                }], target)
+            # Extract registrant email (useful for OSINT)
+            reg_emails = re.findall(r'[\w\.\-\+]+@[\w\.\-]+\.[a-zA-Z]{2,}', whois_dns_out)
+            if reg_emails:
+                self._save_findings([{
+                    "title": f"OSINT: Emails de Registro WHOIS — {apex or target}",
+                    "severity": "info",
+                    "description": f"Emails expuestos en WHOIS: {', '.join(set(reg_emails[:5]))}",
+                    "cve": "",
+                }], target)
+
+        # ── D7: Wayback Machine & JS secrets ─────────────────────────────
+        if apex:
+            self._log(f"[Claude] OSINT-D7: Wayback Machine + JS secret scanning → {apex}")
+            wayback_out, _ = self._run_cmd(
+                "wayback-urls",
+                f"curl -sL --max-time 15 "
+                f"'https://web.archive.org/cdx/search/cdx?url=*.{apex}/*&output=text"
+                f"&fl=original&collapse=urlkey&limit=100' 2>/dev/null | "
+                f"grep -iE '\\.(php|asp|aspx|jsp|cgi|env|bak|sql|config|xml|json|yaml)' | head -30; "
+                f"# gau (GetAllUrls)\n"
+                f"gau {apex} 2>/dev/null | grep -iE '\\.(env|bak|sql|config|key|pem|p12)' | head -20; "
+                f"# waybackurls\n"
+                f"waybackurls {apex} 2>/dev/null | grep -iE '\\.(env|bak|sql)' | head -20",
+                target, timeout=60,
+            )
+            sensitive_urls = re.findall(r'https?://[^\s]+\.(?:env|bak|sql|config|key|pem|p12|backup)[^\s]*', wayback_out, re.IGNORECASE)
+            if sensitive_urls:
+                self._save_findings([{
+                    "title": f"OSINT: URLs Sensibles en Wayback Machine — {apex}",
+                    "severity": "high",
+                    "description": (
+                        f"Wayback Machine / gau encontró URLs de archivos sensibles para {apex}:\n"
+                        + "\n".join(f"• {u}" for u in sensitive_urls[:10])
+                    ),
+                    "cve": "",
+                }], target)
+
+        self._log(f"[Claude] OSINT: reconocimiento completo finalizado → {target}")
+
+    # ─────────────────────────────────────────────────────────────────────────
     # Category B: Enterprise exploits
     # ─────────────────────────────────────────────────────────────────────────
     def _enterprise_exploits(self, target, open_ports, accumulated_output):
@@ -10522,11 +10858,13 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             port_str = "21,22,23,25,53,80,110,111,135,139,143,443,445,512,513,514,587,631,993,995,1099,1433,1521,1723,2049,3306,3389,4848,5432,5900,5985,6379,8080,8443,8888,9200,27017"
         self._log(f"[Claude] Puertos detectados: {port_str[:120]}")
 
-        # ── FASE 1.5: UDP scan + SNMP (in parallel with deep TCP scan) ─────
+        # ── FASE 1.5: UDP scan + SNMP + OSINT (in parallel with deep TCP scan) ──
         import concurrent.futures as _cf0
         _udp_future = None
-        _udp_exec = _cf0.ThreadPoolExecutor(max_workers=1, thread_name_prefix="udp")
+        _osint_future = None
+        _udp_exec = _cf0.ThreadPoolExecutor(max_workers=2, thread_name_prefix="bg")
         _udp_future = _udp_exec.submit(self._udp_snmp_scan, target, accumulated_output)
+        _osint_future = _udp_exec.submit(self._osint_recon, target, open_ports, accumulated_output)
 
         # ── FASE 2: Deep scan con versiones + vuln scripts ────────────────
         self._log(f"[Claude] Fase 2/5: Scan profundo con vuln scripts")
@@ -10601,10 +10939,14 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                     fut.result()
                 except Exception as exc:
                     self._log(f"[Claude] Fase paralela excepción: {exc}")
-        # Wait for UDP scan too
+        # Wait for UDP + OSINT background scans
+        for _bg_fut in [_udp_future, _osint_future]:
+            try:
+                if _bg_fut:
+                    _bg_fut.result(timeout=15)
+            except Exception as _bg_exc:
+                self._log(f"[Claude] BG task excepción: {_bg_exc}")
         try:
-            if _udp_future:
-                _udp_future.result(timeout=10)
             _udp_exec.shutdown(wait=False)
         except Exception:
             pass
