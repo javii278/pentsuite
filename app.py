@@ -5108,12 +5108,15 @@ def _kb_commands(port, service, version, target, mode):
         ]
         if cfg["brute_force"]:
             cmds.append((50, f"Hydra-SSH:{port}",
+                # -W 3 = 3s wait per reply, -f = stop after first valid pair found
+                # timeout prefix = hard OS-level kill at job_timeout-10s
                 f"hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt"
                 f" -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"
-                f" -t 4 -o /tmp/hydra_ssh_{target}.txt {target} ssh 2>/dev/null"))
+                f" -t 4 -W 3 -f -o /tmp/hydra_ssh_{target}.txt {target} ssh 2>/dev/null"))
         if cfg["brute_force"] and mode == "aggressive":
             cmds.append((52, f"SSH-KeyScan:{port}",
-                f"ssh-keyscan -t rsa,ecdsa,ed25519 {target} 2>/dev/null"))
+                # -T 10 = 10s per-host timeout; prevents indefinite hang on filtered ports
+                f"ssh-keyscan -T 10 -t rsa,ecdsa,ed25519 {target} 2>/dev/null"))
 
     # ── FTP ───────────────────────────────────────────────────────────────────
     if port == 21 or "ftp" in svc:
@@ -5456,23 +5459,43 @@ class AutonomousEngine:
                 stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
             job["proc"] = proc; job["pid"] = proc.pid
 
+            def _force_kill(p, n, t_label, log_fn):
+                """SIGTERM → wait 3s → SIGKILL. Guaranteed process death."""
+                try: os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+                except Exception: pass
+                log_fn(f"TIMEOUT [{target}] {n} (>{t_label}s) — terminando")
+                time.sleep(3)
+                try:
+                    if p.poll() is None:
+                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                except Exception: pass
+
             if timeout:
-                def _kill_on_timeout():
-                    try: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    except: pass
-                    self._log(f"TIMEOUT [{target}] {name} (>{timeout}s) — terminando")
-                _kill_timer = threading.Timer(timeout, _kill_on_timeout)
+                _kill_timer = threading.Timer(
+                    timeout, _force_kill,
+                    args=(proc, name, timeout, self._log))
                 _kill_timer.start()
 
             for line in proc.stdout:
                 job["output"].append(line.rstrip("\n"))
                 if not self._running:
-                    try: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    except: pass
+                    # Engine stopped — force-kill immediately then drain pipe
+                    threading.Thread(
+                        target=_force_kill,
+                        args=(proc, name, "stop", self._log),
+                        daemon=True).start()
                     break
-            proc.wait(); job["return_code"] = proc.returncode
+
+            # Use a bounded wait so we never block here indefinitely
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                _force_kill(proc, name, "wait+10", self._log)
+                try: proc.wait(timeout=5)
+                except Exception: pass
+            job["return_code"] = proc.returncode
             if job["status"] == "running":
-                job["status"] = "completed" if proc.returncode == 0 else "error"
+                job["status"] = "completed" if (proc.returncode or 0) == 0 else "error"
         except Exception as e:
             job["output"].append(f"[ERROR] {e}"); job["status"] = "error"
         finally:
@@ -7075,10 +7098,13 @@ class AutonomousEngine:
 
             time.sleep(2)
 
-        # Signal workers to stop and wait
+        # Signal workers to stop — join all in parallel with a shared deadline
         self._running = False
+        deadline = time.time() + 20  # max 20s total (not 15s per worker)
         for w in self._worker_threads:
-            w.join(timeout=15)
+            remaining = max(0, deadline - time.time())
+            if remaining > 0:
+                w.join(timeout=remaining)
 
         self._living_report()
         mem = MEMORY.get_stats()
