@@ -4896,9 +4896,9 @@ def _kb_commands(port, service, version, target, mode):
              f"curl -s -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/wp-login.php' 2>/dev/null; "
              f"curl -s -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/phpmyadmin' 2>/dev/null"),
             (20, f"Gobuster-dirs:{port}",
-             f"gobuster dir -u {url} -w /usr/share/wordlists/dirb/common.txt"
+             f"timeout 90 gobuster dir -u {url} -w /usr/share/wordlists/dirb/common.txt"
              f" -t {t} -x php,html,txt,asp,aspx,jsp,bak,old -q --no-error 2>/dev/null"),
-            (22, f"Nikto:{port}", f"nikto -h {url} -C all -maxtime 120 2>/dev/null"),
+            (22, f"Nikto:{port}", f"timeout 90 nikto -h {url} -C all -maxtime 90 2>/dev/null"),
             (25, f"FFUF-fuzz:{port}",
              f"ffuf -u {url}/FUZZ"
              f" -w /usr/share/seclists/Discovery/Web-Content/common.txt"
@@ -4923,7 +4923,7 @@ def _kb_commands(port, service, version, target, mode):
                 # Single hydra per port — -W 3 (3s reply timeout) + -f (stop on first hit)
                 # Two sequential hydras were causing 2× the timeout budget
                 (50, f"Web-Admin-Brute:{port}",
-                 f"hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt"
+                 f"timeout 90 hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt"
                  f" -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"
                  f" -s {port} {target} http-get /manager/html -t 4 -W 3 -f 2>/dev/null | head -10"),
             ]
@@ -5003,13 +5003,14 @@ def _kb_commands(port, service, version, target, mode):
         if mode == "aggressive":
             cmds += [
                 (40, f"Gobuster-vhosts:{port}",
-                 f"gobuster vhost -u {url}"
+                 f"timeout 90 gobuster vhost -u {url}"
                  f" -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
                  f" -t {t} -q 2>/dev/null"),
                 (42, f"SQLMap-Auto:{port}",
-                 f"hakrawler -url {url} -depth 2 2>/dev/null | head -50"
-                 f" | xargs -I@ sqlmap -u @ --batch --level 1 --risk 1 --dbs --timeout 10 -q 2>/dev/null | head -30"
-                 f" || sqlmap -u '{url}/?id=1' --batch --level 1 --risk 1 -q 2>/dev/null | head -30"),
+                 f"timeout 90 bash -c '"
+                 f"hakrawler -url {url} -depth 2 2>/dev/null | head -20"
+                 f" | xargs -I@ sqlmap -u @ --batch --level 1 --risk 1 --dbs --timeout 8 -q 2>/dev/null | head -20"
+                 f" || sqlmap -u \"{url}/?id=1\" --batch --level 1 --risk 1 -q 2>/dev/null | head -20'"),
                 # Dalfox — advanced XSS scanner replacing basic curl check
                 (45, f"Dalfox-XSS:{port}",
                  f"which dalfox 2>/dev/null && ("
@@ -5125,9 +5126,7 @@ def _kb_commands(port, service, version, target, mode):
         ]
         if cfg["brute_force"]:
             cmds.append((50, f"Hydra-SSH:{port}",
-                # -W 3 = 3s wait per reply, -f = stop after first valid pair found
-                # timeout prefix = hard OS-level kill at job_timeout-10s
-                f"hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt"
+                f"timeout 90 hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt"
                 f" -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"
                 f" -t 4 -W 3 -f -o /tmp/hydra_ssh_{target}.txt {target} ssh 2>/dev/null"))
     # ── FTP ───────────────────────────────────────────────────────────────────
@@ -5458,79 +5457,66 @@ class AutonomousEngine:
         return True
 
     def _run_sync(self, name, command, target, timeout=None):
+        """
+        Execute a shell command and return its output.
+
+        Uses proc.communicate(timeout=N) — the only approach that is
+        GUARANTEED to return within timeout seconds, regardless of whether
+        the process produces output or not. No timers, no watchdogs, no
+        'for line in stdout' blocking loops. If timeout expires:
+          communicate() raises TimeoutExpired → we SIGKILL the process group
+          → call communicate() again to drain the pipe → always returns.
+        """
         job_id = str(uuid.uuid4())
         job = {
             "id": job_id, "project_id": self.project_id,
             "tool": f"[AP] {name}", "phase": "autopilot",
             "command": command, "status": "running", "output": [],
             "started_at": datetime.now().isoformat(), "finished_at": None,
-            "pid": None, "return_code": None, "proc": None, "autopilot": True,
+            "pid": None, "return_code": None, "autopilot": True,
         }
         with JOBS_LOCK:
             JOBS[job_id] = job
         start_iso = datetime.now().isoformat()
-        _kill_timer = None
+        effective_timeout = timeout or 120  # always enforce a ceiling
+        output_text = ""
         try:
-            proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
-            job["proc"] = proc; job["pid"] = proc.pid
-
-            def _force_kill(p, n, t_label, log_fn):
-                """SIGTERM → wait 3s → SIGKILL. Guaranteed process death."""
-                if p.poll() is not None:
-                    return  # already dead
-                try: os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-                except Exception: pass
-                log_fn(f"TIMEOUT [{target}] {n} (>{t_label}s) — terminando")
-                time.sleep(3)
-                try:
-                    if p.poll() is None:
-                        os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                except Exception: pass
-
-            if timeout:
-                _kill_timer = threading.Timer(
-                    timeout, _force_kill,
-                    args=(proc, name, timeout, self._log))
-                _kill_timer.start()
-
-            # ── Watchdog: kills process when engine stops (no-output procs hang) ──
-            # Without this, 'for line in proc.stdout:' blocks forever on Hydra/
-            # ssh-keyscan when they produce no output and _running becomes False.
-            def _watchdog(p=proc, n=name):
-                while p.poll() is None:
-                    if not self._running:
-                        _force_kill(p, n, "engine-stop", self._log)
-                        return
-                    time.sleep(0.5)
-            _wd = threading.Thread(target=_watchdog, daemon=True)
-            _wd.start()
-
-            for line in proc.stdout:
-                job["output"].append(line.rstrip("\n"))
-                if not self._running:
-                    break  # watchdog will kill the process; just exit the loop
-
-            # Use a bounded wait so we never block here indefinitely
+            proc = subprocess.Popen(
+                command, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=True,   # own process group → killpg works
+            )
+            job["pid"] = proc.pid
             try:
-                proc.wait(timeout=10)
+                raw, _ = proc.communicate(timeout=effective_timeout)
+                output_text = raw.decode("utf-8", errors="replace") if raw else ""
+                job["return_code"] = proc.returncode
+                job["status"] = "completed" if proc.returncode == 0 else "error"
             except subprocess.TimeoutExpired:
-                _force_kill(proc, name, "wait+10", self._log)
-                try: proc.wait(timeout=5)
+                self._log(f"TIMEOUT [{target}] {name} (>{effective_timeout}s) — terminando")
+                # SIGKILL the entire process group — guaranteed to die
+                try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except Exception: pass
-            job["return_code"] = proc.returncode
-            if job["status"] == "running":
-                job["status"] = "completed" if (proc.returncode or 0) == 0 else "error"
+                # Drain the pipe after kill so communicate() doesn't block
+                try:
+                    raw, _ = proc.communicate(timeout=5)
+                    output_text = raw.decode("utf-8", errors="replace") if raw else ""
+                except Exception:
+                    output_text = ""
+                job["return_code"] = proc.returncode
+                job["status"] = "timeout"
         except Exception as e:
-            job["output"].append(f"[ERROR] {e}"); job["status"] = "error"
+            job["output"].append(f"[ERROR] {e}")
+            job["status"] = "error"
         finally:
-            if _kill_timer:
-                _kill_timer.cancel()
-            job["finished_at"] = datetime.now().isoformat(); job.pop("proc", None)
+            job["output"] = output_text.splitlines()
+            job["finished_at"] = datetime.now().isoformat()
 
         end_iso = datetime.now().isoformat()
-        output_text = "\n".join(job["output"])
-        self.timeline.append({"name": name, "target": target, "start": start_iso, "end": end_iso, "status": job["status"]})
+        self.timeline.append({
+            "name": name, "target": target,
+            "start": start_iso, "end": end_iso, "status": job["status"],
+        })
         self.stats["commands_run"] += 1
         return output_text, job_id
 
