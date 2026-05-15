@@ -14265,10 +14265,9 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
     env = os.environ.copy()
     env["PYTHONWARNINGS"] = "ignore"
 
-    # gvm-cli refuses to run as root. Detect the actual owner of the socket
-    # file (could be _gvm, gvm, or another user depending on the distro) and
-    # run as that user via sudo -u <user> (no password needed from root).
-    import pwd as _pwd, shlex as _shlex, shutil as _shutil
+    # gvm-cli refuses to run as root. Use Python's preexec_fn to drop
+    # privileges BEFORE exec — no sudo/runuser/su needed, works from Flask.
+    import pwd as _pwd
     gvm_cmd = [
         "gvm-cli", "socket",
         "--socketpath", socket_path,
@@ -14276,37 +14275,37 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
         "--gmp-password", gmp_pass,
         "--xml", xml_query,
     ]
+    preexec = None
     if _os.getuid() == 0:
-        # Detect socket owner dynamically so it works on Kali (_gvm),
-        # OpenVAS community (gvm), and other distros.
+        # Detect the user that owns the GVM socket (distro-independent)
         try:
             sock_uid = _os.stat(socket_path).st_uid
-            sock_user = _pwd.getpwuid(sock_uid).pw_name
+            sock_pw  = _pwd.getpwuid(sock_uid)
         except Exception:
-            sock_user = "_gvm"  # safe default
-
-        if sock_user == "root":
-            # Socket owned by root — try common gvm usernames
+            sock_pw = None
+        if sock_pw is None or sock_pw.pw_name == "root":
+            # Socket owned by root — probe common GVM usernames
             for candidate in ("_gvm", "gvm", "openvas"):
                 try:
-                    _pwd.getpwnam(candidate)
-                    sock_user = candidate
+                    sock_pw = _pwd.getpwnam(candidate)
                     break
                 except KeyError:
                     continue
-
-        # sudo -u <user> preserves env and works without a TTY from Flask
-        if _shutil.which("sudo"):
-            cmd = ["sudo", "-u", sock_user, "-n"] + gvm_cmd
-        elif _shutil.which("runuser"):
-            cmd = ["runuser", "-u", sock_user, "--"] + gvm_cmd
-        else:
-            cmd = ["su", "-s", "/bin/sh", sock_user, "-c",
-                   " ".join(_shlex.quote(a) for a in gvm_cmd)]
-    else:
-        cmd = gvm_cmd
+        if sock_pw and sock_pw.pw_uid != 0:
+            _target_uid = sock_pw.pw_uid
+            _target_gid = sock_pw.pw_gid
+            def preexec():
+                # Drop from root to _gvm inside the child process before exec.
+                # This is the most reliable method — no external tools needed.
+                _os.setgroups([])
+                _os.setgid(_target_gid)
+                _os.setuid(_target_uid)
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+        result = subprocess.run(
+            gvm_cmd, capture_output=True, text=True,
+            timeout=timeout, env=env,
+            preexec_fn=preexec,
+        )
         xml_out = result.stdout.strip()
         if not xml_out:
             # Filtra DeprecationWarnings de Python del stderr para mostrar el error real
