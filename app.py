@@ -5130,11 +5130,6 @@ def _kb_commands(port, service, version, target, mode):
                 f"hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt"
                 f" -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"
                 f" -t 4 -W 3 -f -o /tmp/hydra_ssh_{target}.txt {target} ssh 2>/dev/null"))
-        if cfg["brute_force"] and mode == "aggressive":
-            cmds.append((52, f"SSH-KeyScan:{port}",
-                # -T 10 = 10s per-host timeout; prevents indefinite hang on filtered ports
-                f"ssh-keyscan -T 10 -t rsa,ecdsa,ed25519 {target} 2>/dev/null"))
-
     # ── FTP ───────────────────────────────────────────────────────────────────
     if port == 21 or "ftp" in svc:
         cmds += [
@@ -14270,8 +14265,10 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
     env = os.environ.copy()
     env["PYTHONWARNINGS"] = "ignore"
 
-    # gvm-cli refuses to run as root. If we ARE root, wrap with runuser/su
-    # to execute as the _gvm system user that owns the socket.
+    # gvm-cli refuses to run as root. Detect the actual owner of the socket
+    # file (could be _gvm, gvm, or another user depending on the distro) and
+    # run as that user via sudo -u <user> (no password needed from root).
+    import pwd as _pwd, shlex as _shlex, shutil as _shutil
     gvm_cmd = [
         "gvm-cli", "socket",
         "--socketpath", socket_path,
@@ -14280,14 +14277,31 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
         "--xml", xml_query,
     ]
     if _os.getuid() == 0:
-        # Try runuser first (most distros), fall back to su
-        import shutil as _shutil
-        if _shutil.which("runuser"):
-            cmd = ["runuser", "-u", "_gvm", "--"] + gvm_cmd
+        # Detect socket owner dynamically so it works on Kali (_gvm),
+        # OpenVAS community (gvm), and other distros.
+        try:
+            sock_uid = _os.stat(socket_path).st_uid
+            sock_user = _pwd.getpwuid(sock_uid).pw_name
+        except Exception:
+            sock_user = "_gvm"  # safe default
+
+        if sock_user == "root":
+            # Socket owned by root — try common gvm usernames
+            for candidate in ("_gvm", "gvm", "openvas"):
+                try:
+                    _pwd.getpwnam(candidate)
+                    sock_user = candidate
+                    break
+                except KeyError:
+                    continue
+
+        # sudo -u <user> preserves env and works without a TTY from Flask
+        if _shutil.which("sudo"):
+            cmd = ["sudo", "-u", sock_user, "-n"] + gvm_cmd
+        elif _shutil.which("runuser"):
+            cmd = ["runuser", "-u", sock_user, "--"] + gvm_cmd
         else:
-            # su -s /bin/sh _gvm -c "gvm-cli ..."
-            import shlex as _shlex
-            cmd = ["su", "-s", "/bin/sh", "_gvm", "-c",
+            cmd = ["su", "-s", "/bin/sh", sock_user, "-c",
                    " ".join(_shlex.quote(a) for a in gvm_cmd)]
     else:
         cmd = gvm_cmd
