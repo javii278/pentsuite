@@ -2251,7 +2251,9 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
             (r'\bRC4\b', 'RC4', 'high', 7.5),
             (r'\bDES\b(?!-EDE)', 'DES', 'high', 7.5),
             (r'\b3DES\b|DES-EDE', '3DES (SWEET32)', 'medium', 5.9),
-            (r'\bNULL\b', 'NULL cipher', 'critical', 9.8),
+            # NULL cipher: only match actual TLS cipher suite names like TLS_RSA_WITH_NULL_SHA
+            # Avoid false positives from "NULL" in error messages or script descriptions
+            (r'TLS_\w+_WITH_NULL_\w+|TLS_NULL_WITH_NULL|SSL_\w+_WITH_NULL', 'NULL cipher', 'critical', 9.8),
             (r'\bEXPORT\b', 'EXPORT cipher', 'high', 7.5),
             (r'\bANON\b|DH_anon|ECDH_anon', 'Anonymous cipher (no auth)', 'critical', 9.8),
             (r'\bMD5\b.*\bRSA\b|\bRSA\b.*\bMD5\b', 'MD5-RSA signature', 'medium', 5.9),
@@ -5164,42 +5166,47 @@ def _kb_commands(port, service, version, target, mode):
     if port in (80, 443, 8080, 8443, 8000, 8008, 8888, 9090, 3000) or "http" in svc:
         scheme = "https" if (port in (443, 8443) or "ssl" in svc or "https" in svc) else "http"
         url = f"{scheme}://{target}:{port}"
+        # -k/--insecure is intentional: we're a pentesting tool and WANT to test
+        # servers with expired/self-signed certs (that itself is a finding).
+        # Without -k, curl fails silently on expired certs → empty output → zero findings.
+        _curl = "curl -sk"   # -s silent, -k insecure (allow expired/self-signed)
         cmds += [
             (10, f"WhatWeb:{port}",
-             f"whatweb -a 3 --no-errors {url} 2>/dev/null"),
+             # --no-check-certificate: same reason as -k above
+             f"whatweb -a 3 --no-errors --no-check-certificate {url} 2>/dev/null"),
             (12, f"Web-Headers:{port}",
-             # Follow redirects (-L), show all response headers incl. final destination
-             f"curl -s -I -L --max-time 12 '{url}' 2>/dev/null"),
+             # -L follow redirects, -k allow expired certs, output ALL headers
+             f"curl -skI -L --max-time 12 '{url}' 2>/dev/null"),
             (15, f"Web-Robots-Sitemap:{port}",
-             f"curl -s --max-time 8 '{url}/robots.txt' 2>/dev/null; "
-             f"curl -s --max-time 8 '{url}/sitemap.xml' 2>/dev/null | head -20"),
+             f"{_curl} --max-time 8 '{url}/robots.txt' 2>/dev/null; "
+             f"{_curl} --max-time 8 '{url}/sitemap.xml' 2>/dev/null | head -20"),
             (18, f"Web-DefaultCreds:{port}",
-             f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 '{url}/admin' 2>/dev/null; "
-             f"curl -s -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/manager' 2>/dev/null; "
-             f"curl -s -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/wp-login.php' 2>/dev/null; "
-             f"curl -s -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/phpmyadmin' 2>/dev/null"),
+             f"{_curl} -o /dev/null -w '%{{http_code}}' --max-time 5 '{url}/admin' 2>/dev/null; "
+             f"{_curl} -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/manager' 2>/dev/null; "
+             f"{_curl} -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/wp-login.php' 2>/dev/null; "
+             f"{_curl} -o /dev/null -w ' %{{http_code}}' --max-time 5 '{url}/phpmyadmin' 2>/dev/null"),
             (20, f"Gobuster-dirs:{port}",
              f"timeout 90 gobuster dir -u {url} -w /usr/share/wordlists/dirb/common.txt"
-             f" -t {t} -x php,html,txt,asp,aspx,jsp,bak,old -q --no-error 2>/dev/null"),
-            (22, f"Nikto:{port}", f"timeout 90 nikto -h {url} -C all -maxtime 90 2>/dev/null"),
+             f" -k -t {t} -x php,html,txt,asp,aspx,jsp,bak,old -q --no-error 2>/dev/null"),
+            (22, f"Nikto:{port}", f"timeout 90 nikto -h {url} -C all -maxtime 90 -nossl 2>/dev/null"),
             (25, f"FFUF-fuzz:{port}",
              f"ffuf -u {url}/FUZZ"
              f" -w /usr/share/seclists/Discovery/Web-Content/common.txt"
-             f" -mc 200,204,301,302,307,401,403 -t {t} -s 2>/dev/null | head -80"
+             f" -mc 200,204,301,302,307,401,403 -t {t} -s -k 2>/dev/null | head -80"
              f" || gobuster dir -u {url}"
-             f" -w /usr/share/seclists/Discovery/Web-Content/common.txt"
+             f" -k -w /usr/share/seclists/Discovery/Web-Content/common.txt"
              f" -t {t} -q --no-error 2>/dev/null | head -80"),
         ]
         # SQLi + LFI quick check for common GET parameters
         cmds += [
             (28, f"SQLi-Quick:{port}",
-             f"curl -s --max-time 8 '{url}/?id=1%27' 2>/dev/null | grep -iE 'sql|syntax|mysql|oracle|ORA-|pg_|sqlite' | head -5; "
-             f"curl -s --max-time 8 '{url}/index.php?page=../../../etc/passwd' 2>/dev/null | grep -c 'root:' || true"),
+             f"{_curl} --max-time 8 '{url}/?id=1%27' 2>/dev/null | grep -iE 'sql|syntax|mysql|oracle|ORA-|pg_|sqlite' | head -5; "
+             f"{_curl} --max-time 8 '{url}/index.php?page=../../../etc/passwd' 2>/dev/null | grep -c 'root:' || true"),
             (29, f"Web-LFI-Check:{port}",
              f"for p in page file include path template view; do "
-             f"r=$(curl -s --max-time 5 '{url}/?'$p'=../../../../etc/passwd' 2>/dev/null | grep -c 'root:' || true); "
+             f"r=$({_curl} --max-time 5 '{url}/?'$p'=../../../../etc/passwd' 2>/dev/null | grep -c 'root:' || true); "
              f"[ \"$r\" -gt 0 ] && echo \"LFI FOUND param=$p\" && break; done; "
-             f"curl -s --max-time 5 '{url}/.git/HEAD' 2>/dev/null | head -1"),
+             f"{_curl} --max-time 5 '{url}/.git/HEAD' 2>/dev/null | head -1"),
         ]
         if mode in ("normal", "aggressive") and cfg["brute_force"]:
             cmds += [
@@ -5225,47 +5232,47 @@ def _kb_commands(port, service, version, target, mode):
         # ── Jenkins script console direct check ────────────────────────────────
         cmds += [
             (19, f"Jenkins-Check:{port}",
-             f"JC=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 8 '{url}/script' 2>/dev/null); "
+             f"JC=$({_curl} -o /dev/null -w '%{{http_code}}' --max-time 8 '{url}/script' 2>/dev/null); "
              f"if [ \"$JC\" = '200' ]; then "
              f"echo 'X-Jenkins: accessible'; "
-             f"RES=$(curl -s --max-time 10 -X POST '{url}/script' "
+             f"RES=$({_curl} --max-time 10 -X POST '{url}/script' "
              f"--data-urlencode 'script=println(\"id\".execute().text)' 2>/dev/null); "
              f"echo \"$RES\" | grep -oE 'uid=[0-9]+\\([a-z]+\\)' | head -3; "
              f"echo \"Jenkins_Script_Console=$JC\"; "
              f"elif [ \"$JC\" = '403' ] || [ \"$JC\" = '401' ]; then "
              f"echo \"Jenkins_Auth_Required=$JC\"; "
              f"fi; "
-             f"JA=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 8 '{url}/jenkins/script' 2>/dev/null); "
+             f"JA=$({_curl} -o /dev/null -w '%{{http_code}}' --max-time 8 '{url}/jenkins/script' 2>/dev/null); "
              f"[ \"$JA\" = '200' ] && echo 'X-Jenkins: accessible /jenkins'"),
         ]
 
         if mode in ("normal", "aggressive"):
             cmds += [
                 (35, f"Nuclei:{port}",
-                 # -rl: rate limit; -timeout: per-request timeout; let the job runner kill at job_timeout
-                 f"nuclei -u {url} -severity critical,high,medium -j -c 20 -rl 50 -timeout 10 -nc 2>/dev/null"),
+                 # -rl: rate limit; -timeout: per-request timeout; -ni: no interactsh
+                 f"nuclei -u {url} -severity critical,high,medium -j -c 20 -rl 50 -timeout 10 -nc -ni 2>/dev/null"),
                 (38, f"Nuclei-DefaultLogins:{port}",
-                 f"nuclei -u {url} -t default-logins/ -j -c 10 -timeout 10 -nc 2>/dev/null"),
+                 f"nuclei -u {url} -t default-logins/ -j -c 10 -timeout 10 -nc -ni 2>/dev/null"),
                 (39, f"Nuclei-Exposures:{port}",
-                 f"nuclei -u {url} -t exposures/ -t exposed-panels/ -t misconfiguration/ -t technologies/ -j -c 15 -timeout 10 -nc 2>/dev/null"),
+                 f"nuclei -u {url} -t exposures/ -t exposed-panels/ -t misconfiguration/ -t technologies/ -j -c 15 -timeout 10 -nc -ni 2>/dev/null"),
                 # JS secrets: crawl JS files then grep for API keys, tokens, endpoints
                 (43, f"JS-Secrets:{port}",
                  f"JSURLS=$(katana -u {url} -d 3 -jc -ef css,png,jpg,gif,ico,woff,ttf -silent 2>/dev/null | grep -E '\\.js(\\?|$)' | sort -u | head -40); "
                  f"if [ -z \"$JSURLS\" ]; then "
-                 f"JSURLS=$(curl -s --max-time 10 '{url}/' 2>/dev/null | grep -oP '(src|href)=[\"\\x27]\\K[^\"\\x27]+\\.js[^\"\\x27]*' | sed 's|^/|{url}/|' | head -20); fi; "
+                 f"JSURLS=$({_curl} --max-time 10 '{url}/' 2>/dev/null | grep -oP '(src|href)=[\"\\x27]\\K[^\"\\x27]+\\.js[^\"\\x27]*' | sed 's|^/|{url}/|' | head -20); fi; "
                  f"echo \"$JSURLS\" | while read -r jsurl; do "
                  f"[ -z \"$jsurl\" ] && continue; "
-                 f"content=$(curl -s --max-time 10 \"$jsurl\" 2>/dev/null | head -c 200000); "
+                 f"content=$({_curl} --max-time 10 \"$jsurl\" 2>/dev/null | head -c 200000); "
                  f"echo \"=== $jsurl ===\"; "
                  f"echo \"$content\" | grep -oP '(?i)(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret[_-]?key|client[_-]?secret|aws[_-]?access|aws[_-]?secret|firebase|twilio|stripe|sendgrid|mailchimp|slack[_-]?token|github[_-]?token|bearer\\s+[a-zA-Z0-9._-]{{20,}}|eyJ[a-zA-Z0-9._-]{{40,}})[^\\s\\'\\\"<>]{{0,80}}' | sort -u | head -15; "
                  f"echo \"$content\" | grep -oP '(https?://[a-zA-Z0-9./_-]{{8,}}api[a-zA-Z0-9./_?=-]{{0,60}}|/v[0-9]+/[a-zA-Z0-9/_-]{{3,40}})' | sort -u | head -10; "
                  f"done 2>/dev/null | head -100"),
                 # JWT detection and analysis
                 (44, f"JWT-Analysis:{port}",
-                 f"RESP=$(curl -s -I --max-time 8 '{url}/' 2>/dev/null); "
+                 f"RESP=$({_curl} -I --max-time 8 '{url}/' 2>/dev/null); "
                  f"JWT=$(echo \"$RESP\" | grep -oP 'eyJ[a-zA-Z0-9._-]{{20,}}'); "
                  f"if [ -z \"$JWT\" ]; then "
-                 f"JWT=$(curl -s --max-time 8 '{url}/' 2>/dev/null | grep -oP 'eyJ[a-zA-Z0-9._-]{{20,}}' | head -1); fi; "
+                 f"JWT=$({_curl} --max-time 8 '{url}/' 2>/dev/null | grep -oP 'eyJ[a-zA-Z0-9._-]{{20,}}' | head -1); fi; "
                  f"if [ -n \"$JWT\" ]; then "
                  f"echo \"JWT_FOUND: $JWT\"; "
                  f"python3 -c \""
@@ -5283,11 +5290,11 @@ def _kb_commands(port, service, version, target, mode):
                 (45, f"GraphQL-Probe:{port}",
                  f"_graphql_found=0; "
                  f"for ep in /graphql /api/graphql /graphiql /v1/graphql /graphql/v1 /query /api/query /gql; do "
-                 f"C=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 -X POST '{url}$ep' "
+                 f"C=$({_curl} -o /dev/null -w '%{{http_code}}' --max-time 5 -X POST '{url}$ep' "
                  f"-H 'Content-Type: application/json' -d '{{\"query\":\"{{__typename}}\"}}' 2>/dev/null); "
                  f"if [ \"$C\" = '200' ] || [ \"$C\" = '400' ]; then "
                  f"echo \"GRAPHQL_ENDPOINT: {url}$ep (HTTP $C)\"; _graphql_found=1; "
-                 f"SCHEMA=$(curl -s --max-time 10 -X POST '{url}$ep' -H 'Content-Type: application/json' "
+                 f"SCHEMA=$({_curl} --max-time 10 -X POST '{url}$ep' -H 'Content-Type: application/json' "
                  f"-d '{{\"query\":\"{{__schema{{types{{name}}}}}}\"}}' 2>/dev/null); "
                  f"echo \"$SCHEMA\" | python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); "
                  f"ts=d.get(\\\"data\\\",{{}}).get(\\\"__schema\\\",{{}}).get(\\\"types\\\",[]); "
@@ -5297,18 +5304,18 @@ def _kb_commands(port, service, version, target, mode):
                  f"[ $_graphql_found -eq 0 ] && echo 'No GraphQL endpoint found'"),
                 # CORS misconfiguration check
                 (46, f"CORS-Check:{port}",
-                 f"CORS=$(curl -s -I --max-time 8 -H 'Origin: https://evil.example.com' '{url}/' 2>/dev/null | grep -i 'access-control'); "
+                 f"CORS=$({_curl} -I --max-time 8 -H 'Origin: https://evil.example.com' '{url}/' 2>/dev/null | grep -i 'access-control'); "
                  f"[ -n \"$CORS\" ] && echo \"$CORS\"; "
                  f"echo \"$CORS\" | grep -q 'evil.example.com' && echo 'CORS_MISCONFIGURED: reflects arbitrary origin'; "
                  f"echo \"$CORS\" | grep -q '\\*' && echo 'CORS_MISCONFIGURED: wildcard (*) origin allowed'; "
-                 f"CRED_CORS=$(curl -s -I --max-time 8 -H 'Origin: null' '{url}/' 2>/dev/null | grep -i 'access-control'); "
+                 f"CRED_CORS=$({_curl} -I --max-time 8 -H 'Origin: null' '{url}/' 2>/dev/null | grep -i 'access-control'); "
                  f"echo \"$CRED_CORS\" | grep -qi 'null' && echo 'CORS_MISCONFIGURED: null origin accepted'; true"),
                 # REST API endpoint discovery
                 (47, f"API-Endpoints:{port}",
                  f"for ep in /api /api/v1 /api/v2 /api/v3 /rest /swagger.json /swagger-ui.html /openapi.json /v1 /v2 /api-docs /docs; do "
-                 f"C=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 '{url}$ep' 2>/dev/null); "
+                 f"C=$({_curl} -o /dev/null -w '%{{http_code}}' --max-time 5 '{url}$ep' 2>/dev/null); "
                  f"[ \"$C\" != '404' ] && [ \"$C\" != '000' ] && echo \"API: {url}$ep [$C]\"; done; "
-                 f"curl -s --max-time 8 '{url}/swagger.json' 2>/dev/null | python3 -c "
+                 f"{_curl} --max-time 8 '{url}/swagger.json' 2>/dev/null | python3 -c "
                  f"'import json,sys; d=json.load(sys.stdin); "
                  f"[print(m.upper(),p) for p,ops in d.get(\\\"paths\\\",{{}}).items() for m in ops if m in [\\\"get\\\",\\\"post\\\",\\\"put\\\",\\\"delete\\\",\\\"patch\\\"]]' "
                  f"2>/dev/null | head -30 || true"),
@@ -14659,13 +14666,33 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
     # gvm-cli refuses to run as root. Use Python's preexec_fn to drop
     # privileges BEFORE exec — no sudo/runuser/su needed, works from Flask.
     import pwd as _pwd
-    gvm_cmd = [
-        "gvm-cli", "socket",
-        "--socketpath", socket_path,
-        "--gmp-username", gmp_user,
-        "--gmp-password", gmp_pass,
-        "--xml", xml_query,
+
+    # Different gvm-tools versions place --gmp-username/--gmp-password in different
+    # positions. We build candidate command lists in order of preference and use the
+    # first one that doesn't error with "unrecognized arguments".
+    #
+    #  v9 / gvm-tools < 21 (older):
+    #    gvm-cli socket --socketpath … --gmp-username U --gmp-password P --xml …
+    #
+    #  gvm-tools >= 21 / some distro forks (newer):
+    #    gvm-cli --gmp-username U --gmp-password P socket --socketpath … --xml …
+    #
+    #  Very new versions that authenticate via socket permissions (no creds needed):
+    #    gvm-cli socket --socketpath … --xml …
+    #
+    # We try all three at call time; the first successful XML response wins.
+    _gvm_cmd_candidates = [
+        # Form 1 — credentials as subcommand args (most common in Kali/Ubuntu)
+        ["gvm-cli", "socket", "--socketpath", socket_path,
+         "--gmp-username", gmp_user, "--gmp-password", gmp_pass,
+         "--xml", xml_query],
+        # Form 2 — credentials as global args (some newer builds)
+        ["gvm-cli", "--gmp-username", gmp_user, "--gmp-password", gmp_pass,
+         "socket", "--socketpath", socket_path, "--xml", xml_query],
+        # Form 3 — no credentials (socket-permission auth, gvm-tools >= 22.x)
+        ["gvm-cli", "socket", "--socketpath", socket_path, "--xml", xml_query],
     ]
+    gvm_cmd = _gvm_cmd_candidates[0]   # default; overridden inside the try block
     preexec = None
     if _os.getuid() == 0:
         # Detect the user that owns the GVM socket (distro-independent)
@@ -14695,29 +14722,44 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
             env["HOME"] = sock_pw.pw_dir or f"/home/{sock_pw.pw_name}"
             env["USER"] = sock_pw.pw_name
             env["LOGNAME"] = sock_pw.pw_name
+    def _clean_stderr(raw_stderr):
+        """Strip Python DeprecationWarnings from gvm-cli stderr to expose real errors."""
+        return "\n".join(
+            line for line in raw_stderr.splitlines()
+            if "DeprecationWarning" not in line
+            and "CryptographyDeprecationWarning" not in line
+            and "has been moved to" not in line
+            and "will be removed from" not in line
+            and "cipher" not in line.lower()
+            and "paramiko" not in line
+        ).strip()
+
+    last_error = "(sin output)"
     try:
-        result = subprocess.run(
-            gvm_cmd, capture_output=True, text=True,
-            timeout=timeout, env=env,
-            preexec_fn=preexec,
-        )
-        xml_out = result.stdout.strip()
-        if not xml_out:
-            # Filtra DeprecationWarnings de Python del stderr para mostrar el error real
-            real_stderr = "\n".join(
-                line for line in result.stderr.splitlines()
-                if "DeprecationWarning" not in line
-                and "CryptographyDeprecationWarning" not in line
-                and "has been moved to" not in line
-                and "will be removed from" not in line
-                and "cipher" not in line.lower()
-                and "paramiko" not in line
-            ).strip()
-            detail = real_stderr or result.stderr[:500] or "(sin output)"
-            raise ValueError(f"gvm-cli no devolvió XML. Posible causa: {detail}")
-        return ET.fromstring(xml_out)
-    except subprocess.TimeoutExpired:
-        raise TimeoutError(f"gvm-cli timeout after {timeout}s")
+        for _candidate in _gvm_cmd_candidates:
+            try:
+                result = subprocess.run(
+                    _candidate, capture_output=True, text=True,
+                    timeout=timeout, env=env,
+                    preexec_fn=preexec,
+                )
+                xml_out = result.stdout.strip()
+                if xml_out:
+                    return ET.fromstring(xml_out)
+                # This candidate produced no output — check if it's an "unrecognized
+                # arguments" error (wrong form) vs a real GMP error (stop trying)
+                _stderr_clean = _clean_stderr(result.stderr)
+                if "unrecognized arguments" in result.stderr or "error: argument" in result.stderr:
+                    last_error = _stderr_clean or result.stderr[:300]
+                    continue  # try next candidate form
+                # Any other error (auth fail, socket permission, etc.) → stop immediately
+                last_error = _stderr_clean or result.stderr[:500] or "(sin output)"
+                break
+            except subprocess.TimeoutExpired:
+                raise TimeoutError(f"gvm-cli timeout after {timeout}s")
+        raise ValueError(f"gvm-cli no devolvió XML. Posible causa: {last_error}")
+    except (TimeoutError, ValueError):
+        raise
     except ET.ParseError as e:
         raise ValueError(f"XML parse error: {e}")
 
