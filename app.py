@@ -1315,14 +1315,25 @@ def _attach_msf_command(finding, rhost, vars_dict):
     text = f"{finding.get('title','')} {finding.get('description','')} {finding.get('cve','')}".lower()
     lhost = vars_dict.get("lhost", "YOUR_LHOST")
     lport = vars_dict.get("lport", "4444")
+    # If LHOST couldn't be determined (VPS / cloud server without VPN), keep the
+    # placeholder so the user knows they need to fill it in manually.
+    if not lhost or lhost in ("", "0.0.0.0"):
+        lhost = "YOUR_LHOST"
     for pattern, cmd_tpl in _MSF_AUTO_CMDS:
         if re.search(pattern, text, re.IGNORECASE):
-            finding["exploit_cmd"] = (
+            cmd = (
                 cmd_tpl
                 .replace("{rhost}", rhost)
                 .replace("{lhost}", lhost)
                 .replace("{lport}", lport)
             )
+            # Tag the finding so the UI can warn the user
+            if lhost == "YOUR_LHOST":
+                finding["lhost_warning"] = (
+                    "⚠️  LHOST no pudo determinarse automáticamente. "
+                    "Reemplaza YOUR_LHOST con tu IP de atacante (ej. tun0 si usas VPN/HTB)."
+                )
+            finding["exploit_cmd"] = cmd
             break
 
 
@@ -1742,16 +1753,41 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
                 loot.append({"type": "credential", "value": val, "source": "crackmapexec"})
 
     # ── Nikto findings ────────────────────────────────────────────────────────
-    SKIP_NIKTO = {'server:', 'retrieved x-powered-by', 'no cgi', 'end of', 'start time',
-                  'target ip:', 'target hostname:', '0 error'}
+    # Metadata/header lines that are NOT vulnerabilities — skip them
+    SKIP_NIKTO_EXACT = {
+        'no cgi-bin dir found', 'no cgi', '0 error(s)', '0 errors',
+    }
+    SKIP_NIKTO_PREFIX = (
+        'target ip:', 'target hostname:', 'target port:', 'target protocol:',
+        'start time:', 'end time:', 'start ', 'end ',
+        '- nikto ', 'nikto v', '+ nikto',
+        'server: ', 'retrieved x-powered-by',
+        '+ end of', 'end of',
+    )
+    SKIP_NIKTO_CONTAINS = (
+        'host(s) tested', 'no cgi-bin', 'nikto report',
+        'seconds elapsed', '(target was', 'scan completed',
+        '0 item(s) reported',
+    )
     for m in re.finditer(r'^\+\s+(.+)', output_text, re.MULTILINE):
         line = m.group(1).strip()
-        if any(skip in line.lower() for skip in SKIP_NIKTO) or len(line) < 15:
+        ll = line.lower()
+        # Skip short lines, metadata, and scan stats
+        if len(line) < 20:
+            continue
+        if ll in SKIP_NIKTO_EXACT:
+            continue
+        if any(ll.startswith(p) for p in SKIP_NIKTO_PREFIX):
+            continue
+        if any(p in ll for p in SKIP_NIKTO_CONTAINS):
+            continue
+        # Skip pure timestamp / port number lines
+        if re.match(r'^[\d/ :()GTMsec+-]+$', line):
             continue
         sev = "low"
-        if any(w in line.lower() for w in ['injection', 'xss', 'rce', 'remote code', 'exec', 'upload']):
+        if any(w in ll for w in ['injection', 'xss', 'rce', 'remote code', 'exec', 'upload', 'command']):
             sev = "high"
-        elif any(w in line.lower() for w in ['interesting', 'admin', 'login', 'password', 'backup', '.git', '.env', 'debug']):
+        elif any(w in ll for w in ['interesting', 'admin', 'login', 'password', 'backup', '.git', '.env', 'debug', 'config']):
             sev = "medium"
         cve_m = re.search(r'(CVE-[\d-]+)', line)
         findings.append({
@@ -5417,27 +5453,67 @@ class AutonomousEngine:
 
     @staticmethod
     def _detect_lhost():
-        """Auto-detect the attacker IP (tun0 for VPN, then eth0, then any non-loopback)."""
+        """Auto-detect the attacker IP.
+
+        Priority:
+          1. tun0 / tap0  — always a VPN/HTB interface → safe to use regardless of RFC1918
+          2. Private RFC1918 IPs on other interfaces (eth0, wlan0…) → attacker LAN
+          3. Public IPs → the app is running on a VPS/cloud server, NOT on the attacker
+             machine.  Return 'YOUR_LHOST' so exploit commands don't silently embed the
+             wrong (target-side) IP and confuse the user.
+        """
+        def _is_private(ip: str) -> bool:
+            """Return True for RFC1918 / link-local addresses."""
+            return (
+                ip.startswith("10.")
+                or ip.startswith("192.168.")
+                or ip.startswith("169.254.")
+                or (ip.startswith("172.") and 16 <= int(ip.split(".")[1]) <= 31)
+            )
+
         try:
             import socket as _sock
-            for iface_name in ("tun0", "tap0", "eth0", "ens33", "ens3", "wlan0"):
+            import fcntl, struct
+
+            # ── Pass 1: VPN interfaces always win ────────────────────────────
+            for iface_name in ("tun0", "tap0"):
                 try:
-                    import fcntl, struct
                     s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
                     ip = _sock.inet_ntoa(fcntl.ioctl(
                         s.fileno(), 0x8915,
                         struct.pack('256s', iface_name[:15].encode())
                     )[20:24])
                     if ip and not ip.startswith("127."):
+                        return ip          # VPN IP → definitely attacker
+                except Exception:
+                    continue
+
+            # ── Pass 2: Private IPs on normal interfaces ───────────────────
+            for iface_name in ("eth0", "ens33", "ens3", "ens160", "wlan0", "wlan1"):
+                try:
+                    s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+                    ip = _sock.inet_ntoa(fcntl.ioctl(
+                        s.fileno(), 0x8915,
+                        struct.pack('256s', iface_name[:15].encode())
+                    )[20:24])
+                    if ip and not ip.startswith("127.") and _is_private(ip):
                         return ip
                 except Exception:
                     continue
-            # Fallback: connect to determine outbound IP
+
+            # ── Pass 3: fallback connect — only use if RFC1918 ─────────────
             with _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM) as s:
                 s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
+                ip = s.getsockname()[0]
+                if ip and not ip.startswith("127.") and _is_private(ip):
+                    return ip
+
         except Exception:
-            return "YOUR_LHOST"
+            pass
+
+        # Running on a VPS / cloud server with only a public IP.
+        # Return placeholder so exploit commands are clearly incomplete.
+        return "YOUR_LHOST"
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -7217,13 +7293,48 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
 
     @staticmethod
     def _detect_lhost():
+        """Same logic as AutonomousEngine._detect_lhost: prefer VPN, then RFC1918,
+        never return a public IP (that means we're on a VPS, not the attacker box)."""
+        def _is_private(ip: str) -> bool:
+            return (
+                ip.startswith("10.")
+                or ip.startswith("192.168.")
+                or ip.startswith("169.254.")
+                or (ip.startswith("172.") and 16 <= int(ip.split(".")[1]) <= 31)
+            )
         try:
             import socket as _sock
+            import fcntl, struct
+            for iface_name in ("tun0", "tap0"):
+                try:
+                    s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+                    ip = _sock.inet_ntoa(fcntl.ioctl(
+                        s.fileno(), 0x8915,
+                        struct.pack('256s', iface_name[:15].encode())
+                    )[20:24])
+                    if ip and not ip.startswith("127."):
+                        return ip
+                except Exception:
+                    continue
+            for iface_name in ("eth0", "ens33", "ens3", "ens160", "wlan0"):
+                try:
+                    s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+                    ip = _sock.inet_ntoa(fcntl.ioctl(
+                        s.fileno(), 0x8915,
+                        struct.pack('256s', iface_name[:15].encode())
+                    )[20:24])
+                    if ip and not ip.startswith("127.") and _is_private(ip):
+                        return ip
+                except Exception:
+                    continue
             with _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM) as s:
                 s.connect(("8.8.8.8", 80))
-                return s.getsockname()[0]
+                ip = s.getsockname()[0]
+                if ip and not ip.startswith("127.") and _is_private(ip):
+                    return ip
         except Exception:
-            return "YOUR_LHOST"
+            pass
+        return "YOUR_LHOST"
 
     def _log(self, msg):
         ts = datetime.now().strftime("%H:%M:%S")

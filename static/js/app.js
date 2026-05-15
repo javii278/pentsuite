@@ -1448,6 +1448,7 @@ function renderFindings() {
                     <button class="btn btn-xs btn-outline-danger py-0 px-1" onclick="copyExploit('${f.id}')" title="Copiar comando MSF"><i class="fas fa-copy"></i></button>
                     <button class="btn btn-xs btn-outline-warning py-0 px-1" onclick="runExploit('${f.id}')" title="Ejecutar en Terminal"><i class="fas fa-terminal"></i> Run</button>
                 </div>
+                ${f.lhost_warning ? `<div class="alert alert-warning py-1 px-2 mb-1" style="font-size:0.75rem;background:#3d2e00;border-color:#f0b72f;color:#f0b72f"><i class="fas fa-exclamation-triangle me-1"></i>${h(f.lhost_warning)}</div>` : ''}
                 <pre id="${exploitId}" class="exploit-cmd-block mb-0">${h(f.exploit_cmd)}</pre>
             </div>` : '';
         return `
