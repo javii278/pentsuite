@@ -3539,15 +3539,32 @@ def autopwn_generate(project_id):
     except Exception:
         rc_saved = False
 
+    # Build a human-readable summary of what the script will do
+    summary_lines = []
+    if n_exploits:
+        summary_lines.append(f"• {n_exploits} exploit(s) CVE matching vulnerabilidades detectadas")
+    if n_scanners:
+        summary_lines.append(f"• {n_scanners} módulo(s) auxiliary/scanner por puertos abiertos")
+    web_ports_present = {p["port"] for p in ports if p.get("port") in [80,443,8080,8443,3000,8000,8888]}
+    if web_ports_present:
+        summary_lines.append(f"• Módulos web para puertos {sorted(web_ports_present)}")
+    summary_lines.append("• Handler reverso multi/handler arrancando en background (-j -z)")
+    summary_lines.append("• Todos los exploits lanzan en paralelo (-j), sesiones se acumulan")
+    summary_lines.append(f"• Log completo en /tmp/autopwn_{rhost.replace('.','_')}.log")
+    what_it_does = "\n".join(summary_lines) if summary_lines else "Sin exploits aplicables detectados"
+
     return jsonify({
-        "script":    rc_script,
-        "path":      rc_filename if rc_saved else None,
-        "cmd":       f"msfconsole -q -r {rc_filename}" if rc_saved else None,
-        "exploits":  n_exploits,
-        "scanners":  n_scanners,
-        "rhost":     rhost,
-        "lhost":     lhost,
-        "lport":     lport,
+        "script":       rc_script,
+        "path":         rc_filename if rc_saved else None,
+        "cmd":          f"msfconsole -q -r {rc_filename}" if rc_saved else None,
+        "exploits":     n_exploits,
+        "scanners":     n_scanners,
+        "rhost":        rhost,
+        "lhost":        lhost,
+        "lport":        lport,
+        "what_it_does": what_it_does,
+        "script_lines": rc_script.count("\n"),
+        "warning":      "Revisa el script antes de ejecutar. Usa en entornos autorizados." if n_exploits > 0 else None,
     })
 
 
@@ -5399,6 +5416,10 @@ class AutonomousEngine:
         self._worker_threads: list = []
         self._gtfo_done: set = set()
         self._cred_reuse_tried: set = set()
+        # _active_jobs tracks jobs CURRENTLY executing (not waiting in queue).
+        # Used by the monitoring loop to detect true completion: when queue is
+        # empty AND no worker is in the middle of _run_sync → all work done.
+        self._active_jobs: int = 0
 
     @staticmethod
     def _detect_lhost():
@@ -6213,13 +6234,14 @@ class AutonomousEngine:
     def _worker_thread(self, delay, job_timeout):
         while self._running:
             try:
-                _, _, task = self._job_queue.get(timeout=3)
+                _, _, task = self._job_queue.get(timeout=1)
             except queue.Empty:
                 continue
             if not self._running:
                 break
             name, command, target = task["name"], task["command"], task["target"]
             self._log(f"EXEC [{target}] {name}")
+            self._active_jobs += 1   # signal: a job is now executing
             try:
                 output, job_id = self._run_sync(name, command, target, timeout=job_timeout)
                 _, new_creds = self._save_parsed(output, target, name.split(":")[0])
@@ -6266,6 +6288,8 @@ class AutonomousEngine:
                 self._completed_jobs.append({"job_id": job_id, "name": name, "target": target})
             except Exception as _worker_exc:
                 self._log(f"ERROR [{target}] Worker error en '{name}': {_worker_exc}")
+            finally:
+                self._active_jobs -= 1   # job finished (success or error)
             if delay:
                 time.sleep(delay)
 
@@ -7094,18 +7118,20 @@ class AutonomousEngine:
                         self._osint_phase(pt)
                         self._initial_scan(pt)
 
-            # Check completion — only exit when queue AND workers are truly done
-            workers_alive = any(w.is_alive() for w in self._worker_threads)
+            # Check completion using _active_jobs counter (not workers_alive).
+            # workers_alive is always True while self._running=True because
+            # workers loop waiting for queue items — this caused a deadlock.
+            # _active_jobs == 0 means no worker is currently inside _run_sync.
             queue_empty = self._job_queue.empty() and not self._pivot_targets
-            if queue_empty and not workers_alive:
-                break  # Clean exit: all jobs dispatched AND all workers finished
+            if queue_empty and self._active_jobs == 0:
+                break  # Clean exit: nothing queued AND nothing executing
 
             # Hard safety deadline — prevents infinite hang no matter what
             if time.time() > scan_deadline:
-                self._log(f"ENGINE Scan deadline ({job_timeout*3}s) alcanzado — forzando parada")
+                self._log(f"ENGINE Deadline ({job_timeout*3}s) alcanzado — forzando parada")
                 break
 
-            time.sleep(2)
+            time.sleep(1)  # 1s tick for faster detection of final job completion
 
         # ── Teardown: stop workers + force-kill any lingering processes ──────────
         self._running = False
@@ -14244,13 +14270,27 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
     env = os.environ.copy()
     env["PYTHONWARNINGS"] = "ignore"
 
-    cmd = [
+    # gvm-cli refuses to run as root. If we ARE root, wrap with runuser/su
+    # to execute as the _gvm system user that owns the socket.
+    gvm_cmd = [
         "gvm-cli", "socket",
         "--socketpath", socket_path,
         "--gmp-username", gmp_user,
         "--gmp-password", gmp_pass,
         "--xml", xml_query,
     ]
+    if _os.getuid() == 0:
+        # Try runuser first (most distros), fall back to su
+        import shutil as _shutil
+        if _shutil.which("runuser"):
+            cmd = ["runuser", "-u", "_gvm", "--"] + gvm_cmd
+        else:
+            # su -s /bin/sh _gvm -c "gvm-cli ..."
+            import shlex as _shlex
+            cmd = ["su", "-s", "/bin/sh", "_gvm", "-c",
+                   " ".join(_shlex.quote(a) for a in gvm_cmd)]
+    else:
+        cmd = gvm_cmd
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
         xml_out = result.stdout.strip()
