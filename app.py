@@ -4903,12 +4903,12 @@ def _kb_commands(port, service, version, target, mode):
         ]
         if mode in ("normal", "aggressive") and cfg["brute_force"]:
             cmds += [
+                # Single hydra per port — -W 3 (3s reply timeout) + -f (stop on first hit)
+                # Two sequential hydras were causing 2× the timeout budget
                 (50, f"Web-Admin-Brute:{port}",
                  f"hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt"
                  f" -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"
-                 f" -s {port} {target} http-get /manager/html -t 4 2>/dev/null; "
-                 f"hydra -l admin -P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt"
-                 f" -s {port} {target} http-post-form '/login:username=^USER^&password=^PASS^:Invalid' -t 4 2>/dev/null | head -10"),
+                 f" -s {port} {target} http-get /manager/html -t 4 -W 3 -f 2>/dev/null | head -10"),
             ]
         if mode in ("normal", "aggressive"):
             cmds += [
@@ -5461,6 +5461,8 @@ class AutonomousEngine:
 
             def _force_kill(p, n, t_label, log_fn):
                 """SIGTERM → wait 3s → SIGKILL. Guaranteed process death."""
+                if p.poll() is not None:
+                    return  # already dead
                 try: os.killpg(os.getpgid(p.pid), signal.SIGTERM)
                 except Exception: pass
                 log_fn(f"TIMEOUT [{target}] {n} (>{t_label}s) — terminando")
@@ -5476,15 +5478,22 @@ class AutonomousEngine:
                     args=(proc, name, timeout, self._log))
                 _kill_timer.start()
 
+            # ── Watchdog: kills process when engine stops (no-output procs hang) ──
+            # Without this, 'for line in proc.stdout:' blocks forever on Hydra/
+            # ssh-keyscan when they produce no output and _running becomes False.
+            def _watchdog(p=proc, n=name):
+                while p.poll() is None:
+                    if not self._running:
+                        _force_kill(p, n, "engine-stop", self._log)
+                        return
+                    time.sleep(0.5)
+            _wd = threading.Thread(target=_watchdog, daemon=True)
+            _wd.start()
+
             for line in proc.stdout:
                 job["output"].append(line.rstrip("\n"))
                 if not self._running:
-                    # Engine stopped — force-kill immediately then drain pipe
-                    threading.Thread(
-                        target=_force_kill,
-                        args=(proc, name, "stop", self._log),
-                        daemon=True).start()
-                    break
+                    break  # watchdog will kill the process; just exit the loop
 
             # Use a bounded wait so we never block here indefinitely
             try:
@@ -7068,7 +7077,8 @@ class AutonomousEngine:
         self._log(f"ENGINE {n_workers} worker(s) paralelos iniciados")
 
         # Monitor: handle pivots + living report while workers drain queue
-        idle_ticks = 0
+        # Hard deadline = job_timeout * 3 from now (safety net against infinite hang)
+        scan_deadline = time.time() + job_timeout * 3
         while self._running:
             if time.time() - last_report > self.living_report_interval:
                 self._living_report()
@@ -7076,7 +7086,6 @@ class AutonomousEngine:
 
             # Feature 10: process pivot targets discovered during exploitation
             if self._pivot_targets:
-                idle_ticks = 0
                 pivot_batch = list(self._pivot_targets)
                 self._pivot_targets.clear()
                 for pt in pivot_batch:
@@ -7085,26 +7094,47 @@ class AutonomousEngine:
                         self._osint_phase(pt)
                         self._initial_scan(pt)
 
-            # Check completion
+            # Check completion — only exit when queue AND workers are truly done
             workers_alive = any(w.is_alive() for w in self._worker_threads)
-            if self._job_queue.empty() and not self._pivot_targets:
-                idle_ticks += 1
-                if idle_ticks >= 3 and not workers_alive:
-                    break
-                if idle_ticks >= 10:
-                    break
-            else:
-                idle_ticks = 0
+            queue_empty = self._job_queue.empty() and not self._pivot_targets
+            if queue_empty and not workers_alive:
+                break  # Clean exit: all jobs dispatched AND all workers finished
+
+            # Hard safety deadline — prevents infinite hang no matter what
+            if time.time() > scan_deadline:
+                self._log(f"ENGINE Scan deadline ({job_timeout*3}s) alcanzado — forzando parada")
+                break
 
             time.sleep(2)
 
-        # Signal workers to stop — join all in parallel with a shared deadline
+        # ── Teardown: stop workers + force-kill any lingering processes ──────────
         self._running = False
-        deadline = time.time() + 20  # max 20s total (not 15s per worker)
+
+        # Actively kill all autopilot processes still running (SIGTERM → SIGKILL)
+        with JOBS_LOCK:
+            lingering = [
+                j for j in JOBS.values()
+                if j.get("autopilot") and j.get("status") == "running" and j.get("pid")
+            ]
+        for j in lingering:
+            try:
+                os.killpg(os.getpgid(j["pid"]), signal.SIGTERM)
+            except Exception:
+                pass
+        if lingering:
+            time.sleep(2)
+            for j in lingering:
+                try:
+                    os.killpg(os.getpgid(j["pid"]), signal.SIGKILL)
+                except Exception:
+                    pass
+            self._log(f"ENGINE Forzado fin de {len(lingering)} procesos colgados")
+
+        # Join workers — shared 15s deadline (they should die after SIGKILL above)
+        deadline = time.time() + 15
         for w in self._worker_threads:
-            remaining = max(0, deadline - time.time())
-            if remaining > 0:
-                w.join(timeout=remaining)
+            remaining = max(0.1, deadline - time.time())
+            w.join(timeout=remaining)
 
         self._living_report()
         mem = MEMORY.get_stats()
