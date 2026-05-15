@@ -14282,10 +14282,14 @@ def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):
             _target_gid = sock_pw.pw_gid
             def preexec():
                 # Drop from root to _gvm inside the child process before exec.
-                # This is the most reliable method — no external tools needed.
                 _os.setgroups([])
                 _os.setgid(_target_gid)
                 _os.setuid(_target_uid)
+            # Fix HOME so gvm-cli reads ~/.config/gvm/ from _gvm's home,
+            # not /root/ (which _gvm can't read → PermissionError in parser)
+            env["HOME"] = sock_pw.pw_dir or f"/home/{sock_pw.pw_name}"
+            env["USER"] = sock_pw.pw_name
+            env["LOGNAME"] = sock_pw.pw_name
     try:
         result = subprocess.run(
             gvm_cmd, capture_output=True, text=True,
