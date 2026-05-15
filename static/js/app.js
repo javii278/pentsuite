@@ -255,6 +255,23 @@ async function deleteProject() {
     toast('Proyecto eliminado', 'info');
 }
 
+function confirmClearProject() {
+    if (!state.activeProject) return;
+    if (!confirm(`¿Limpiar todos los datos de "${state.activeProject.name}"?\n\nSe eliminarán findings, loot, puertos y comandos guardados. El proyecto en sí no se borra.`)) return;
+    clearProjectData();
+}
+
+async function clearProjectData() {
+    const res = await fetch(`/api/projects/${state.activeProject.id}/clear`, { method: 'POST' });
+    if (!res.ok) { toast('Error al limpiar el proyecto', 'error'); return; }
+    // Reload the project state
+    const updated = await fetch(`/api/projects/${state.activeProject.id}`).then(r => r.json());
+    state.activeProject = updated;
+    // Refresh the current view
+    await loadPhase(state.activePhase);
+    toast('Datos del proyecto limpiados', 'success');
+}
+
 // ── Project Info ────────────────────────────────────────────────────────────
 
 function showProjectInfoModal() {
