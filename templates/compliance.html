@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PentSuite — Compliance</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    body{background:#0d1117;color:#e6edf3}
+    .card{background:#161b22;border:1px solid #30363d}
+    .nav-top{background:#161b22;border-bottom:1px solid #30363d;padding:.6rem 1.2rem}
+    .framework-card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem}
+    .ctrl-row{background:#0d1117;border:1px solid #21262d;border-radius:4px;padding:.4rem .8rem;margin-bottom:.3rem;font-size:.85rem}
+    .ctrl-fail{border-left:3px solid #ff3b3b}
+    .ctrl-pass{border-left:3px solid #3fb950}
+    .ctrl-warn{border-left:3px solid #f0b72f}
+    .compliance-pct{font-size:2.5rem;font-weight:700}
+    .framework-name{font-size:.8rem;color:#8b949e;font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+  </style>
+</head>
+<body>
+<nav class="nav-top d-flex align-items-center justify-content-between">
+  <div class="d-flex align-items-center gap-3">
+    <span style="font-weight:700"><i class="fas fa-terminal text-info"></i> PentSuite</span>
+    <a href="/dashboard" class="btn btn-sm btn-outline-secondary">Dashboard</a>
+    <a href="/attack-surface" class="btn btn-sm btn-outline-secondary">Attack Surface</a>
+  </div>
+  <div class="d-flex gap-2 align-items-center">
+    <select class="form-select form-select-sm bg-dark text-light border-secondary" id="projSel" style="width:260px" onchange="loadCompliance(this.value)">
+      <option value="">— Select project —</option>
+    </select>
+    <a href="/logout" class="btn btn-sm btn-outline-danger"><i class="fas fa-sign-out-alt"></i></a>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-4">
+  <h5 class="mb-4"><i class="fas fa-shield-alt me-2 text-info"></i>Compliance Report</h5>
+  <div id="no-sel" class="text-center py-5 text-secondary">Select a project to view compliance status</div>
+  <div id="content" style="display:none">
+    <div class="d-flex justify-content-end mb-3 gap-2">
+      <a id="sarif-link" href="#" class="btn btn-sm btn-outline-secondary" target="_blank"><i class="fas fa-file-code me-1"></i>SARIF Export</a>
+      <a id="json-link" href="#" class="btn btn-sm btn-outline-info" target="_blank"><i class="fas fa-download me-1"></i>Full Report JSON</a>
+    </div>
+
+    <!-- Framework summary row -->
+    <div class="row g-3 mb-4" id="framework-summary"></div>
+
+    <!-- Per-framework controls -->
+    <div id="frameworks-detail"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+async function loadProjects() {
+  const r = await fetch('/api/projects');
+  const projects = await r.json();
+  const sel = document.getElementById('projSel');
+  Object.entries(projects).forEach(([id,p]) => {
+    const o=document.createElement('option'); o.value=id; o.textContent=p.name||p.target||id; sel.appendChild(o);
+  });
+}
+
+async function loadCompliance(pid) {
+  if (!pid) { document.getElementById('no-sel').style.display=''; document.getElementById('content').style.display='none'; return; }
+  document.getElementById('no-sel').style.display='none';
+  document.getElementById('content').style.display='';
+  document.getElementById('sarif-link').href=`/api/projects/${pid}/report/sarif`;
+  document.getElementById('json-link').href=`/api/projects/${pid}/report/compliance`;
+
+  const r = await fetch(`/api/projects/${pid}/report/compliance`);
+  const data = await r.json();
+  renderFrameworks(data);
+}
+
+function renderFrameworks(data) {
+  const summary = document.getElementById('framework-summary');
+  const detail  = document.getElementById('frameworks-detail');
+  const frameworks = data.frameworks || {};
+
+  summary.innerHTML = Object.entries(frameworks).map(([fw, info]) => {
+    const total = (info.controls_violated||0) + (info.controls_compliant||0);
+    const pct = total ? Math.round((info.controls_compliant||0)/total*100) : 100;
+    const color = pct >= 80 ? '#3fb950' : pct >= 50 ? '#f0b72f' : '#ff3b3b';
+    return `
+    <div class="col-6 col-md-3">
+      <div class="framework-card text-center">
+        <div class="framework-name mb-1">${fw}</div>
+        <div class="compliance-pct" style="color:${color}">${pct}%</div>
+        <div class="text-secondary small">${info.controls_compliant||0}/${total} controls</div>
+        <div class="text-secondary" style="font-size:.7rem">${info.controls_violated||0} violations</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  detail.innerHTML = Object.entries(frameworks).map(([fw, info]) => {
+    const violations = info.violations || [];
+    if (!violations.length) return `
+      <div class="mb-3"><h6 class="mb-2">${fw} <span class="badge bg-success">Compliant</span></h6></div>`;
+    return `
+    <div class="mb-4">
+      <h6 class="mb-2" style="border-left:3px solid #388bfd;padding-left:.6rem">${fw}
+        <span class="badge" style="background:#3d0000;color:#ff3b3b;font-size:.7rem">${violations.length} violation(s)</span>
+      </h6>
+      ${violations.slice(0,20).map(v=>`
+        <div class="ctrl-row ctrl-fail">
+          <div class="d-flex justify-content-between">
+            <span>${v.control_id || 'Control'}</span>
+            <span class="text-secondary" style="font-size:.75rem">${v.requirement||''}</span>
+          </div>
+          <div class="text-secondary" style="font-size:.75rem">Finding: ${v.finding_title||''}</div>
+        </div>`).join('')}
+    </div>`;
+  }).join('');
+}
+
+loadProjects();
+</script>
+</body>
+</html>

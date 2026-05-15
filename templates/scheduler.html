@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PentSuite — Scheduler</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    body{background:#0d1117;color:#e6edf3}
+    .card{background:#161b22;border:1px solid #30363d}
+    .nav-top{background:#161b22;border-bottom:1px solid #30363d;padding:.6rem 1.2rem}
+    .status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+    .status-enabled{background:#3fb950} .status-disabled{background:#8b949e}
+  </style>
+</head>
+<body>
+<nav class="nav-top d-flex align-items-center justify-content-between">
+  <div class="d-flex align-items-center gap-3">
+    <span style="font-weight:700"><i class="fas fa-terminal text-info"></i> PentSuite</span>
+    <a href="/dashboard" class="btn btn-sm btn-outline-secondary">Dashboard</a>
+    <a href="/batch" class="btn btn-sm btn-outline-secondary">Batch</a>
+    <a href="/monitors" class="btn btn-sm btn-outline-secondary">Monitors</a>
+  </div>
+  <a href="/logout" class="btn btn-sm btn-outline-danger"><i class="fas fa-sign-out-alt"></i></a>
+</nav>
+
+<div class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h5 class="mb-0"><i class="fas fa-clock me-2 text-info"></i>Scheduled Scans</h5>
+    <button class="btn btn-sm btn-success" onclick="showCreate()"><i class="fas fa-plus me-1"></i>New Schedule</button>
+  </div>
+  <div class="card mb-3 p-3">
+    <small class="text-secondary">Cron expressions: <code>every_6h</code> | <code>every_24h</code> | <code>daily_03:00</code> | <code>weekly_mon_03:00</code></small>
+  </div>
+  <div id="sched-list"></div>
+</div>
+
+<div class="modal fade" id="createModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content" style="background:#161b22;border:1px solid #30363d">
+  <div class="modal-header border-0"><h6 class="modal-title">New Scheduled Scan</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+    <div class="mb-2"><label class="form-label small">Target IP / Domain</label><input class="form-control form-control-sm bg-dark text-light border-secondary" id="s-target" placeholder="10.10.10.5"></div>
+    <div class="mb-2"><label class="form-label small">Schedule</label><input class="form-control form-control-sm bg-dark text-light border-secondary" id="s-cron" value="every_24h"></div>
+    <div class="mb-2"><label class="form-label small">LHOST (attacker IP)</label><input class="form-control form-control-sm bg-dark text-light border-secondary" id="s-lhost"></div>
+  </div>
+  <div class="modal-footer border-0">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+    <button class="btn btn-sm btn-success" onclick="createSched()">Schedule</button>
+  </div>
+</div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+async function loadSchedules() {
+  const r = await fetch('/api/scheduled-scans');
+  const scans = await r.json();
+  const el = document.getElementById('sched-list');
+  if (!scans.length) { el.innerHTML='<div class="card card-body text-secondary text-center">No scheduled scans yet</div>'; return; }
+  el.innerHTML = scans.map(s=>`
+    <div class="card card-body mb-2">
+      <div class="d-flex align-items-center justify-content-between">
+        <div class="d-flex align-items-center gap-2">
+          <span class="status-dot status-${s.enabled?'enabled':'disabled'}"></span>
+          <span class="fw-bold">${s.target}</span>
+          <span class="badge bg-secondary">${s.cron_expr}</span>
+        </div>
+        <div class="d-flex gap-2 align-items-center">
+          <small class="text-secondary">Next: ${s.next_run?s.next_run.slice(0,16):'—'}</small>
+          <button class="btn btn-xs btn-outline-${s.enabled?'warning':'success'}" onclick="toggleSched('${s.id}',${s.enabled})">${s.enabled?'Pause':'Resume'}</button>
+          <a class="btn btn-xs btn-outline-info" href="/api/projects/${s.project_id}/autopilot/status" target="_blank">Status</a>
+          <button class="btn btn-xs btn-outline-danger" onclick="deleteSched('${s.id}')"><i class="fas fa-trash"></i></button>
+        </div>
+      </div>
+      <small class="text-secondary mt-1">Last run: ${s.last_run?s.last_run.slice(0,16):'never'} | Project: ${s.project_id?.slice(0,8)}</small>
+    </div>`).join('');
+}
+
+function showCreate() { new bootstrap.Modal(document.getElementById('createModal')).show(); }
+
+async function createSched() {
+  const target = document.getElementById('s-target').value.trim();
+  const cron_expr = document.getElementById('s-cron').value.trim();
+  const lhost = document.getElementById('s-lhost').value.trim();
+  if (!target) return;
+  const r = await fetch('/api/scheduled-scans',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({target, cron_expr, scan_config:{lhost}})});
+  const d = await r.json();
+  alert(`Scheduled! Next run: ${d.next_run}`);
+  bootstrap.Modal.getInstance(document.getElementById('createModal')).hide();
+  loadSchedules();
+}
+
+async function toggleSched(id, enabled) {
+  await fetch(`/api/scheduled-scans/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:enabled?0:1})});
+  loadSchedules();
+}
+
+async function deleteSched(id) {
+  if (!confirm('Delete this schedule?')) return;
+  await fetch(`/api/scheduled-scans/${id}`,{method:'DELETE'});
+  loadSchedules();
+}
+
+loadSchedules();
+setInterval(loadSchedules, 30000);
+</script>
+</body>
+</html>

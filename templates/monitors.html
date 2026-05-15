@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PentSuite — Monitors</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    body{background:#0d1117;color:#e6edf3}
+    .card{background:#161b22;border:1px solid #30363d}
+    .nav-top{background:#161b22;border-bottom:1px solid #30363d;padding:.6rem 1.2rem}
+    .monitor-card{cursor:pointer;transition:border-color .2s}
+    .monitor-card:hover{border-color:#388bfd}
+    .pulse{animation:pulse 2s infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+    .delta-badge{font-size:.7rem;padding:.2rem .5rem;border-radius:12px}
+    .delta-new{background:#3d0000;color:#ff3b3b}
+    .delta-fixed{background:#0f2d0f;color:#3fb950}
+  </style>
+</head>
+<body>
+<nav class="nav-top d-flex align-items-center justify-content-between">
+  <div class="d-flex align-items-center gap-3">
+    <span style="font-weight:700"><i class="fas fa-terminal text-info"></i> PentSuite</span>
+    <a href="/dashboard" class="btn btn-sm btn-outline-secondary">Dashboard</a>
+    <a href="/scheduler" class="btn btn-sm btn-outline-secondary">Scheduler</a>
+    <a href="/attack-surface" class="btn btn-sm btn-outline-secondary">Attack Surface</a>
+  </div>
+  <a href="/logout" class="btn btn-sm btn-outline-danger"><i class="fas fa-sign-out-alt"></i></a>
+</nav>
+
+<div class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h5 class="mb-0"><i class="fas fa-satellite-dish me-2 text-info"></i>Continuous Monitors</h5>
+    <button class="btn btn-sm btn-success" onclick="showCreate()"><i class="fas fa-plus me-1"></i>New Monitor</button>
+  </div>
+  <div id="monitors-list" class="row g-3"></div>
+</div>
+
+<div class="modal fade" id="createModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content" style="background:#161b22;border:1px solid #30363d">
+  <div class="modal-header border-0"><h6 class="modal-title">New Monitor</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+    <div class="mb-2"><label class="form-label small">Target</label><input class="form-control form-control-sm bg-dark text-light border-secondary" id="m-target" placeholder="10.10.10.5 or example.com"></div>
+    <div class="mb-2"><label class="form-label small">Interval</label>
+      <select class="form-select form-select-sm bg-dark text-light border-secondary" id="m-interval">
+        <option value="every_6h">Every 6 hours</option>
+        <option value="every_24h" selected>Every 24 hours</option>
+        <option value="weekly_mon_03:00">Weekly (Monday 03:00)</option>
+      </select>
+    </div>
+    <div class="mb-2"><label class="form-label small">Alert webhook URL (Slack/Teams)</label><input class="form-control form-control-sm bg-dark text-light border-secondary" id="m-webhook" placeholder="https://hooks.slack.com/..."></div>
+  </div>
+  <div class="modal-footer border-0">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+    <button class="btn btn-sm btn-success" onclick="createMonitor()">Create</button>
+  </div>
+</div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+async function loadMonitors() {
+  const r = await fetch('/api/monitors');
+  const monitors = await r.json();
+  const el = document.getElementById('monitors-list');
+  if (!monitors.length) { el.innerHTML='<div class="col"><div class="card card-body text-secondary text-center">No monitors yet — create one to start continuous monitoring</div></div>'; return; }
+  el.innerHTML = monitors.map(m => {
+    const delta = m.last_delta || {};
+    return `
+    <div class="col-md-6 col-lg-4">
+      <div class="card card-body monitor-card">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <h6 class="mb-0">${m.target}</h6>
+            <small class="text-secondary">${m.interval || m.id?.slice(0,8)}</small>
+          </div>
+          <span class="${m.enabled?'text-success pulse':'text-secondary'}" title="${m.enabled?'Active':'Paused'}">
+            <i class="fas fa-circle" style="font-size:.5rem"></i>
+          </span>
+        </div>
+        ${delta.new_findings?.length ? `<div class="mb-1"><span class="delta-badge delta-new">+${delta.new_findings.length} NEW</span></div>` : ''}
+        ${delta.fixed_findings?.length ? `<div class="mb-1"><span class="delta-badge delta-fixed">✓ ${delta.fixed_findings.length} FIXED</span></div>` : ''}
+        <small class="text-secondary d-block mb-2">Last run: ${m.last_run?m.last_run.slice(0,16):'never'}</small>
+        <div class="d-flex gap-1">
+          <button class="btn btn-xs btn-outline-info flex-grow-1" onclick="runNow('${m.id}')"><i class="fas fa-play me-1"></i>Run Now</button>
+          <button class="btn btn-xs btn-outline-${m.enabled?'warning':'success'}" onclick="toggleMon('${m.id}',${m.enabled?1:0})">${m.enabled?'Pause':'Resume'}</button>
+          <button class="btn btn-xs btn-outline-danger" onclick="deleteMon('${m.id}')"><i class="fas fa-trash"></i></button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function showCreate() { new bootstrap.Modal(document.getElementById('createModal')).show(); }
+
+async function createMonitor() {
+  const target   = document.getElementById('m-target').value.trim();
+  const interval = document.getElementById('m-interval').value;
+  const webhook  = document.getElementById('m-webhook').value.trim();
+  if (!target) return;
+  await fetch('/api/monitors',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({target, interval, webhook_url: webhook})});
+  bootstrap.Modal.getInstance(document.getElementById('createModal')).hide();
+  loadMonitors();
+}
+
+async function runNow(id) {
+  const btn = event.currentTarget;
+  btn.disabled = true; btn.textContent = 'Running...';
+  await fetch(`/api/monitors/${id}/run`,{method:'POST'});
+  setTimeout(()=>{ btn.disabled=false; loadMonitors(); }, 3000);
+}
+
+async function toggleMon(id, enabled) {
+  await fetch(`/api/monitors/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!enabled})});
+  loadMonitors();
+}
+
+async function deleteMon(id) {
+  if (!confirm('Delete this monitor?')) return;
+  await fetch(`/api/monitors/${id}`,{method:'DELETE'});
+  loadMonitors();
+}
+
+loadMonitors();
+setInterval(loadMonitors, 15000);
+</script>
+</body>
+</html>

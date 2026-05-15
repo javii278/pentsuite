@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PentSuite — Batch Scan</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    body{background:#0d1117;color:#e6edf3}
+    .card{background:#161b22;border:1px solid #30363d}
+    .nav-top{background:#161b22;border-bottom:1px solid #30363d;padding:.6rem 1.2rem}
+    .target-item{background:#0d1117;border:1px solid #21262d;border-radius:4px;padding:.3rem .6rem;margin:.2rem 0;font-size:.85rem}
+    .result-row{border-left:3px solid #388bfd;background:#161b22;padding:.5rem .8rem;margin-bottom:.3rem;border-radius:4px}
+    .result-row.has-critical{border-color:#ff3b3b}
+    .result-row.has-high{border-color:#ff7b2b}
+  </style>
+</head>
+<body>
+<nav class="nav-top d-flex align-items-center justify-content-between">
+  <div class="d-flex align-items-center gap-3">
+    <span style="font-weight:700"><i class="fas fa-terminal text-info"></i> PentSuite</span>
+    <a href="/dashboard" class="btn btn-sm btn-outline-secondary">Dashboard</a>
+    <a href="/scheduler" class="btn btn-sm btn-outline-secondary">Scheduler</a>
+  </div>
+  <a href="/logout" class="btn btn-sm btn-outline-danger"><i class="fas fa-sign-out-alt"></i></a>
+</nav>
+
+<div class="container py-4">
+  <h5 class="mb-4"><i class="fas fa-layer-group me-2 text-info"></i>Batch Scan</h5>
+
+  <div class="row g-4">
+    <div class="col-md-5">
+      <div class="card card-body">
+        <h6>Submit Targets</h6>
+        <div class="mb-3">
+          <label class="form-label small">Targets (one per line)</label>
+          <textarea class="form-control bg-dark text-light border-secondary" id="targets-input" rows="10" placeholder="10.10.10.1&#10;10.10.10.2&#10;192.168.1.0/24&#10;example.com"></textarea>
+        </div>
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label small">LHOST</label>
+            <input class="form-control form-control-sm bg-dark text-light border-secondary" id="batch-lhost" placeholder="10.10.14.1">
+          </div>
+          <div class="col-6">
+            <label class="form-label small">LPORT</label>
+            <input class="form-control form-control-sm bg-dark text-light border-secondary" id="batch-lport" value="4444">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label small">Mode</label>
+          <select class="form-select form-select-sm bg-dark text-light border-secondary" id="batch-mode">
+            <option value="normal">Normal (full autopilot)</option>
+            <option value="stealth">Stealth (slow + Tor)</option>
+            <option value="fast">Fast (recon only)</option>
+          </select>
+        </div>
+        <button class="btn btn-success w-100" onclick="startBatch()"><i class="fas fa-play me-2"></i>Start Batch</button>
+        <div class="text-secondary small mt-2 text-center">Free: 3 targets | Starter: 10 | Pro: 50 | Enterprise: 200</div>
+      </div>
+    </div>
+
+    <div class="col-md-7">
+      <div class="card card-body" id="results-card" style="display:none">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+          <h6 class="mb-0">Batch Results</h6>
+          <div>
+            <span class="badge bg-secondary" id="done-count">0</span> done /
+            <span class="badge bg-primary" id="running-count">0</span> running
+          </div>
+        </div>
+        <div id="batch-results"></div>
+      </div>
+      <div class="card card-body text-secondary text-center" id="no-results">
+        Submit targets to start a batch scan
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let currentBatchId = null;
+let pollInterval = null;
+
+async function startBatch() {
+  const raw = document.getElementById('targets-input').value.trim();
+  if (!raw) { alert('Enter at least one target'); return; }
+  const targets = raw.split('\n').map(t=>t.trim()).filter(Boolean);
+  const lhost = document.getElementById('batch-lhost').value.trim();
+  const lport = document.getElementById('batch-lport').value.trim();
+  const mode  = document.getElementById('batch-mode').value;
+
+  const r = await fetch('/api/batch-scan',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({targets, lhost, lport, mode})});
+  if (!r.ok) { const e=await r.json(); alert(e.error||'Error'); return; }
+  const d = await r.json();
+  currentBatchId = d.batch_id;
+  document.getElementById('no-results').style.display='none';
+  document.getElementById('results-card').style.display='';
+  renderResults(d.projects.map(p=>({...p,engine_status:'queued',findings:0,severity_breakdown:{}})));
+  if (pollInterval) clearInterval(pollInterval);
+  pollInterval = setInterval(pollBatch, 5000);
+  pollBatch();
+}
+
+async function pollBatch() {
+  if (!currentBatchId) return;
+  const r = await fetch(`/api/batch-scan/${currentBatchId}/status`);
+  const d = await r.json();
+  document.getElementById('done-count').textContent = d.done;
+  document.getElementById('running-count').textContent = d.running;
+  renderResults(d.results || []);
+  if (d.running === 0 && pollInterval) { clearInterval(pollInterval); pollInterval=null; }
+}
+
+function renderResults(results) {
+  const el = document.getElementById('batch-results');
+  el.innerHTML = results.map(r => {
+    const bd = r.severity_breakdown || {};
+    const cls = bd.critical>0?'has-critical':bd.high>0?'has-high':'';
+    return `
+    <div class="result-row ${cls}">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <span class="fw-bold">${r.target}</span>
+          <span class="badge bg-secondary ms-2" style="font-size:.65rem">${r.engine_status}</span>
+        </div>
+        <div class="d-flex gap-1">
+          ${bd.critical?`<span class="badge" style="background:#3d0000;color:#ff3b3b">${bd.critical}C</span>`:''}
+          ${bd.high?`<span class="badge" style="background:#3d1a00;color:#ff7b2b">${bd.high}H</span>`:''}
+          ${bd.medium?`<span class="badge" style="background:#3d2e00;color:#f0b72f">${bd.medium}M</span>`:''}
+          <a class="btn btn-xs btn-outline-info" href="/dashboard" onclick="localStorage.setItem('jumpProject','${r.project_id}')" target="_blank">View</a>
+        </div>
+      </div>
+      <small class="text-secondary">${r.findings} findings | ${r.project_id?.slice(0,8)}</small>
+    </div>`;
+  }).join('');
+}
+</script>
+</body>
+</html>

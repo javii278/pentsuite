@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PentSuite — Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    body{background:#0d1117;color:#e6edf3}
+    .stat-card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:1.4rem}
+    .stat-card .val{font-size:2.2rem;font-weight:700}
+    .stat-card.critical .val{color:#ff3b3b}
+    .stat-card.high .val{color:#ff7b2b}
+    .stat-card.medium .val{color:#f0b72f}
+    .stat-card.ok .val{color:#3fb950}
+    .risk-badge{font-size:3rem;font-weight:800;line-height:1}
+    .section-title{border-left:3px solid #388bfd;padding-left:.6rem;margin-bottom:1rem}
+    .finding-row{background:#161b22;border:1px solid #21262d;border-radius:6px;padding:.6rem 1rem;margin-bottom:.4rem;cursor:pointer}
+    .finding-row:hover{border-color:#388bfd}
+    .sev-pill{font-size:.7rem;padding:.2rem .5rem;border-radius:12px;font-weight:600}
+    .sev-critical{background:#3d0000;color:#ff3b3b}
+    .sev-high{background:#3d1a00;color:#ff7b2b}
+    .sev-medium{background:#3d2e00;color:#f0b72f}
+    .sev-low{background:#0f2d0f;color:#3fb950}
+    .sev-info{background:#0d1f3d;color:#58a6ff}
+    .nav-top{background:#161b22;border-bottom:1px solid #30363d;padding:.6rem 1.2rem}
+    .project-select{background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:.3rem .8rem;border-radius:6px}
+  </style>
+</head>
+<body>
+<nav class="nav-top d-flex align-items-center justify-content-between">
+  <div class="d-flex align-items-center gap-3">
+    <span style="font-weight:700;font-size:1.1rem"><i class="fas fa-terminal text-info"></i> PentSuite</span>
+    <a href="/" class="btn btn-sm btn-outline-secondary">Projects</a>
+    <a href="/orgs" class="btn btn-sm btn-outline-secondary">Orgs</a>
+    <a href="/monitors" class="btn btn-sm btn-outline-secondary">Monitors</a>
+    <a href="/scheduler" class="btn btn-sm btn-outline-secondary">Scheduler</a>
+    <a href="/batch" class="btn btn-sm btn-outline-secondary">Batch</a>
+    <a href="/compliance" class="btn btn-sm btn-outline-secondary">Compliance</a>
+    <a href="/attack-surface" class="btn btn-sm btn-outline-secondary">Attack Surface</a>
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    <select class="project-select" id="projSel" onchange="loadProject(this.value)">
+      <option value="">— Select project —</option>
+    </select>
+    <a href="/logout" class="btn btn-sm btn-outline-danger"><i class="fas fa-sign-out-alt"></i></a>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-3">
+  <div id="no-proj" class="text-center py-5 text-secondary">
+    <i class="fas fa-radar fa-3x mb-3"></i><br>Select a project above to view its dashboard
+  </div>
+
+  <div id="proj-content" style="display:none">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <h5 id="proj-name" class="mb-0"></h5>
+      <div class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-info" onclick="downloadPoc()"><i class="fas fa-code"></i> Download PoC</button>
+        <button class="btn btn-sm btn-outline-warning" onclick="openCompliance()"><i class="fas fa-shield-alt"></i> Compliance</button>
+        <button class="btn btn-sm btn-outline-success" onclick="openSarif()"><i class="fas fa-file-code"></i> SARIF</button>
+      </div>
+    </div>
+
+    <!-- KPI row -->
+    <div class="row g-3 mb-4">
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="stat-card critical">
+          <div class="label text-secondary small">CRITICAL</div>
+          <div class="val" id="kpi-critical">0</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="stat-card high">
+          <div class="label text-secondary small">HIGH</div>
+          <div class="val" id="kpi-high">0</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="stat-card medium">
+          <div class="label text-secondary small">MEDIUM</div>
+          <div class="val" id="kpi-medium">0</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="stat-card ok">
+          <div class="label text-secondary small">LOW</div>
+          <div class="val" id="kpi-low">0</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="stat-card" style="border-color:#388bfd">
+          <div class="label text-secondary small">RISK SCORE</div>
+          <div class="val text-info" id="kpi-risk">—</div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="stat-card">
+          <div class="label text-secondary small">GRADE</div>
+          <div class="val" id="kpi-grade">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3">
+      <!-- Chart -->
+      <div class="col-md-4">
+        <div class="stat-card h-100">
+          <h6 class="section-title">Severity Distribution</h6>
+          <canvas id="sevChart" height="200"></canvas>
+        </div>
+      </div>
+      <!-- Risk zones -->
+      <div class="col-md-4">
+        <div class="stat-card h-100">
+          <h6 class="section-title">Risk Zones</h6>
+          <div id="risk-zones"></div>
+        </div>
+      </div>
+      <!-- Quick actions -->
+      <div class="col-md-4">
+        <div class="stat-card h-100">
+          <h6 class="section-title">Integrations</h6>
+          <div class="d-grid gap-2">
+            <button class="btn btn-outline-secondary btn-sm" onclick="openGhIssues()"><i class="fab fa-github me-2"></i>Create GitHub Issues</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="openJira()"><i class="fab fa-jira me-2"></i>Create Jira Tickets</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="openNotify()"><i class="fas fa-bell me-2"></i>Send Notifications</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="openCompliance()"><i class="fas fa-clipboard-check me-2"></i>Full Compliance Report</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Findings table -->
+    <div class="mt-4">
+      <h6 class="section-title">Findings <span class="badge bg-secondary" id="findings-count">0</span></h6>
+      <div id="findings-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- GitHub Issues Modal -->
+<div class="modal fade" id="ghModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content" style="background:#161b22;border:1px solid #30363d">
+  <div class="modal-header border-0"><h6 class="modal-title">Create GitHub Issues</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+    <div class="mb-2"><label class="form-label small">Repository (owner/repo)</label><input class="form-control form-control-sm bg-dark text-light border-secondary" id="gh-repo" placeholder="myorg/myrepo"></div>
+    <div class="mb-2"><label class="form-label small">GitHub Token</label><input type="password" class="form-control form-control-sm bg-dark text-light border-secondary" id="gh-token"></div>
+    <div class="mb-2"><label class="form-label small">Min Severity</label>
+      <select class="form-select form-select-sm bg-dark text-light border-secondary" id="gh-sev">
+        <option value='["critical","high"]'>Critical + High</option>
+        <option value='["critical","high","medium"]'>Critical + High + Medium</option>
+      </select>
+    </div>
+  </div>
+  <div class="modal-footer border-0">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+    <button class="btn btn-sm btn-success" onclick="submitGhIssues()">Create Issues</button>
+  </div>
+</div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let currentProjectId = null;
+let sevChart = null;
+
+async function loadProjects() {
+  const r = await fetch('/api/projects');
+  const projects = await r.json();
+  const sel = document.getElementById('projSel');
+  Object.entries(projects).forEach(([id, p]) => {
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = p.name || p.target || id;
+    sel.appendChild(opt);
+  });
+}
+
+async function loadProject(pid) {
+  if (!pid) { document.getElementById('no-proj').style.display=''; document.getElementById('proj-content').style.display='none'; return; }
+  currentProjectId = pid;
+  document.getElementById('no-proj').style.display='none';
+  document.getElementById('proj-content').style.display='';
+  const [projR, riskR, surfR] = await Promise.all([
+    fetch(`/api/projects/${pid}`),
+    fetch(`/api/projects/${pid}/risk-score`),
+    fetch(`/api/projects/${pid}/attack-surface`),
+  ]);
+  const proj = await projR.json();
+  const risk = await riskR.json();
+  const surf = await surfR.json();
+  document.getElementById('proj-name').textContent = `${proj.name || ''} → ${proj.target || ''}`;
+  document.getElementById('kpi-critical').textContent = risk.breakdown?.critical || 0;
+  document.getElementById('kpi-high').textContent = risk.breakdown?.high || 0;
+  document.getElementById('kpi-medium').textContent = risk.breakdown?.medium || 0;
+  document.getElementById('kpi-low').textContent = risk.breakdown?.low || 0;
+  document.getElementById('kpi-risk').textContent = (risk.risk_score ?? '—') + '/10';
+  const grade = surf.latest?.grade || '—';
+  const gradeEl = document.getElementById('kpi-grade');
+  gradeEl.textContent = grade;
+  gradeEl.style.color = {A:'#3fb950',B:'#58a6ff',C:'#f0b72f',D:'#ff7b2b',F:'#ff3b3b'}[grade] || '#e6edf3';
+  renderSevChart(risk.breakdown || {});
+  renderRiskZones(surf.latest?.risk_zones || {});
+  renderFindings(proj.findings || []);
+}
+
+function renderSevChart(bd) {
+  const ctx = document.getElementById('sevChart').getContext('2d');
+  if (sevChart) sevChart.destroy();
+  sevChart = new Chart(ctx, {
+    type:'doughnut',
+    data:{ labels:['Critical','High','Medium','Low','Info'],
+      datasets:[{data:[bd.critical||0,bd.high||0,bd.medium||0,bd.low||0,bd.info||0],
+        backgroundColor:['#ff3b3b','#ff7b2b','#f0b72f','#3fb950','#388bfd'],borderWidth:0}]},
+    options:{plugins:{legend:{labels:{color:'#e6edf3',boxWidth:12}}}}
+  });
+}
+
+function renderRiskZones(zones) {
+  const el = document.getElementById('risk-zones');
+  el.innerHTML = Object.entries(zones).map(([k,v]) => `
+    <div class="mb-2">
+      <div class="d-flex justify-content-between small mb-1"><span>${k.charAt(0).toUpperCase()+k.slice(1)}</span><span>${v}/10</span></div>
+      <div class="progress" style="height:6px"><div class="progress-bar" style="width:${v*10}%;background:${v>=8?'#ff3b3b':v>=5?'#f0b72f':'#3fb950'}"></div></div>
+    </div>`).join('');
+}
+
+function renderFindings(findings) {
+  document.getElementById('findings-count').textContent = findings.length;
+  const el = document.getElementById('findings-list');
+  if (!findings.length) { el.innerHTML='<div class="text-secondary text-center py-3">No findings yet</div>'; return; }
+  el.innerHTML = findings.sort((a,b)=>{const w={critical:4,high:3,medium:2,low:1,info:0};return (w[b.severity]||0)-(w[a.severity]||0);})
+    .slice(0,50).map(f=>`
+    <div class="finding-row d-flex align-items-center gap-2" title="${(f.description||'').replace(/"/g,"'")}">
+      <span class="sev-pill sev-${f.severity||'info'}">${(f.severity||'info').toUpperCase()}</span>
+      <span class="flex-grow-1 small">${f.title||'Untitled'}</span>
+      <span class="text-secondary" style="font-size:.7rem">${(f.hosts||[]).join(', ')}</span>
+      ${f.cve?`<span class="badge bg-secondary" style="font-size:.65rem">${f.cve}</span>`:''}
+    </div>`).join('');
+}
+
+function openGhIssues() { new bootstrap.Modal(document.getElementById('ghModal')).show(); }
+async function submitGhIssues() {
+  if (!currentProjectId) return;
+  const repo = document.getElementById('gh-repo').value;
+  const token = document.getElementById('gh-token').value;
+  const sev = JSON.parse(document.getElementById('gh-sev').value);
+  const r = await fetch(`/api/projects/${currentProjectId}/integrations/github-issues`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({repo, token, severity_filter: sev})
+  });
+  const d = await r.json();
+  alert(`Created ${d.created} GitHub issue(s)`);
+  bootstrap.Modal.getInstance(document.getElementById('ghModal')).hide();
+}
+function openJira() { alert('Configure Jira: POST /api/projects/{id}/integrations/jira'); }
+function openNotify() { window.location = `/api/projects/${currentProjectId}/notify-findings`; }
+function openCompliance() { window.open(`/api/projects/${currentProjectId}/report/compliance`,'_blank'); }
+function openSarif() { window.open(`/api/projects/${currentProjectId}/report/sarif`,'_blank'); }
+function downloadPoc() { window.open(`/api/projects/${currentProjectId}/replay-pocs?format=python`,'_blank'); }
+
+loadProjects();
+</script>
+</body>
+</html>

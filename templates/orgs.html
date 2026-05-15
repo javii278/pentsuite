@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="es" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PentSuite — Organisations</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    body{background:#0d1117;color:#e6edf3}
+    .card{background:#161b22;border:1px solid #30363d}
+    .nav-top{background:#161b22;border-bottom:1px solid #30363d;padding:.6rem 1.2rem}
+    .plan-badge{font-size:.7rem;padding:.2rem .5rem;border-radius:12px;font-weight:600}
+    .plan-free{background:#1c2332;color:#8b949e}
+    .plan-starter{background:#0f2d0f;color:#3fb950}
+    .plan-pro{background:#0d1f3d;color:#58a6ff}
+    .plan-enterprise{background:#3d0050;color:#d2a8ff}
+    .api-key-display{font-family:monospace;font-size:.8rem;background:#0d1117;padding:.3rem .6rem;border-radius:4px;border:1px solid #30363d}
+  </style>
+</head>
+<body>
+<nav class="nav-top d-flex align-items-center justify-content-between">
+  <div class="d-flex align-items-center gap-3">
+    <span style="font-weight:700"><i class="fas fa-terminal text-info"></i> PentSuite</span>
+    <a href="/dashboard" class="btn btn-sm btn-outline-secondary">Dashboard</a>
+    <a href="/monitors" class="btn btn-sm btn-outline-secondary">Monitors</a>
+    <a href="/scheduler" class="btn btn-sm btn-outline-secondary">Scheduler</a>
+  </div>
+  <a href="/logout" class="btn btn-sm btn-outline-danger"><i class="fas fa-sign-out-alt"></i></a>
+</nav>
+
+<div class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h5 class="mb-0"><i class="fas fa-building me-2 text-info"></i>Organisations</h5>
+    <button class="btn btn-sm btn-success" onclick="showCreateOrg()"><i class="fas fa-plus me-1"></i>New Org</button>
+  </div>
+  <div id="orgs-list" class="row g-3"></div>
+</div>
+
+<!-- Create Org Modal -->
+<div class="modal fade" id="createModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content" style="background:#161b22;border:1px solid #30363d">
+  <div class="modal-header border-0"><h6 class="modal-title">New Organisation</h6><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+    <div class="mb-2"><label class="form-label small">Name</label><input class="form-control form-control-sm bg-dark text-light border-secondary" id="new-org-name"></div>
+    <div class="mb-2"><label class="form-label small">Plan</label>
+      <select class="form-select form-select-sm bg-dark text-light border-secondary" id="new-org-plan">
+        <option value="free">Free (5 scans/h)</option>
+        <option value="starter">Starter (50 scans/h)</option>
+        <option value="pro">Pro (500 scans/h)</option>
+        <option value="enterprise">Enterprise (unlimited)</option>
+      </select>
+    </div>
+  </div>
+  <div class="modal-footer border-0">
+    <button class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+    <button class="btn btn-sm btn-success" onclick="createOrg()">Create</button>
+  </div>
+</div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+async function loadOrgs() {
+  const r = await fetch('/api/orgs');
+  const orgs = await r.json();
+  const el = document.getElementById('orgs-list');
+  if (!orgs.length) { el.innerHTML='<div class="col"><div class="card card-body text-secondary text-center">No organisations yet</div></div>'; return; }
+  el.innerHTML = orgs.map(o => `
+    <div class="col-md-6 col-lg-4">
+      <div class="card card-body">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <h6 class="mb-0">${o.name}</h6>
+            <small class="text-secondary">${o.id?.slice(0,8)}</small>
+          </div>
+          <span class="plan-badge plan-${o.plan}">${(o.plan||'free').toUpperCase()}</span>
+        </div>
+        <div class="api-key-display mb-3">${o.api_key || '—'}</div>
+        <div class="row text-center mb-2">
+          <div class="col"><div class="text-secondary" style="font-size:.7rem">SCANS/H</div><div class="fw-bold">${{free:5,starter:50,pro:500,enterprise:'∞'}[o.plan]||5}</div></div>
+          <div class="col"><div class="text-secondary" style="font-size:.7rem">MEMBERS</div><div class="fw-bold">${(o.members||[]).length}</div></div>
+        </div>
+        <div class="d-flex gap-1">
+          <button class="btn btn-xs btn-outline-warning flex-grow-1" onclick="rotateKey('${o.id}')"><i class="fas fa-sync-alt me-1"></i>Rotate Key</button>
+          <button class="btn btn-xs btn-outline-secondary" onclick="editOrg('${o.id}','${o.name}','${o.plan}')"><i class="fas fa-edit"></i></button>
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+function showCreateOrg() { new bootstrap.Modal(document.getElementById('createModal')).show(); }
+
+async function createOrg() {
+  const name = document.getElementById('new-org-name').value.trim();
+  const plan = document.getElementById('new-org-plan').value;
+  if (!name) return;
+  await fetch('/api/orgs', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,plan})});
+  bootstrap.Modal.getInstance(document.getElementById('createModal')).hide();
+  loadOrgs();
+}
+
+async function rotateKey(orgId) {
+  if (!confirm('Rotate API key? Old key will stop working immediately.')) return;
+  const r = await fetch(`/api/orgs/${orgId}/rotate-key`,{method:'POST'});
+  const d = await r.json();
+  alert(`New API key: ${d.api_key}`);
+  loadOrgs();
+}
+
+async function editOrg(orgId, name, plan) {
+  const newName = prompt('Organisation name:', name);
+  if (!newName) return;
+  const newPlan = prompt('Plan (free/starter/pro/enterprise):', plan);
+  await fetch(`/api/orgs/${orgId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:newName,plan:newPlan})});
+  loadOrgs();
+}
+
+loadOrgs();
+</script>
+</body>
+</html>
