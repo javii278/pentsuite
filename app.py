@@ -5577,16 +5577,22 @@ MODE_CONFIG = {
         "nmap_timing": "T1", "nmap_extra": "--max-rate 100 --scan-delay 2s --top-ports 1000",
         "threads": 5, "brute_force": False, "delay_between_jobs": 10,
         "workers": 1, "job_timeout": 600,
+        "scan_timeout": 900,   # 15 min — slow scan, give it time
+        "host_timeout": "20m",
     },
     "normal": {
         "nmap_timing": "T3", "nmap_extra": "--min-rate 1000 -p-",
         "threads": 20, "brute_force": True, "delay_between_jobs": 2,
         "workers": 3, "job_timeout": 240,
+        "scan_timeout": 600,   # 10 min
+        "host_timeout": "12m",
     },
     "aggressive": {
         "nmap_timing": "T4", "nmap_extra": "--min-rate 5000 -p-",
         "threads": 50, "brute_force": True, "delay_between_jobs": 0,
-        "workers": 5, "job_timeout": 120,
+        "workers": 5, "job_timeout": 300,  # raised from 120 → 300 (5 min per tool)
+        "scan_timeout": 480,   # 8 min for initial nmap -p-
+        "host_timeout": "10m",
     },
 }
 
@@ -6429,13 +6435,30 @@ class AutonomousEngine:
             self._log(f"SCAN [{target}] Memoria: {len(prev)} puertos conocidos — re-scanning para actualizar")
 
         cfg = MODE_CONFIG.get(self.mode, MODE_CONFIG["normal"])
+        # -Pn: skip host discovery (many cloud/VPS hosts block ICMP ping → nmap reports "down" and exits)
         # -sC: default scripts (banners, auth, etc.) -O: OS detection
-        cmd = (f"nmap -sV -sC -O -{cfg['nmap_timing']} {cfg['nmap_extra']} --open"
-               f" --script-timeout 30s {target} 2>/dev/null")
-        self._log(f"SCAN [{target}] Iniciando scan con scripts ({self.mode})")
-        output, _ = self._run_sync(f"Nmap-Initial:{target}", cmd, target)
+        cmd = (f"nmap -Pn -sV -sC -O -{cfg['nmap_timing']} {cfg['nmap_extra']} --open"
+               f" --script-timeout 30s --host-timeout {cfg.get('host_timeout','15m')} {target} 2>/dev/null")
+        self._log(f"SCAN [{target}] Iniciando scan con scripts ({self.mode}) + -Pn (skip ping)")
+        # Initial scan needs a long timeout: -p- on aggressive mode can take 5-15 min
+        _scan_timeout = cfg.get("scan_timeout", 600)
+        output, _ = self._run_sync(f"Nmap-Initial:{target}", cmd, target, timeout=_scan_timeout)
         parsed = _parse_tool_output("nmap", output, target)
         open_ports = parsed.get("open_ports", [])
+
+        # If still 0 ports (unlikely after -Pn, but handle gracefully):
+        # fall back to a quick top-1000 scan to confirm host is truly silent
+        if not open_ports and prev:
+            self._log(f"SCAN [{target}] 0 puertos con -p- — fallback top-1000 por puertos conocidos en memoria")
+            known_ports = ",".join(str(p["port"]) for p in prev)
+            cmd_fb = (f"nmap -Pn -sV -T4 -p {known_ports} --open "
+                      f"--script-timeout 20s {target} 2>/dev/null")
+            output_fb, _ = self._run_sync(f"Nmap-Fallback:{target}", cmd_fb, target, timeout=120)
+            parsed_fb = _parse_tool_output("nmap", output_fb, target)
+            open_ports = parsed_fb.get("open_ports", [])
+            if open_ports:
+                self._log(f"SCAN [{target}] Fallback encontró {len(open_ports)} puertos conocidos")
+                output = output_fb  # use this for enrichment below
 
         HIGH_RISK_PORTS = {21, 22, 23, 445, 3389, 1433, 3306, 5432, 27017, 6379, 5900, 2049}
         if open_ports:
