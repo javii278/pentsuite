@@ -15091,18 +15091,25 @@ _gvm_port_list_cache: dict = {}
 
 def _gvm_resolve_port_list(socket_path, gmp_user, gmp_pass):
     """
-    Return the UUID of the best available TCP port list in this GVM installation.
-    Priority:
-      1. Cached result (per socket_path)
-      2. "All IANA assigned TCP" / "All TCP" by name
-      3. Any port_list whose name contains "TCP"
-      4. First port_list found
-      5. Hardcoded fallback constant
+    Return the UUID of a working port list for this GVM installation.
+
+    Strategy (first that succeeds wins):
+      1. Return cached result for this socket_path
+      2. Query <get_port_lists/> and pick "All IANA assigned TCP" / "All TCP" by name
+      3. Use any TCP-containing port list found
+      4. Use the first port list found (any is better than a wrong UUID)
+      5. Create a fresh port list (T:1-65535) — works on any GVM installation
+      6. Return hardcoded fallback UUID
     """
     cache_key = socket_path
     if cache_key in _gvm_port_list_cache:
         return _gvm_port_list_cache[cache_key]
 
+    def _cache_and_return(pl_id):
+        _gvm_port_list_cache[cache_key] = pl_id
+        return pl_id
+
+    # ── Strategy 1-4: try to find an existing port list ───────────────────────
     try:
         root = _gvm_exec(socket_path, gmp_user, gmp_pass, "<get_port_lists/>")
         port_lists = []
@@ -15110,40 +15117,69 @@ def _gvm_resolve_port_list(socket_path, gmp_user, gmp_pass):
             pl_id   = pl.get("id", "")
             pl_name = (pl.findtext("name") or "").strip()
             if pl_id and pl_name:
-                port_lists.append((pl_id, pl_name))
+                port_lists.append((pl_id, pl_name.lower()))
 
-        if not port_lists:
-            return GVM_ALL_TCP_PORT_LIST
+        if port_lists:
+            # Priority 1: well-known exact names
+            for preferred in (
+                "all iana assigned tcp",
+                "all iana assigned tcp and udp",
+                "all tcp",
+                "all tcp and nmap top 100 udp",
+            ):
+                for pl_id, pl_name in port_lists:
+                    if pl_name == preferred:
+                        return _cache_and_return(pl_id)
 
-        # Priority 1: exact well-known names
-        for preferred in (
-            "All IANA assigned TCP",
-            "All IANA assigned TCP and UDP",
-            "All TCP",
-            "All TCP and Nmap top 100 UDP",
-        ):
+            # Priority 2: contains "tcp" + "iana"
             for pl_id, pl_name in port_lists:
-                if pl_name.lower() == preferred.lower():
-                    _gvm_port_list_cache[cache_key] = pl_id
-                    return pl_id
+                if "tcp" in pl_name and "iana" in pl_name:
+                    return _cache_and_return(pl_id)
 
-        # Priority 2: name contains "TCP" (case-insensitive)
-        for pl_id, pl_name in port_lists:
-            if "tcp" in pl_name.lower() and "iana" in pl_name.lower():
-                _gvm_port_list_cache[cache_key] = pl_id
-                return pl_id
-        for pl_id, pl_name in port_lists:
-            if "tcp" in pl_name.lower():
-                _gvm_port_list_cache[cache_key] = pl_id
-                return pl_id
+            # Priority 3: contains "tcp"
+            for pl_id, pl_name in port_lists:
+                if "tcp" in pl_name:
+                    return _cache_and_return(pl_id)
 
-        # Priority 3: first available
-        pl_id = port_lists[0][0]
-        _gvm_port_list_cache[cache_key] = pl_id
-        return pl_id
+            # Priority 4: first available (anything beats a wrong UUID)
+            return _cache_and_return(port_lists[0][0])
 
     except Exception:
-        return GVM_ALL_TCP_PORT_LIST
+        pass  # get_port_lists failed — fall through to create
+
+    # ── Strategy 5: create a fresh port list T:1-65535 ────────────────────────
+    # This works on ANY GVM installation regardless of version or pre-seeded data.
+    try:
+        create_pl_xml = (
+            "<create_port_list>"
+            "<name>PentSuite All TCP</name>"
+            "<comment>Created automatically by PentestSuite</comment>"
+            "<port_range>T:1-65535</port_range>"
+            "</create_port_list>"
+        )
+        root = _gvm_exec(socket_path, gmp_user, gmp_pass, create_pl_xml)
+        # GVM returns: <create_port_list_response status="201" id="UUID">
+        # or <create_port_list_response status="400" ...> if it already exists
+        pl_id = root.get("id", "")
+        if pl_id:
+            return _cache_and_return(pl_id)
+        # If it already existed, GVM may return status 400 with id — check
+        if root.get("status", "") == "400":
+            # Try to find the one we just tried to create by name
+            try:
+                root2 = _gvm_exec(socket_path, gmp_user, gmp_pass,
+                                  "<get_port_lists filter='name=PentSuite All TCP'/>")
+                for pl in root2.findall(".//port_list"):
+                    pl_id = pl.get("id", "")
+                    if pl_id:
+                        return _cache_and_return(pl_id)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # ── Strategy 6: hardcoded fallback ────────────────────────────────────────
+    return GVM_ALL_TCP_PORT_LIST
 
 
 def _gvm_exec(socket_path, gmp_user, gmp_pass, xml_query, timeout=60):

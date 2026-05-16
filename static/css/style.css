@@ -129,6 +129,27 @@ body {
     white-space: nowrap;
 }
 
+.pi-actions {
+    display: none;
+    gap: 4px;
+    margin-top: 5px;
+}
+.project-item:hover .pi-actions {
+    display: flex;
+}
+.pi-btn {
+    border: none;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+    opacity: 0.75;
+    transition: opacity 0.15s;
+}
+.pi-btn:hover { opacity: 1; }
+.pi-btn-warn  { background: #3d2e00; color: #f0b72f; }
+.pi-btn-danger{ background: #3d0000; color: #ff3b3b; }
+
 /* ── Content ── */
 .content {
     flex: 1;

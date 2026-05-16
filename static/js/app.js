@@ -189,8 +189,43 @@ function renderSidebar() {
              onclick="selectProject('${p.id}')">
             <div class="pi-name">${h(p.name)}</div>
             <div class="pi-meta">${h(p.client || 'Sin cliente')} · ${fmtDate(p.created_at)}</div>
+            <div class="pi-actions" onclick="event.stopPropagation()">
+                <button class="pi-btn pi-btn-warn" title="Limpiar datos (mantiene proyecto)"
+                    onclick="sidebarClearProject('${p.id}','${h(p.name)}')">
+                    <i class="fas fa-broom"></i>
+                </button>
+                <button class="pi-btn pi-btn-danger" title="Eliminar proyecto"
+                    onclick="sidebarDeleteProject('${p.id}','${h(p.name)}')">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
         </div>
     `).join('');
+}
+
+async function sidebarClearProject(id, name) {
+    if (!confirm(`¿Limpiar todos los datos de "${name}"?\n\nSe eliminarán findings, loot, puertos y comandos. El proyecto no se borra.`)) return;
+    const res = await fetch(`/api/projects/${id}/clear`, { method: 'POST' });
+    if (!res.ok) { toast('Error al limpiar', 'error'); return; }
+    if (state.activeProject?.id === id) {
+        const updated = await fetch(`/api/projects/${id}`).then(r => r.json());
+        state.activeProject = updated;
+        await loadPhase(state.activePhase);
+    }
+    toast(`"${name}" limpiado`, 'success');
+}
+
+async function sidebarDeleteProject(id, name) {
+    if (!confirm(`¿Eliminar el proyecto "${name}"? Esta acción no se puede deshacer.`)) return;
+    await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+    if (state.activeProject?.id === id) {
+        state.activeProject = null;
+        document.getElementById('project-view').classList.add('d-none');
+        document.getElementById('empty-view').classList.remove('d-none');
+        document.getElementById('nav-project-name').textContent = '';
+    }
+    await loadProjects();
+    toast(`"${name}" eliminado`, 'info');
 }
 
 async function selectProject(id) {
