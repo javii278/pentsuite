@@ -5311,7 +5311,34 @@ function _apAppendBrainLog(line) {
     if (!el) return;
 
     const tag = (line.split('] ')[1]?.split(' ')[0] || '').toLowerCase();
-    const lineUp = line.toUpperCase();
+
+    // ── PWNED: special full-width banner ──────────────────────────────────────
+    if (tag === 'pwned') {
+        const isPwned = line.includes('ACCESO CONFIRMADO');
+        const isSep   = line.includes('█████');
+        const div = document.createElement('div');
+        if (isSep) {
+            div.className = 'ap-log-line log-pwned-sep';
+            div.textContent = line;
+        } else {
+            div.className = 'ap-log-line log-pwned';
+            div.textContent = '💀 ' + line;
+            // Show a toast only for the main PWNED line
+            if (isPwned) {
+                // Extract target from log line pattern: PWNED [target]
+                const m = line.match(/PWNED \[([^\]]+)\]/);
+                const tgt = m ? m[1] : 'host';
+                toast(`💀 ACCESO CONFIRMADO en ${tgt}! Ver Brain Log.`, 'error');
+                // If there's a dedicated pwned banner area, update it
+                _apShowPwnedBanner(line);
+            }
+        }
+        el.appendChild(div);
+        el.scrollTop = el.scrollHeight;
+        const cnt = document.getElementById('ap-log-count');
+        if (cnt) cnt.textContent = `${el.children.length} líneas`;
+        return;
+    }
 
     // Priority coloring: FOUND/REACT/EXPLOIT get special highlight
     let cls = '';
@@ -5331,11 +5358,11 @@ function _apAppendBrainLog(line) {
     else if (['sweep','osint'].includes(tag)) cls = 'log-sweep';
     else if (tag === 'pivot')    cls = 'log-cred';
     else if (tag === 'timeout')  cls = 'log-warn';
+    else if (tag === 'evidence') cls = 'log-react';
     else                         cls = 'log-info';
 
     const div = document.createElement('div');
     div.className = `ap-log-line ${cls}`;
-    // Icon prefix for key events
     let prefix = '';
     if (cls === 'log-found')    prefix = '🔴 ';
     else if (cls === 'log-react') prefix = '⚡ ';
@@ -5347,9 +5374,30 @@ function _apAppendBrainLog(line) {
     const cnt = document.getElementById('ap-log-count');
     if (cnt) cnt.textContent = `${el.children.length} líneas`;
 
-    // Update phase bar from accumulated log lines
     const allLines = Array.from(el.children).map(c => c.textContent);
     _apUpdatePhase(allLines);
+}
+
+function _apShowPwnedBanner(logLine) {
+    // Show/update the sticky PWNED banner above the brain log
+    let banner = document.getElementById('ap-pwned-banner');
+    if (!banner) {
+        const logEl = document.getElementById('ap-brain-log');
+        if (!logEl) return;
+        banner = document.createElement('div');
+        banner.id = 'ap-pwned-banner';
+        banner.style.cssText = 'background:#3d0000;border:2px solid #ff3b3b;border-radius:6px;padding:10px 14px;margin-bottom:8px;font-size:12px;font-family:monospace;color:#ff3b3b;display:none;';
+        logEl.parentNode.insertBefore(banner, logEl);
+    }
+    // Accumulate pwned messages
+    const existing = banner.dataset.lines ? JSON.parse(banner.dataset.lines) : [];
+    if (!existing.includes(logLine)) existing.push(logLine);
+    banner.dataset.lines = JSON.stringify(existing);
+    banner.style.display = 'block';
+    banner.innerHTML = '<div style="font-weight:700;font-size:13px;margin-bottom:6px">💀 SISTEMA COMPROMETIDO</div>' +
+        existing.filter(l => l.includes('ACCESO CONFIRMADO') || l.includes('Comando') || l.includes('Evidencia'))
+               .map(l => `<div>${h(l.replace(/PWNED \[[^\]]+\] ██  /,''))}</div>`)
+               .join('');
 }
 
 // ── Status Poll ────────────────────────────────────────────────────────────
@@ -5433,10 +5481,36 @@ function _apUpdateLiveFindings(findings) {
     const SEV_COLOR = {critical:'#f85149', high:'#f0883e', medium:'#d29922', low:'#58a6ff', info:'#8b949e'};
     const SEV_ICON  = {critical:'fa-skull-crossbones', high:'fa-triangle-exclamation', medium:'fa-circle-exclamation', low:'fa-info-circle', info:'fa-info'};
     const sorted = [...findings].sort((a,b) => {
+        // Pwned findings always first
+        if (a.pwned && !b.pwned) return -1;
+        if (!a.pwned && b.pwned) return 1;
         const o = {critical:0, high:1, medium:2, low:3, info:4};
         return (o[a.severity]??5) - (o[b.severity]??5);
     });
-    el.innerHTML = sorted.slice(0, 30).map(f => `
+
+    el.innerHTML = sorted.slice(0, 30).map(f => {
+        const isPwned = f.pwned || f.source === 'autopilot-exploit';
+        if (isPwned) {
+            // Full-width exploit card
+            return `
+            <div class="ap-finding-row ap-finding-pwned"
+                 style="border:2px solid #ff3b3b;background:#200000;border-radius:5px;padding:8px;margin-bottom:6px;cursor:pointer"
+                 onclick="this.querySelector('.ap-pwned-detail').style.display=this.querySelector('.ap-pwned-detail').style.display==='none'?'block':'none'">
+                <div style="display:flex;align-items:center;gap:8px">
+                    <span style="color:#ff3b3b;font-size:16px">💀</span>
+                    <span style="color:#ff3b3b;font-weight:700;font-size:12px">${h(f.title||'—')}</span>
+                    <span class="badge ms-auto" style="background:#ff3b3b;font-size:9px">COMPROMETIDO</span>
+                </div>
+                ${f.key_evidence ? `<div style="color:#ff7b7b;font-size:10px;font-family:monospace;margin-top:4px;white-space:pre-wrap">${h(f.key_evidence.slice(0,200))}</div>` : ''}
+                <div class="ap-pwned-detail" style="display:none;margin-top:6px;border-top:1px solid #5a0000;padding-top:6px">
+                    ${f.exploit_command ? `
+                    <div style="color:#8b949e;font-size:9px;margin-bottom:3px">COMANDO:</div>
+                    <div style="color:#e6edf3;font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all;background:#0d1117;padding:4px 6px;border-radius:3px">${h(f.exploit_command)}</div>` : ''}
+                    ${f.cve ? `<div style="margin-top:4px"><span class="badge bg-dark text-danger" style="font-size:9px">${h(f.cve)}</span></div>` : ''}
+                </div>
+            </div>`;
+        }
+        return `
         <div class="ap-finding-row" style="border-left:3px solid ${SEV_COLOR[f.severity]||'#8b949e'}">
             <span class="ap-finding-sev" style="color:${SEV_COLOR[f.severity]||'#8b949e'}">
                 <i class="fas ${SEV_ICON[f.severity]||'fa-circle'}"></i>
@@ -5446,7 +5520,8 @@ function _apUpdateLiveFindings(findings) {
                 ${h(f.title||'—')}
             </span>
             ${f.cve ? `<span class="badge bg-dark text-muted ms-auto" style="font-size:9px">${h(f.cve)}</span>` : ''}
-        </div>`).join('');
+        </div>`;
+    }).join('');
     if (sorted.length === 0) el.innerHTML = '<div class="text-muted small p-2">Sin hallazgos aún...</div>';
 }
 

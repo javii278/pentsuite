@@ -2807,6 +2807,26 @@ body {
 .ap-brain-log .log-found   { color: #ff6b6b; font-weight: 700; background: rgba(248,81,73,.08); border-left: 2px solid #f85149; padding-left: 4px; }
 .ap-brain-log .log-react   { color: #ffa94d; font-weight: 700; background: rgba(240,136,62,.08); border-left: 2px solid #f0883e; padding-left: 4px; }
 .ap-brain-log .log-impacket{ color: #c084fc; font-weight: 700; background: rgba(192,132,252,.08); border-left: 2px solid #c084fc; padding-left: 4px; }
+/* PWNED — máxima prioridad visual */
+.ap-brain-log .log-pwned {
+    color: #ff3b3b;
+    font-weight: 700;
+    font-family: monospace;
+    background: rgba(255,59,59,.15);
+    border-left: 4px solid #ff3b3b;
+    padding: 2px 6px;
+    animation: pwned-flash 1.5s ease-in-out 3;
+}
+.ap-brain-log .log-pwned-sep {
+    color: #ff3b3b;
+    font-family: monospace;
+    opacity: 0.5;
+    font-size: 10px;
+}
+@keyframes pwned-flash {
+    0%,100% { background: rgba(255,59,59,.15); }
+    50%      { background: rgba(255,59,59,.40); }
+}
 .ap-log-line { line-height: 1.5; }
 
 /* ── Phase bar ───────────────────────────────────────────────────────────── */

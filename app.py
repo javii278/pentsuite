@@ -6989,29 +6989,51 @@ class AutonomousEngine:
             if not re.search(pattern, output, re.IGNORECASE | re.DOTALL):
                 continue
 
+            # ── Extract the key evidence lines (the lines that match the pattern)
+            key_lines = []
+            for ln in output.splitlines():
+                if re.search(pattern, ln, re.IGNORECASE):
+                    key_lines.append(ln.strip())
+                    if len(key_lines) >= 5:
+                        break
+            key_evidence = "\n".join(key_lines) if key_lines else output[:200]
+
             ev_lines = [
-                f"Tool: {job_name}",
-                f"Target: {target}",
-                f"Command:\n{command}",
-                "",
-                f"Output:\n{output[:3000]}",
+                "=" * 60,
+                f"  EXPLOTACIÓN CONFIRMADA — {title}",
+                "=" * 60,
+                f"Target   : {target}",
+                f"Método   : {job_name}",
+                f"",
+                f"COMANDO EJECUTADO:",
+                f"  {command}",
+                f"",
+                f"EVIDENCIA CLAVE:",
+            ] + [f"  {l}" for l in key_lines] + [
+                f"",
+                f"OUTPUT COMPLETO ({len(output)} chars):",
+                output[:4000],
             ]
-            if len(output) > 3000:
-                ev_lines.append(f"\n[... {len(output)-3000} chars truncated ...]")
+            if len(output) > 4000:
+                ev_lines.append(f"[... {len(output)-4000} chars truncated ...]")
 
             finding = {
                 "id": str(uuid.uuid4()),
-                "title": f"[Exploit Confirmado] {title} @ {target}",
+                "title": f"💀 PWNED — {title} @ {target}",
                 "severity": severity, "status": "open",
                 "cve": cve, "cvss": cvss,
                 "description": (
-                    f"Explotación confirmada por el Autopilot durante '{job_name}'.\n"
-                    f"Patrón detectado: {pattern}\n"
-                    f"El output completo del comando está en la evidencia."
+                    f"Explotación confirmada automáticamente por Autopilot.\n\n"
+                    f"Herramienta: {job_name}\n"
+                    f"Patrón confirmado: {key_evidence}\n\n"
+                    f"Ver evidencia completa para el comando exacto y output."
                 ),
                 "evidence": "\n".join(ev_lines),
                 "hosts": [target],
                 "source": "autopilot-exploit",
+                "pwned": True,
+                "exploit_command": command,
+                "key_evidence": key_evidence,
                 "created_at": datetime.now().isoformat(),
             }
             _auto_mitre_tag(finding)
@@ -7021,12 +7043,20 @@ class AutonomousEngine:
                 if not project:
                     return
                 existing_titles = {f.get("title", "") for f in project.get("findings", [])}
-                base_title = f"[Exploit Confirmado] {title} @ {target}"
+                base_title = f"💀 PWNED — {title} @ {target}"
                 if base_title not in existing_titles:
                     project.setdefault("findings", []).append(finding)
                     write_project(project)
                     self.stats["findings_count"] += 1
-                    self._log(f"EVIDENCE [{target}] Explotación guardada: {title}")
+
+            # ── Emit prominent PWNED log line visible in brain log ────────────
+            sep  = "█" * 50
+            self._log(f"PWNED [{target}] {sep}")
+            self._log(f"PWNED [{target}] ██  ACCESO CONFIRMADO: {title}")
+            self._log(f"PWNED [{target}] ██  Herramienta : {job_name}")
+            self._log(f"PWNED [{target}] ██  Comando     : {command[:200]}")
+            self._log(f"PWNED [{target}] ██  Evidencia   : {key_evidence[:300]}")
+            self._log(f"PWNED [{target}] {sep}")
             break  # one finding per output (most specific match wins)
 
     # ── BLOCK 1: Worker thread (parallel job consumer) ───────────────────────
