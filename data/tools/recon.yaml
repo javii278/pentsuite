@@ -831,3 +831,103 @@ tools:
         required: true
     tags: [recon, nfs, rpc, enum, linux, T9]
     notes: "NFS/111/2049. Si hay share: mount -t nfs {target}:/share /mnt/nfs. Buscar keys SSH, configs."
+
+  # ─────────────────────────────────────────────
+  # MODERN INFRA RECON (2023-2024)
+  # ─────────────────────────────────────────────
+
+  - id: docker_daemon_check
+    name: "Docker Daemon No-TLS Check (2375)"
+    description: "Verifica si el Docker daemon está expuesto sin TLS en el puerto 2375"
+    command: "docker -H tcp://{target}:2375 info 2>/dev/null | head -10; docker -H tcp://{target}:2375 ps -a 2>/dev/null | head -10"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [docker, daemon, recon, 2375, container]
+    notes: "Si responde → RCE como root. Exploit: docker run --rm -v /:/mnt alpine chroot /mnt sh"
+
+  - id: kubernetes_api_check
+    name: "Kubernetes API Server Check (6443)"
+    description: "Verifica acceso anónimo al API server de Kubernetes"
+    command: "curl -sk https://{target}:6443/api/v1/namespaces 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(n[\"metadata\"][\"name\"]) for n in d.get(\"items\",[])]' 2>/dev/null; kubectl --server=https://{target}:6443 --insecure-skip-tls-verify auth can-i --list 2>/dev/null | head -10"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [kubernetes, k8s, api, recon, 6443]
+    notes: "Si lista namespaces → acceso anónimo. Probar también kubelet 10250."
+
+  - id: naabu_fast_scan
+    name: "Naabu - Fast Port Scanner"
+    description: "Escaneo rápido de puertos con naabu (projectdiscovery)"
+    command: "naabu -host {target} -top-ports 1000 -silent 2>/dev/null"
+    params:
+      - name: target
+        label: "Target IP/Hostname"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [naabu, recon, ports, fast]
+    notes: "Más rápido que nmap para descubrimiento inicial. Combinar con httpx para tech detection."
+
+  - id: httpx_probe
+    name: "HTTPX - HTTP Technology Detection"
+    description: "Detecta tecnologías web en múltiples puertos simultáneamente"
+    command: "echo {target} | httpx -silent -title -tech-detect -status-code -follow-redirects 2>/dev/null"
+    params:
+      - name: target
+        label: "Target IP/Hostname"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [httpx, recon, web, tech-detect]
+    notes: "Combinar con naabu: naabu -host TARGET -silent | httpx -silent -title -tech-detect"
+
+  - id: nuclei_full_scan
+    name: "Nuclei - Full CVE Scan"
+    description: "Escaneo completo con Nuclei para CVEs críticos y misconfigs"
+    command: "nuclei -u http://{target} -u https://{target} -severity critical,high,medium -j -no-update-check 2>/dev/null | head -80"
+    params:
+      - name: target
+        label: "Target IP/Hostname"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [nuclei, cve, scan, web, misconfig]
+    notes: "Añadir -tags cve-2023,cve-2024 para CVEs recientes. -j = JSON output. Parseable por la suite."
+
+  - id: feroxbuster_deep
+    name: "Feroxbuster - Deep Directory Fuzzing"
+    description: "Fuzzing profundo de directorios y archivos con feroxbuster"
+    command: "feroxbuster --url http://{target} -k -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt -t 50 -x php,html,txt,asp,aspx,jsp,bak,zip,json,config,env -q --no-state 2>/dev/null | head -80"
+    params:
+      - name: target
+        label: "Target IP:Port"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [feroxbuster, web, directory, fuzzing, dirbust]
+    notes: "Añadir -d 2 para buscar en subdirectorios. Más rápido que gobuster para fuzzing profundo."
+
+  - id: shodan_internetdb
+    name: "Shodan InternetDB - Recon Pasivo"
+    description: "Consulta datos de Shodan sobre un IP sin escanear (pasivo)"
+    command: "curl -sL https://internetdb.shodan.io/{target} 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"Ports:\",d.get(\"ports\",[])); print(\"Tags:\",d.get(\"tags\",[])); print(\"Hostnames:\",d.get(\"hostnames\",[])); print(\"CPEs:\",d.get(\"cpes\",[][:5]))'"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [shodan, osint, passive, recon]
+    notes: "API gratuita sin autenticación. Para datos completos: shodan host TARGET (requiere cuenta)."
+
+  - id: ct_log_enum
+    name: "Certificate Transparency - Subdomain Enum"
+    description: "Enumera subdominios via Certificate Transparency logs (crt.sh)"
+    command: "curl -sL 'https://crt.sh/?q=%.{domain}&output=json' 2>/dev/null | python3 -c 'import json,sys; items=json.load(sys.stdin); names=set(); [names.update(e.get(\"name_value\",\"\").splitlines()) for e in items]; [print(n) for n in sorted(names) if \"*\" not in n]' 2>/dev/null | head -50"
+    params:
+      - name: domain
+        label: "Dominio apex"
+        placeholder: "example.com"
+        required: true
+    tags: [ct-log, crt.sh, subdomains, osint, passive]
+    notes: "Muy útil para descubrir subdominios sin actuar activamente contra el objetivo."
