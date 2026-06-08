@@ -7652,8 +7652,16 @@ class AutonomousEngine:
         p1_ht = max(50, p1_timeout - 10)
         p1_cmd = (f"nmap -Pn -{cfg['nmap_timing']} {extra_no_p} {port_flag} --open "
                   f"--max-retries 1 -n --host-timeout {p1_ht}s {target} 2>/dev/null")
-        self._log(f"SCAN [{target}] Fase 1/2: Descubrimiento de puertos — {self.mode} + -Pn (skip ping)")
+        self._log(f"SCAN [{target}] Fase 1/2: Descubrimiento de puertos — {self.mode} + -Pn [máx {p1_timeout}s]")
+        _p1_stop = threading.Event()
+        _p1_t0 = time.time()
+        def _p1_beat():
+            if not _p1_stop.is_set() and self._running:
+                self._log(f"SCAN [{target}] Fase 1 en progreso... {int(time.time()-_p1_t0)}s / {p1_timeout}s máx")
+                t = threading.Timer(30, _p1_beat); t.daemon = True; t.start()
+        _ht1 = threading.Timer(30, _p1_beat); _ht1.daemon = True; _ht1.start()
         p1_out, _ = self._run_sync(f"Nmap-Discovery:{target}", p1_cmd, target, timeout=p1_timeout + 5)
+        _p1_stop.set(); _ht1.cancel()
 
         port_matches = re.findall(r'(\d+)/(?:tcp|udp)\s+open', p1_out)
         if port_matches:
@@ -7673,8 +7681,16 @@ class AutonomousEngine:
         p2_ht = max(80, p2_timeout - 10)
         p2_cmd = (f"nmap -Pn -sV -sC -{cfg['nmap_timing']} -p {port_str} --open "
                   f"--script-timeout 30s --host-timeout {p2_ht}s {target} 2>/dev/null")
-        self._log(f"SCAN [{target}] Fase 2/2: Scan profundo con scripts en {len(port_str.split(','))} puerto(s)")
+        self._log(f"SCAN [{target}] Fase 2/2: Scan profundo con scripts en {len(port_str.split(','))} puertos [máx {p2_timeout}s]")
+        _p2_stop = threading.Event()
+        _p2_t0 = time.time()
+        def _p2_beat():
+            if not _p2_stop.is_set() and self._running:
+                self._log(f"SCAN [{target}] Fase 2 en progreso... {int(time.time()-_p2_t0)}s / {p2_timeout}s máx")
+                t = threading.Timer(30, _p2_beat); t.daemon = True; t.start()
+        _ht2 = threading.Timer(30, _p2_beat); _ht2.daemon = True; _ht2.start()
         output, _ = self._run_sync(f"Nmap-Deep:{target}", p2_cmd, target, timeout=p2_timeout + 5)
+        _p2_stop.set(); _ht2.cancel()
 
         parsed = _parse_tool_output("nmap", output, target)
         open_ports = parsed.get("open_ports", [])
