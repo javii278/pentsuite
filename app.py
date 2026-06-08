@@ -14383,6 +14383,74 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                     "cve": "",
                 }], target)
 
+        # ── GitLeaks / TruffleHog public repos search ────────────────────
+        if apex:
+            self._log(f"[Claude] OSINT: buscando secretos en repos públicos → {apex}")
+            git_secrets, _ = self._run_cmd(
+                "github-dorking",
+                # Search GitHub API for repos mentioning the domain/org
+                f"ORG=$(echo {apex} | cut -d. -f1); "
+                f"curl -sL --max-time 15 'https://api.github.com/search/repositories?q={apex}&per_page=10' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"[print(r[\"clone_url\"]) for r in d.get(\"items\",[])[:5]]' 2>/dev/null; "
+                # Search for leaked secrets with GitHub code search
+                f"curl -sL --max-time 15 "
+                f"'https://api.github.com/search/code?q={apex}+password+OR+secret+OR+api_key&per_page=5' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"[print(r.get(\"html_url\",\"\"), r.get(\"name\",\"\")) for r in d.get(\"items\",[])[:5]]' 2>/dev/null; "
+                # GAU for leaked credentials
+                f"gau --mc 200 {apex} 2>/dev/null | grep -iE 'password|secret|api.key|token' | head -5",
+                target, timeout=60,
+            )
+            if git_secrets.strip():
+                accumulated_output.append(f"=== GitHub OSINT {apex} ===\n{git_secrets[:600]}")
+                if re.search(r'password|secret|api_key|token', git_secrets, re.IGNORECASE):
+                    self._save_findings([{
+                        "title": f"OSINT: Posibles Secretos en Repos Públicos — {apex}",
+                        "severity": "high",
+                        "description": f"GitHub/GAU encontró posibles secretos o credenciales para {apex}:\n{git_secrets[:400]}",
+                        "cve": "",
+                    }], target)
+
+        # ── SSL/TLS certificate transparency log ─────────────────────────
+        if apex:
+            ct_out, _ = self._run_cmd(
+                "cert-transparency",
+                f"curl -sL --max-time 15 'https://crt.sh/?q=%.{apex}&output=json' 2>/dev/null | "
+                f"python3 -c \""
+                f"import json,sys\n"
+                f"items = json.load(sys.stdin)\n"
+                f"names = set()\n"
+                f"for i in items:\n"
+                f"    for n in i.get('name_value','').splitlines():\n"
+                f"        n=n.strip()\n"
+                f"        if n and '*' not in n and '.' in n: names.add(n)\n"
+                f"[print(n) for n in sorted(names)[:40]]\n"
+                f"print(f'CT-LOG-TOTAL:{{len(names)}} subdomains')\n"
+                f"\" 2>/dev/null",
+                target, timeout=30,
+            )
+            if ct_out.strip():
+                ct_subs = re.findall(r'[\w\-]+\.' + re.escape(apex), ct_out, re.IGNORECASE)
+                if ct_subs:
+                    accumulated_output.append(f"=== CT-Log Subdomains {apex} ===\n{ct_out[:600]}")
+                    self._log(f"[Claude] OSINT-CT: {len(ct_subs)} subdominios en CT logs")
+
+        # ── Shodan API check (if API key available) ───────────────────────
+        shodan_key = os.environ.get("SHODAN_API_KEY", "")
+        if shodan_key and is_ip:
+            shodan_out, _ = self._run_cmd(
+                "shodan-host",
+                f"shodan host {target} 2>/dev/null | head -30 || "
+                f"curl -sL --max-time 15 'https://api.shodan.io/shodan/host/{target}?key={shodan_key}' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"print(d.get(\"org\",\"\"),d.get(\"isp\",\"\"),d.get(\"country_code\",\"\")); "
+                f"[print(p.get(\"port\",\"\"),p.get(\"transport\",\"\"),p.get(\"product\",\"\"),p.get(\"version\",\"\")) for p in d.get(\"data\",[])[:10]]' 2>/dev/null",
+                target, timeout=20,
+            )
+            if shodan_out.strip():
+                accumulated_output.append(f"=== Shodan {target} ===\n{shodan_out[:400]}")
+
         self._log(f"[Claude] OSINT: reconocimiento completo finalizado → {target}")
 
     # ─────────────────────────────────────────────────────────────────────────
