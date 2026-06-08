@@ -4156,11 +4156,22 @@ def _generate_exec_summary(project, findings, counts):
 
     # Compromised assets
     compromised = [f for f in findings if any(k in f.get("title","").lower() + f.get("description","").lower()
-                   for k in ["rce", "shell", "compromised", "domain admin", "root", "meterpreter", "pwn3d"])]
+                   for k in ["rce", "shell", "compromised", "domain admin", "root", "meterpreter", "pwn3d",
+                              "uid=0", "nt authority", "system", "flag", "pwned", "acceso confirmado"])]
     comp_text = ""
     if compromised:
         comp_text = (f"<p>⚠️ <strong>Durante la auditoría se obtuvo acceso remoto a {len(compromised)} sistema(s)</strong>, "
                      f"demostrando el impacto real de las vulnerabilidades identificadas.</p>")
+
+    # Cloud / modern infrastructure findings
+    cloud_findings = [f for f in findings if any(k in f.get("title","").lower()
+                      for k in ["docker", "kubernetes", "k8s", "aws", "cloud", "grafana", "activemq",
+                                 "teamcity", "metabase", "jupyter", "portainer", "prometheus"])]
+    cloud_text = ""
+    if cloud_findings:
+        cloud_text = (f"<p>🔍 <strong>Se detectaron {len(cloud_findings)} riesgo(s) en infraestructura moderna</strong> "
+                      f"(contenedores, microservicios, cloud): "
+                      f"{', '.join(set(f.get('title','')[:40] for f in cloud_findings[:3]))}.</p>")
 
     # Top critical findings for exec
     top_findings = [f for f in findings if f.get("severity") in ("critical", "high")][:5]
@@ -4187,6 +4198,7 @@ def _generate_exec_summary(project, findings, counts):
       </div>
       <p style="font-size:14px;line-height:1.7;margin:0 0 12px">{risk_text}</p>
       {comp_text}
+      {cloud_text}
       {top_html}
       <p style="font-size:12px;color:#6c757d;margin:12px 0 0;border-top:1px solid #dee2e6;padding-top:12px">
         Este informe fue generado automáticamente por PentSuite. Los hallazgos han sido verificados
@@ -4231,6 +4243,8 @@ def _generate_html_report(project):
           {'<div class="fl">Descripción</div><p>' + _esc(f.get('description','')) + '</p>' if f.get('description') else ''}
           {'<div class="fl">Evidencia</div><pre>' + _esc(f.get('evidence','')) + '</pre>' if f.get('evidence') else ''}
           {'<div class="fl" style="color:#3fb950">✔ Remediación</div><div style="background:#f0fff4;border:1px solid #3fb95030;border-radius:4px;padding:10px 14px;margin:4px 0 8px;font-size:13px;line-height:1.6">' + _esc(f.get('remediation','')) + '</div>' if f.get('remediation') else ''}
+          {'<div class="fl" style="color:#f85149">💀 Exploit Command</div><pre style="background:#1a1a2e;color:#00ff41;border:1px solid #f8514930;font-size:11px">' + _esc(f.get('exploit_cmd','')) + '</pre>' if f.get('exploit_cmd') else ''}
+          {'<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:8px 12px;margin:4px 0 8px;font-size:12px;color:#856404">' + _esc(f.get('lhost_warning','')) + '</div>' if f.get('lhost_warning') else ''}
         </div>"""
 
     loot_html = ""
@@ -4310,6 +4324,7 @@ ul{{padding-left:20px}}li{{margin:4px 0;font-size:13px}}
     <div class="card"><div class="n" style="color:#3fb950">{counts.get('low',0)}</div><div class="l">Bajo</div></div>
     <div class="card"><div class="n" style="color:#58a6ff">{counts.get('info',0)}</div><div class="l">Info</div></div>
   </div>
+  {_generate_ports_section_html(project)}
   <h2>Hallazgos ({len(findings)})</h2>
   {findings_html or '<p class="empty">No se han registrado hallazgos.</p>'}
   <h2>Loot ({len(loot)} items)</h2>
@@ -4317,6 +4332,38 @@ ul{{padding-left:20px}}li{{margin:4px 0;font-size:13px}}
   {'<h2>Notas</h2><pre>' + _esc(project.get('notes','')) + '</pre>' if project.get('notes') else ''}
   {'<h2>Historial de Comandos (' + str(len(commands)) + ')</h2>' + cmd_html if commands else ''}
 </div></body></html>"""
+
+
+def _generate_ports_section_html(project):
+    """Generate an attack surface / open ports section for the HTML report."""
+    ports = project.get("ports", []) or project.get("port_map", [])
+    if not ports:
+        return ""
+    # Group by host
+    by_host = {}
+    for p in ports:
+        host = p.get("host", "unknown")
+        by_host.setdefault(host, []).append(p)
+
+    html = "<h2>Superficie de Ataque — Puertos Abiertos</h2>"
+    RISK_PORTS = {21, 22, 23, 25, 80, 110, 135, 139, 143, 389, 443, 445, 512, 513, 514,
+                  636, 1433, 1521, 2049, 2375, 3306, 3389, 5432, 5900, 5985, 6379, 8080,
+                  8161, 8443, 8888, 9200, 27017, 6443, 8983, 5601, 3000, 8111, 61616}
+
+    for host, host_ports in sorted(by_host.items()):
+        host_ports_sorted = sorted(host_ports, key=lambda p: p.get("port", 0))
+        html += f'<h3 style="margin-top:16px;color:#0d1117">Host: {_esc(host)} <small style="color:#6c757d">({len(host_ports_sorted)} puertos)</small></h3>'
+        html += '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px">'
+        html += '<tr style="background:#f8f9fa"><th style="padding:6px 10px;text-align:left;border:1px solid #dee2e6">Puerto</th><th style="padding:6px 10px;text-align:left;border:1px solid #dee2e6">Servicio</th><th style="padding:6px 10px;text-align:left;border:1px solid #dee2e6">Versión</th><th style="padding:6px 10px;text-align:left;border:1px solid #dee2e6">Riesgo</th></tr>'
+        for p in host_ports_sorted:
+            port_num = p.get("port", 0)
+            svc = p.get("service", "")
+            ver = p.get("version", "")
+            risk_bg = "#fff8f8" if port_num in RISK_PORTS else "#fff"
+            risk_label = "⚠️ Alto Riesgo" if port_num in RISK_PORTS else ""
+            html += f'<tr style="background:{risk_bg}"><td style="padding:4px 10px;border:1px solid #dee2e6;font-weight:600">{port_num}/tcp</td><td style="padding:4px 10px;border:1px solid #dee2e6">{_esc(svc)}</td><td style="padding:4px 10px;border:1px solid #dee2e6;font-family:monospace;font-size:11px">{_esc(ver[:60])}</td><td style="padding:4px 10px;border:1px solid #dee2e6;color:#f85149;font-size:11px">{risk_label}</td></tr>'
+        html += "</table>"
+    return html
 
 @app.route("/api/projects/<project_id>/report")
 @api_login_required
