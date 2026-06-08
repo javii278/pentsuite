@@ -13498,7 +13498,14 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                 re.findall(r'https?://[^\s"<>]+\?[^\s"<>]+', crawl_out)
             ))[:5]
             if not urls_to_test:
-                urls_to_test = [f"{base}/?id=1", f"{base}/?page=1"]
+                # Extended list of common injectable parameters
+                urls_to_test = [
+                    f"{base}/?id=1", f"{base}/?page=1", f"{base}/?user=1",
+                    f"{base}/?search=test", f"{base}/index.php?id=1",
+                    f"{base}/search?q=test", f"{base}/product?id=1",
+                    f"{base}/news?id=1", f"{base}/article?id=1",
+                    f"{base}/api/v1/users/1", f"{base}/api/users?id=1",
+                ]
 
             for test_url in urls_to_test[:3]:
                 self._log(f"[Claude] SQLMAP: probando → {test_url[:60]}")
@@ -17081,6 +17088,34 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                     "cve": "",
                 }], target)
                 accumulated_output.append(f"=== JS Secrets {base_url} ===\n{js_scan[:400]}")
+
+            # ── GraphQL security testing ──────────────────────────────────
+            for gql_path in ["/graphql", "/api/graphql", "/v1/graphql", "/graphiql", "/playground"]:
+                gql_resp, _ = self._run_cmd(
+                    f"graphql-{gql_path.replace('/','_')}-{p['port']}",
+                    f"CODE=$(curl -sk --max-time 8 -o /dev/null -w '%{{http_code}}' '{base_url}{gql_path}' 2>/dev/null); "
+                    f"[ \"$CODE\" != '404' ] && [ \"$CODE\" != '000' ] && echo \"GRAPHQL_ENDPOINT: {gql_path} ($CODE)\" && "
+                    f"# Test introspection\n"
+                    f"curl -sk --max-time 10 -X POST '{base_url}{gql_path}' "
+                    f"-H 'Content-Type: application/json' "
+                    f"-d '{{\"query\":\"{{ __schema {{ types {{ name }} }} }}\"}}' 2>/dev/null | "
+                    f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                    f"types=[t[\"name\"] for t in d.get(\"data\",{{}}).get(\"__schema\",{{}}).get(\"types\",[]) if t[\"name\"] and not t[\"name\"].startswith(\"__\")]; "
+                    f"print(\"GRAPHQL_INTROSPECTION_ENABLED\") if types else None; "
+                    f"[print(t) for t in types[:10]]' 2>/dev/null",
+                    target, timeout=20,
+                )
+                if "GRAPHQL_ENDPOINT" in gql_resp or "GRAPHQL_INTROSPECTION_ENABLED" in gql_resp:
+                    self._capture_evidence(gql_resp, target, f"graphql-{p['port']}", "GraphQL introspection")
+                    accumulated_output.append(f"=== GraphQL {base_url}{gql_path} ===\n{gql_resp[:400]}")
+                    if "GRAPHQL_INTROSPECTION_ENABLED" in gql_resp:
+                        self._save_findings([{
+                            "title": f"GraphQL — Introspección Habilitada @ {base_url}{gql_path}",
+                            "severity": "medium",
+                            "description": f"GraphQL introspection habilitada en producción. Permite descubrir schema completo, mutaciones, y vectores de ataque (IDOR, injection, auth bypass).",
+                            "cve": "",
+                        }], target)
+                    break
 
     # ═════════════════════════════════════════════════════════════════════════
     # TIER 2 — Full attack surface coverage
