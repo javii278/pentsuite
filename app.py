@@ -19422,6 +19422,52 @@ http:
                     self._log(f"[P3-NTG] CVE Finding: [{sev.upper()}] {tpl_id} @ {matched}")
                 except Exception:
                     pass
+        # ── Run 2023-2024 specific CVE templates ───────────────────────────
+        http_ports = [p for p in open_ports if "http" in p.get("service","").lower()
+                      or p["port"] in (80, 443, 8080, 8443, 3000, 5601, 8983, 8161, 9000)]
+        for hp in http_ports[:3]:
+            port_num = hp["port"]
+            proto = "https" if port_num in (443, 8443) else "http"
+            base = f"{proto}://{target}:{port_num}"
+            self._log(f"[P3-NTG] CVE-specific Nuclei scan → {base}")
+            # Run nuclei with specific tags for 2023-2024 CVEs
+            cve_nuclei, _ = self._run_cmd(
+                f"nuclei-cve-2023-2024-{port_num}",
+                f"nuclei -u '{base}' -tags 'cve-2023,cve-2024,cve-2022' -severity critical,high "
+                f"-j -no-update-check -timeout 15 2>/dev/null | head -40; "
+                # Also run specific templates for common services
+                f"nuclei -u '{base}' -templates /usr/share/nuclei-templates/cves/2023/ "
+                f"-severity critical,high -j -no-update-check -timeout 15 2>/dev/null | head -20; "
+                f"nuclei -u '{base}' -templates /usr/share/nuclei-templates/cves/2024/ "
+                f"-severity critical,high -j -no-update-check -timeout 15 2>/dev/null | head -20",
+                target, timeout=150,
+            )
+            if cve_nuclei.strip():
+                # Parse nuclei JSON output
+                for line in cve_nuclei.strip().splitlines():
+                    if not line.startswith("{"):
+                        continue
+                    try:
+                        nd = json.loads(line)
+                        info = nd.get("info", {})
+                        sev = info.get("severity", "high").lower()
+                        clf = info.get("classification", {})
+                        cve_list = clf.get("cve-id") or []
+                        cve = cve_list[0] if isinstance(cve_list, list) and cve_list else (cve_list if isinstance(cve_list, str) else "")
+                        tid = nd.get("template-id", "")
+                        matched = nd.get("matched-at", base)
+                        if sev in ("critical", "high"):
+                            self._save_findings([{
+                                "title": f"[Nuclei-CVE] {tid} @ {matched}",
+                                "severity": sev,
+                                "description": f"{info.get('description', tid)}\nMatched: {matched}",
+                                "cve": cve,
+                            }], target)
+                            self._log(f"[P3-NTG] CVE FOUND: [{sev.upper()}] {tid} @ {matched}")
+                    except Exception:
+                        pass
+                accumulated_output.append(f"=== Nuclei 2023-2024 CVEs {base} ===\n{cve_nuclei[:600]}")
+
     # ══════════════════════════════════════════════════════════════════════════
     # P4 — Business Logic Testing
     # ══════════════════════════════════════════════════════════════════════════
