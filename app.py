@@ -21091,7 +21091,11 @@ http:
                 # Auto-detect root/SYSTEM from output and set flag
                 _ROOT_RE = re.compile(
                     r'uid=0\(root\)|NT AUTHORITY\\SYSTEM|nt authority\\system|'
-                    r'meterpreter\s*>|Meterpreter session \d+ opened|Pwn3d!|root@\w',
+                    r'meterpreter\s*>|Meterpreter session \d+ opened|Pwn3d!|root@\w|'
+                    r'DOCKER_DAEMON_EXPOSED|KERNEL_CREATED:|GRAFANA_DEFAULT_CREDS_VALID|'
+                    r'TEAMCITY_AUTH_BYPASS|ACTIVEMQ_DEFAULT_CREDS|PORTAINER_CREDS_VALID|'
+                    r'SONARQUBE_DEFAULT_CREDS|ZABBIX_AUTH_BYPASS|NAGIOS_DEFAULT_CREDS|'
+                    r'krbtgt:.*:[a-fA-F0-9]{32}|ADCS_ESC1_CONFIRMED|SHADOW_CREDENTIALS_SUCCESS',
                     re.IGNORECASE,
                 )
                 if _ROOT_RE.search(step_out) and not self._root_achieved.get(target):
