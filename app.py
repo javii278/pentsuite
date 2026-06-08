@@ -2293,6 +2293,64 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
     open_ports  = []
     findings    = []   # auto-detected vulnerabilities
 
+    # ── Gobuster / Feroxbuster output parsing ──────────────────────────────────
+    if tool in ("gobuster", "feroxbuster") or any(t in job_name.lower() for t in ("gobuster", "feroxbuster", "dirb", "dirbust", "web fuzz", "ffuf")):
+        # Feroxbuster: "200    45l   120w   3456c http://target/path"
+        # Gobuster: "/path (Status: 200) [Size: 1234]"
+        _gob_paths = re.findall(r'(?:https?://\S+?(/[^\s]+)|/([/\w\.\-_%]+))\s*\(Status:\s*(\d+)\)', output_text)
+        _ferox_paths = re.findall(r'(?:2\d\d|3\d\d|401|403)\s+\d+\w?\s+\d+\w?\s+\d+\w\s+(https?://\S+)', output_text)
+        _all_paths = []
+        for m in _gob_paths:
+            path = m[0] or ("/" + m[1])
+            status = m[2]
+            _all_paths.append((path, int(status)))
+        for url in _ferox_paths:
+            from urllib.parse import urlparse as _urlparse
+            try:
+                path = _urlparse(url).path
+                _all_paths.append((path, 200))
+            except Exception:
+                pass
+
+        _sensitive_keywords = {
+            "critical": [".env", ".git/head", "config.php", "wp-config", "id_rsa",
+                         "private.key", "secret", "credentials", "password", "passwd",
+                         "backup.sql", "dump.sql", "db.sql", "database.sql"],
+            "high": ["admin", "manager", "shell", "cmd", "console", "phpinfo", "info.php",
+                     "adminer", "phpmyadmin", "dashboard", "panel", "setup", "install",
+                     "actuator/env", "actuator/heapdump", "swagger", "graphql", "h2-console"],
+            "medium": ["backup", "bak", "old", "test", "dev", "staging", "debug",
+                       "api", "v1", "v2", "v3", "internal", "private", "restricted"],
+        }
+        if _all_paths:
+            _by_sev = {"critical": [], "high": [], "medium": []}
+            for path, status in _all_paths:
+                pl = path.lower()
+                for sev, keywords in _sensitive_keywords.items():
+                    if any(kw in pl for kw in keywords):
+                        _by_sev[sev].append(f"{path} (HTTP {status})")
+                        break
+            for sev, paths in _by_sev.items():
+                if paths:
+                    findings.append({
+                        "id": str(uuid.uuid4()),
+                        "title": f"Web — {len(paths)} Ruta(s) {'Crítica(s)' if sev == 'critical' else 'Sensible(s)'} Descubiertas ({sev.upper()})",
+                        "severity": sev, "status": "open", "cve": "", "cvss": None,
+                        "description": f"Rutas encontradas por fuzzing:\n" + "\n".join(paths[:15]),
+                        "evidence": "\n".join(paths[:20]),
+                        "hosts": [rhost] if rhost else [], "source": "dirbust",
+                    })
+            # Suggest next tools based on found paths
+            _all_paths_str = " ".join(p for p, _ in _all_paths)
+            if any(kw in _all_paths_str for kw in ["/admin", "/manager", "/dashboard", "/panel"]):
+                suggestions.append({"tools": ["Credenciales por defecto", "Hydra HTTP"], "reason": "Panel admin descubierto"})
+            if any(kw in _all_paths_str for kw in ["wp-", "wordpress", "/wp-content"]):
+                suggestions.append({"tools": ["wpscan", "WPScan Plugin Enum"], "reason": "WordPress detectado"})
+            if ".git" in _all_paths_str:
+                suggestions.append({"tools": ["git-dumper", "GitTools"], "reason": ".git expuesto → código fuente"})
+            if "actuator" in _all_paths_str:
+                suggestions.append({"tools": ["Spring Boot Actuator Exploit"], "reason": "Actuator expuesto → posible dump de creds"})
+
     # ── Nmap XML mode (-oX -): detect and parse structured XML output ─────────
     if output_text.lstrip().startswith('<?xml') and '<nmaprun' in output_text:
         xml_ports, xml_findings, xml_loot = _parse_nmap_xml(output_text, rhost)
