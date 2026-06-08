@@ -6673,22 +6673,19 @@ MODE_CONFIG = {
         "nmap_timing": "T1", "nmap_extra": "--max-rate 100 --scan-delay 2s --top-ports 1000",
         "threads": 5, "brute_force": False, "delay_between_jobs": 10,
         "workers": 1, "job_timeout": 600,
-        "scan_timeout": 900,   # 15 min — slow scan, give it time
-        "host_timeout": "20m",
+        "scan_timeout": 900,   # split: ~360s discovery + ~530s deep scan
     },
     "normal": {
         "nmap_timing": "T3", "nmap_extra": "--min-rate 1000 -p-",
         "threads": 20, "brute_force": True, "delay_between_jobs": 2,
         "workers": 3, "job_timeout": 240,
-        "scan_timeout": 600,   # 10 min
-        "host_timeout": "12m",
+        "scan_timeout": 600,   # split: ~240s discovery + ~345s deep scan
     },
     "aggressive": {
         "nmap_timing": "T4", "nmap_extra": "--min-rate 5000 -p-",
         "threads": 50, "brute_force": True, "delay_between_jobs": 0,
-        "workers": 5, "job_timeout": 300,  # raised from 120 → 300 (5 min per tool)
-        "scan_timeout": 480,   # 8 min for initial nmap -p-
-        "host_timeout": "10m",
+        "workers": 5, "job_timeout": 300,
+        "scan_timeout": 480,   # split: ~192s discovery + ~273s deep scan
     },
 }
 
@@ -7635,30 +7632,53 @@ class AutonomousEngine:
             self._log(f"SCAN [{target}] Memoria: {len(prev)} puertos conocidos — re-scanning para actualizar")
 
         cfg = MODE_CONFIG.get(self.mode, MODE_CONFIG["normal"])
-        # -Pn: skip host discovery (many cloud/VPS hosts block ICMP ping → nmap reports "down" and exits)
-        # -sC: default scripts (banners, auth, etc.) -O: OS detection
-        cmd = (f"nmap -Pn -sV -sC -O -{cfg['nmap_timing']} {cfg['nmap_extra']} --open"
-               f" --script-timeout 30s --host-timeout {cfg.get('host_timeout','15m')} {target} 2>/dev/null")
-        self._log(f"SCAN [{target}] Iniciando scan con scripts ({self.mode}) + -Pn (skip ping)")
-        # Initial scan needs a long timeout: -p- on aggressive mode can take 5-15 min
         _scan_timeout = cfg.get("scan_timeout", 600)
-        output, _ = self._run_sync(f"Nmap-Initial:{target}", cmd, target, timeout=_scan_timeout)
+
+        # ── PHASE 1: Fast port discovery (no scripts, no version detection) ──────
+        # Split from the deep scan so we get intermediate feedback and avoid a
+        # monolithic 8-10 min silent nmap -p- -sV -sC -O command on filtered hosts.
+        nmap_extra = cfg.get("nmap_extra", "")
+        port_flag = "-p-" if "-p-" in nmap_extra else "--top-ports 1000"
+        extra_no_p = nmap_extra.replace("-p-", "").strip()
+        # Phase 1 gets ~40% of total timeout; host-timeout is slightly under that
+        p1_timeout = max(60, int(_scan_timeout * 0.40))
+        p1_ht = max(50, p1_timeout - 10)
+        p1_cmd = (f"nmap -Pn -{cfg['nmap_timing']} {extra_no_p} {port_flag} --open "
+                  f"--max-retries 1 -n --host-timeout {p1_ht}s {target} 2>/dev/null")
+        self._log(f"SCAN [{target}] Fase 1/2: Descubrimiento de puertos — {self.mode} + -Pn (skip ping)")
+        p1_out, _ = self._run_sync(f"Nmap-Discovery:{target}", p1_cmd, target, timeout=p1_timeout + 5)
+
+        port_matches = re.findall(r'(\d+)/(?:tcp|udp)\s+open', p1_out)
+        if port_matches:
+            port_str = ",".join(dict.fromkeys(port_matches))
+            self._log(f"SCAN [{target}] Fase 1: {len(port_matches)} puerto(s) detectado(s) → {port_str[:100]}")
+        elif prev:
+            port_str = ",".join(str(p["port"]) for p in prev)
+            self._log(f"SCAN [{target}] Fase 1: Sin nuevos puertos — usando {len(prev)} de memoria: {port_str[:80]}")
+        else:
+            port_str = "21,22,23,25,53,80,110,111,135,139,143,443,445,512,513,514,1099,1433,1521,2049,3306,3389,5432,5900,5985,6379,8080,8443,27017"
+            self._log(f"SCAN [{target}] Fase 1: Sin puertos → fallback top-27 comunes")
+
+        # ── PHASE 2: Deep scan with scripts+version on discovered ports only ──────
+        # Much faster than scanning all 65535 ports with scripts.
+        # host-timeout is set just below p2_timeout so nmap self-limits before SIGKILL.
+        p2_timeout = max(90, _scan_timeout - p1_timeout - 15)
+        p2_ht = max(80, p2_timeout - 10)
+        p2_cmd = (f"nmap -Pn -sV -sC -{cfg['nmap_timing']} -p {port_str} --open "
+                  f"--script-timeout 30s --host-timeout {p2_ht}s {target} 2>/dev/null")
+        self._log(f"SCAN [{target}] Fase 2/2: Scan profundo con scripts en {len(port_str.split(','))} puerto(s)")
+        output, _ = self._run_sync(f"Nmap-Deep:{target}", p2_cmd, target, timeout=p2_timeout + 5)
+
         parsed = _parse_tool_output("nmap", output, target)
         open_ports = parsed.get("open_ports", [])
 
-        # If still 0 ports (unlikely after -Pn, but handle gracefully):
-        # fall back to a quick top-1000 scan to confirm host is truly silent
-        if not open_ports and prev:
-            self._log(f"SCAN [{target}] 0 puertos con -p- — fallback top-1000 por puertos conocidos en memoria")
-            known_ports = ",".join(str(p["port"]) for p in prev)
-            cmd_fb = (f"nmap -Pn -sV -T4 -p {known_ports} --open "
-                      f"--script-timeout 20s {target} 2>/dev/null")
-            output_fb, _ = self._run_sync(f"Nmap-Fallback:{target}", cmd_fb, target, timeout=120)
-            parsed_fb = _parse_tool_output("nmap", output_fb, target)
-            open_ports = parsed_fb.get("open_ports", [])
+        # Fallback: if deep scan finds nothing but phase 1 found ports, re-parse phase 1 output
+        if not open_ports and port_matches:
+            parsed_p1 = _parse_tool_output("nmap", p1_out, target)
+            open_ports = parsed_p1.get("open_ports", [])
             if open_ports:
-                self._log(f"SCAN [{target}] Fallback encontró {len(open_ports)} puertos conocidos")
-                output = output_fb  # use this for enrichment below
+                self._log(f"SCAN [{target}] Fallback: usando resultados de Fase 1 ({len(open_ports)} puertos)")
+                output = p1_out
 
         HIGH_RISK_PORTS = {21, 22, 23, 445, 3389, 1433, 3306, 5432, 27017, 6379, 5900, 2049}
         if open_ports:
@@ -7930,8 +7950,9 @@ class AutonomousEngine:
             if sub_count:
                 self._log(f"OSINT [{target}] DNS: {sub_count} registros encontrados")
         else:
+            # timeout=30s: whois can hang 120s on rate-limited/offline servers → don't block scan
             out, _ = self._run_sync(f"OSINT-rDNS:{target}",
-                f"host {target} 2>/dev/null; whois {target} 2>/dev/null | head -25", target)
+                f"host {target} 2>/dev/null; timeout 10 whois {target} 2>/dev/null | head -25", target, timeout=30)
             rdns = re.search(r'domain name pointer (.+)', out, re.I)
             if rdns:
                 self._log(f"OSINT [{target}] rDNS: {rdns.group(1).rstrip('.')}")
@@ -9187,6 +9208,15 @@ class AutonomousEngine:
                 break
             self._osint_phase(target)
 
+        # BLOCK 1: Launch N worker threads BEFORE scanning so they drain the queue
+        # as scan results come in (important for multi-target sessions).
+        self._worker_threads = []
+        for _ in range(n_workers):
+            wt = threading.Thread(target=self._worker_thread, args=(delay, job_timeout), daemon=True)
+            wt.start()
+            self._worker_threads.append(wt)
+        self._log(f"ENGINE {n_workers} worker(s) paralelos iniciados")
+
         # Initial nmap for every target — populates the KB queue
         for target in all_targets:
             if not self._running:
@@ -9194,14 +9224,6 @@ class AutonomousEngine:
             self._initial_scan(target)
             if delay and self.mode == "stealth":
                 time.sleep(delay)
-
-        # BLOCK 1: Launch N worker threads to drain queue in parallel
-        self._worker_threads = []
-        for _ in range(n_workers):
-            wt = threading.Thread(target=self._worker_thread, args=(delay, job_timeout), daemon=True)
-            wt.start()
-            self._worker_threads.append(wt)
-        self._log(f"ENGINE {n_workers} worker(s) paralelos iniciados")
 
         # Monitor: handle pivots + living report while workers drain queue
         # Hard deadline = job_timeout * 3 from now (safety net against infinite hang)
@@ -9567,63 +9589,53 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
             "tool": f"[Claude] {name}", "phase": "autopilot",
             "command": command, "status": "running", "output": [],
             "started_at": datetime.now().isoformat(), "finished_at": None,
-            "pid": None, "return_code": None, "proc": None, "autopilot": True,
+            "pid": None, "return_code": None, "autopilot": True,
         }
         with JOBS_LOCK:
             JOBS[job_id] = job
-        _kill_timer = None
+        output_text = ""
+        effective_timeout = timeout or 300
         try:
-            proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, bufsize=1)
-            job["proc"] = proc
+            proc = subprocess.Popen(
+                command, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                start_new_session=True,  # own process group → killpg works for nmap NSE children
+            )
             job["pid"] = proc.pid
-            if timeout:
-                def _kill(p=proc, n=name, t=timeout):
-                    # BUG5 FIX: SIGTERM first, then SIGKILL after 3s for stubborn processes
-                    # (nmap --min-rate, msfconsole, hydra often ignore SIGTERM)
+            try:
+                raw, _ = proc.communicate(timeout=effective_timeout)
+                output_text = raw.decode("utf-8", errors="replace") if raw else ""
+                job["return_code"] = proc.returncode
+                job["status"] = "completed" if proc.returncode == 0 else "error"
+            except subprocess.TimeoutExpired:
+                self._log(f"TIMEOUT [{target}] {name} (>{effective_timeout}s) — terminando proceso")
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except Exception:
                     try:
-                        p.terminate()
+                        proc.kill()
                     except Exception:
                         pass
-                    time.sleep(3)
-                    try:
-                        if p.poll() is None:
-                            p.kill()
-                    except Exception:
-                        pass
-                    self._log(f"TIMEOUT+KILLED {n} (>{t}s)")
-                _kill_timer = threading.Timer(timeout, _kill)
-                _kill_timer.start()
-            for line in proc.stdout:
-                job["output"].append(line.rstrip("\n"))
-                if not self._running:
-                    try:
-                        proc.terminate()
-                        time.sleep(1)
-                        if proc.poll() is None:
-                            proc.kill()
-                    except Exception:
-                        pass
-                    break
-            proc.wait()
-            job["return_code"] = proc.returncode
-            job["status"] = "completed" if proc.returncode == 0 else "error"
+                try:
+                    raw, _ = proc.communicate(timeout=5)
+                    output_text = raw.decode("utf-8", errors="replace") if raw else ""
+                except Exception:
+                    output_text = ""
+                job["return_code"] = proc.returncode
+                job["status"] = "timeout"
         except Exception as e:
-            job["output"].append(f"[ERROR] {e}")
+            output_text = f"[ERROR] {e}"
             job["status"] = "error"
         finally:
-            if _kill_timer:
-                _kill_timer.cancel()
+            job["output"] = output_text.splitlines()
             job["finished_at"] = datetime.now().isoformat()
-            job.pop("proc", None)
         self.stats["commands_run"] += 1
-        output = "\n".join(job["output"])
         self.timeline.append({
             "name": name, "target": target,
             "start": job["started_at"], "end": job["finished_at"],
             "status": job["status"],
         })
-        return output, job_id
+        return output_text, job_id
 
     def _ask_claude(self, tool_output, target, context_summary):
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
