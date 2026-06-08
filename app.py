@@ -1467,6 +1467,39 @@ _REMEDIATION_DB = [
      "Actualizar el kernel del sistema operativo. Implementar proceso regular de patching. Usar grsecurity/PaX donde sea posible. Considerar contenedores con capacidades reducidas."),
     (r'crontab.*writable|writable.*cron',
      "Asegurar que scripts ejecutados por cron no sean escribibles por usuarios no privilegiados. Auditar permisos: `ls -la /etc/cron*`. Usar AIDE para detectar modificaciones."),
+    # 2023-2024 remediaciones
+    (r'activemq.*cve-2023-46604|activemq.*deserialization',
+     "Actualizar Apache ActiveMQ a 5.15.16+, 5.16.7+, 5.17.6+, o 5.18.3+. Aplicar regla de firewall para bloquear puerto 61616 desde internet. Si no es posible actualizar, usar ClassInfo deserialization filter."),
+    (r'teamcity.*cve-2023-42793|teamcity.*auth.*bypass',
+     "Actualizar TeamCity a 2023.05.4+. Si no se puede actualizar, usar el plugin de seguridad temporal proporcionado por JetBrains. Revisar tokens creados recientemente y revocarlos."),
+    (r'metabase.*cve-2023-38646|metabase.*setup.*token',
+     "Actualizar Metabase a 0.46.6.4+, 0.45.4.3+, o 1.46.6.4+. Si no es posible, deshabilitar la API de setup o restringir acceso. Rotar credenciales de base de datos."),
+    (r'grafana.*cve-2021-43798|grafana.*traversal',
+     "Actualizar Grafana a 8.3.2+. Si no es posible, bloquear acceso público a /public/plugins/ en el proxy inverso (nginx/apache deny rule)."),
+    (r'grafana.*default.*cred|grafana.*admin:admin',
+     "Cambiar contraseña de admin en Grafana inmediatamente. Habilitar autenticación OAuth o LDAP. Deshabilitar registro público. Implementar 2FA."),
+    (r'docker.*daemon.*expuesto|docker.*2375|docker.*sin.*tls',
+     "Configurar TLS en el Docker daemon (--tlsverify, --tlscert, --tlskey). Nunca exponer el socket Docker sin TLS. Usar Unix socket en su lugar. Implementar firewall para bloquear puerto 2375/2376 desde internet."),
+    (r'kubernetes.*api.*anon|kubernetes.*sin.*auth',
+     "Deshabilitar acceso anónimo al API server (--anonymous-auth=false). Implementar RBAC estricto. Usar Network Policies para aislar pods. Auditar ClusterRoleBindings con permisos amplios."),
+    (r'jupyter.*sin.*token|jupyter.*no.*auth',
+     "Configurar token de autenticación en Jupyter: jupyter notebook --NotebookApp.token='TOKEN'. Nunca exponer Jupyter sin autenticación. Usar jupyter_server_proxy detrás de autenticación OAuth."),
+    (r'moveit.*cve-2023-34362|moveit.*sqli',
+     "Aplicar parche de Progress Software inmediatamente. Revisar IIS logs para indicadores de compromiso. Escanear webshells en C:\\MOVEit Transfer\\wwwroot\\. Cambiar todas las credenciales de servicio."),
+    (r'citrix.*bleed|cve-2023-4966',
+     "Aplicar parche de Citrix para CVE-2023-4966 inmediatamente. Terminar todas las sesiones activas post-parcheo. Revisar logs de acceso para sesiones sospechosas antes del parche."),
+    (r'fortigate.*cve-2022-40684|fortigate.*auth.*bypass',
+     "Actualizar FortiOS a 7.0.7+, 7.2.2+. Deshabilitar interfaz de gestión HTTP/HTTPS desde internet. Implementar MFA para acceso administrativo. Auditar cuentas de administrador recientes."),
+    (r'solr.*rce|solr.*velocity|cve-2019-17558',
+     "Actualizar Apache Solr a versión parcheada. Deshabilitar Velocity Response Writer si no se usa. Implementar autenticación básica en Solr (Kerberos o Basic Auth plugin). Bloquear acceso público al puerto 8983."),
+    (r'cacti.*cve-2022-46169|cacti.*command.*inject',
+     "Actualizar Cacti a 1.2.23+. Implementar autenticación robusta. Restringir acceso a interfaces de administración. Auditar scripts personalizados en Cacti."),
+    (r'minio.*cve-2023-28432|minio.*secret.*key',
+     "Actualizar MinIO a RELEASE.2023-03-13T19-46-17Z+. Deshabilitar endpoint /minio/health/cluster en producción si no se usa. Rotar MINIO_ROOT_PASSWORD y MINIO_SECRET_KEY inmediatamente."),
+    (r'spring.*actuator.*password|actuator.*env.*secret',
+     "Deshabilitar endpoints de actuator sensibles: management.endpoints.web.exposure.include=health,info. Nunca exponer /actuator/env, /actuator/heapdump públicamente. Implementar autenticación en actuator."),
+    (r'zabbix.*cve-2022-23131|zabbix.*saml.*bypass',
+     "Actualizar Zabbix a 5.4.10+ / 6.0.4+. Deshabilitar SAML si no se usa. Si se usa SAML, verificar la configuración del IdP. Revisar cuentas creadas recientemente."),
 ]
 
 def _auto_remediation(finding):
@@ -12723,25 +12756,68 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                     }], target)
 
                 # Auto-probe critical paths found by fuzzer
-                for sensitive_path in [".env", ".git/HEAD", "backup.zip", "backup.tar.gz",
-                                        "web.config", "config.php", "wp-config.php.bak",
-                                        "phpinfo.php", "info.php", "server-status"]:
-                    if sensitive_path in fuzz_out.lower():
+                for sensitive_path in [
+                    ".env", ".git/HEAD", "backup.zip", "backup.tar.gz",
+                    "web.config", "config.php", "wp-config.php.bak",
+                    "phpinfo.php", "info.php", "server-status",
+                    # Spring Boot / cloud
+                    "actuator/env", "actuator/heapdump", "actuator/beans",
+                    "actuator/httptrace", "actuator/loggers", "actuator/mappings",
+                    # API docs
+                    "api/swagger.json", "swagger.json", "swagger.yaml",
+                    "openapi.json", "openapi.yaml", "v1/swagger.json",
+                    # Admin panels
+                    "admin/config.php", "admin/setup.php", "install.php",
+                    "setup.php", "console", "h2-console", "graphql",
+                    # Secrets
+                    ".aws/credentials", ".ssh/id_rsa", "id_rsa",
+                    "private.key", "server.key", "ssl/private.key",
+                    # Docker / K8s
+                    ".dockerenv", "docker-compose.yml", "k8s/", "kubernetes/",
+                    # Backup files
+                    "backup.sql", "dump.sql", "database.sql", "db.sql",
+                    "config.bak", "config.old", "settings.bak",
+                ]:
+                    if sensitive_path.split("/")[-1].split(".")[0] in fuzz_out.lower() or sensitive_path in fuzz_out.lower():
                         probe_out, _ = self._run_cmd(
-                            f"probe-{sensitive_path.replace('.','_').replace('/','_')}",
-                            f"curl -sL --max-time 10 '{base}/{sensitive_path}' 2>/dev/null | head -30",
+                            f"probe-{sensitive_path.replace('.','_').replace('/','_')[:20]}",
+                            f"curl -sL --max-time 10 '{base}/{sensitive_path}' 2>/dev/null | head -40",
                             target, timeout=15,
                         )
                         if probe_out.strip() and len(probe_out.strip()) > 10:
                             accumulated_output.append(f"=== {sensitive_path} @ {base} ===\n{probe_out[:600]}")
                             self._capture_evidence(probe_out, target, f"probe-{sensitive_path}", f"GET {sensitive_path}")
-                            if any(k in probe_out.lower() for k in ["db_password", "db_pass", "secret_key", "api_key", "aws_secret"]):
+                            _cred_kw = ["db_password", "db_pass", "secret_key", "api_key", "aws_secret",
+                                        "password=", "passwd=", "MINIO_SECRET", "grafana_api_key",
+                                        "private_key", "access_key", "authorization", "bearer"]
+                            if any(k in probe_out.lower() for k in _cred_kw):
                                 self._save_findings([{
                                     "title": f"Credenciales en {sensitive_path} @ {base}",
                                     "severity": "critical",
                                     "description": f"Archivo sensible expuesto con credenciales:\n{probe_out[:300]}",
                                     "cve": "",
                                 }], target)
+
+                # Always probe these high-value paths regardless of fuzz output
+                _always_probe = [
+                    ("/.env", "env-probe"),
+                    ("/.git/HEAD", "git-probe"),
+                    ("/actuator/env", "actuator-env-probe"),
+                    ("/api/swagger.json", "swagger-probe"),
+                    ("/graphql", "graphql-probe"),
+                    ("/h2-console", "h2-console-probe"),
+                ]
+                for _path, _name in _always_probe:
+                    _r, _ = self._run_cmd(
+                        _name,
+                        f"CODE=$(curl -sk --max-time 8 -o /dev/null -w '%{{http_code}}' '{base}{_path}' 2>/dev/null); "
+                        f"[ \"$CODE\" = '200' ] && {{ echo \"SENSITIVE_200:{_path}\"; "
+                        f"curl -sk --max-time 8 '{base}{_path}' 2>/dev/null | head -20; }}",
+                        target, timeout=12,
+                    )
+                    if "SENSITIVE_200" in _r:
+                        self._capture_evidence(_r, target, _name, f"GET {base}{_path}")
+                        accumulated_output.append(f"=== HIGH-VALUE {_path} ===\n{_r[:400]}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # Log4Shell CVE-2021-44228 scanner
