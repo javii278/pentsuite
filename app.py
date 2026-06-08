@@ -1185,12 +1185,20 @@ _CVSS_RULES = [
     # Critical — network RCE without auth, no scope change
     (r'rce.*confirm|exploit.*confirm|log4shell|spring4shell|shellshock|vsftpd.*backdoor|'
      r'unrealircd.*backdoor|samba.*usermap|distcc.*rce|ms08-067|webmin.*backdoor|'
-     r'drupalgeddon|struts.*ognl|redis.*rce|jenkins.*rce',
+     r'drupalgeddon|struts.*ognl|redis.*rce|jenkins.*rce|activemq.*cve-2023-46604|'
+     r'teamcity.*cve-2023-42793|metabase.*cve-2023-38646|cacti.*cve-2022-46169|'
+     r'screenconnect.*cve-2024-1709|docker.*daemon.*rce|jupyter.*no.*auth|'
+     r'zabbix.*cve-2022-23131|solr.*velocity.*rce|kibana.*cve-2019-7609|'
+     r'ofbiz.*rce|ivanti.*cve-2024-21893|teamcity.*cve-2024-27198',
      'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H', 9.8),
     # Critical — default credentials giving full access
     (r'default.*cred.*valid|cred.*default.*confirm|tomcat.*creds.*valid|phpmyadmin.*creds|'
-     r'winrm.*confirm|pwn3d',
+     r'winrm.*confirm|pwn3d|grafana.*default.*cred.*valid|activemq.*default.*cred|'
+     r'portainer.*cred.*valid|sonarqube.*default.*cred|nagios.*default.*cred',
      'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H', 9.8),
+    # Critical — Docker/K8s escape to host
+    (r'docker.*daemon.*exposed|kubernetes.*api.*anon|k8s.*exec.*pod',
+     'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H', 10.0),
     # High — SQLi
     (r'sql.*inject|sqli|sqlmap.*confirm',
      'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N', 9.1),
