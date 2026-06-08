@@ -5772,9 +5772,22 @@ OSINT_TOOLS = {
     "whois":      "whois {domain} 2>/dev/null",
     "dnsrecon":   "dnsrecon -d {domain} 2>/dev/null",
     "wafw00f":    "wafw00f http://{domain} 2>/dev/null",
-    "nuclei_web": "nuclei -u http://{domain} -severity critical,high,medium -j 2>/dev/null",
+    "nuclei_web": "nuclei -u http://{domain} -severity critical,high,medium -j -no-update-check 2>/dev/null",
     "ctfr":       "ctfr.py -d {domain} 2>/dev/null",
     "gau":        "gau {domain} 2>/dev/null | head -200",
+    # New OSINT tools 2023-2024
+    "dnsx_full":  "dnsx -d {domain} -a -aaaa -cname -mx -ns -txt -ptr -soa -resp -silent 2>/dev/null",
+    "httpx":      "httpx -l <(subfinder -d {domain} -silent 2>/dev/null) -silent -title -tech-detect -status-code 2>/dev/null | head -50",
+    "gospider":   "gospider -s 'http://{domain}' -c 5 -d 2 --blacklist 'png,jpg,gif,svg,ico,css,woff' 2>/dev/null | head -50",
+    "hakrawler":  "hakrawler -url 'http://{domain}' -depth 2 -plain -wayback -insecure 2>/dev/null | head -50",
+    "paramspider":"paramspider -d {domain} --quiet 2>/dev/null | head -50",
+    "nuclei_cve": "nuclei -u http://{domain} -tags 'cve-2023,cve-2024' -severity critical,high -j -no-update-check 2>/dev/null | head -40",
+    "naabu":      "naabu -host {domain} -top-ports 1000 -silent 2>/dev/null",
+    "katana":     "katana -u 'http://{domain}' -d 2 -jc -silent 2>/dev/null | head -50",
+    "ct_log":     "curl -sL 'https://crt.sh/?q=%.{domain}&output=json' 2>/dev/null | python3 -c 'import json,sys; [print(e.get(\"name_value\",\"\")) for e in json.load(sys.stdin)[:50] if \"*\" not in e.get(\"name_value\",\"\")]' 2>/dev/null | sort -u",
+    "shodan_ip":  "shodan host {domain} 2>/dev/null || curl -sL 'https://internetdb.shodan.io/{domain}' 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"ports\",[]),d.get(\"tags\",[]),d.get(\"cpes\",[][:3]))' 2>/dev/null",
+    "wayback":    "waybackurls {domain} 2>/dev/null | grep -iE '\\.(env|bak|sql|config|key|pem)' | head -20",
+    "github_dork":"curl -sL 'https://api.github.com/search/code?q={domain}+password+OR+secret&per_page=5' 2>/dev/null | python3 -c 'import sys,json; [print(r.get(\"html_url\",\"\"),r.get(\"name\",\"\")) for r in json.load(sys.stdin).get(\"items\",[])[:5]]' 2>/dev/null",
 }
 
 @app.route("/api/projects/<project_id>/osint/run", methods=["POST"])
