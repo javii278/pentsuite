@@ -7363,6 +7363,7 @@ class AutonomousEngine:
         self._pivot_targets: set = set()
         self._all_scanned: set = set()
         self._project_lock = threading.Lock()
+        self._queue_lock = threading.Lock()   # protects _queued dedup dict
         self._admin_creds: dict = {}
         self._domain: str = ""
         self._worker_threads: list = []
@@ -7446,11 +7447,12 @@ class AutonomousEngine:
                 self._brain_log = self._brain_log[-1500:]
 
     def _enqueue(self, priority, name, command, target):
-        if target not in self._queued:
-            self._queued[target] = set()
-        if name in self._queued[target]:
-            return False
-        self._queued[target].add(name)
+        with self._queue_lock:
+            if target not in self._queued:
+                self._queued[target] = set()
+            if name in self._queued[target]:
+                return False
+            self._queued[target].add(name)
         self._job_queue.put((priority, time.time(), {"name": name, "command": command, "target": target}))
         return True
 
@@ -7638,8 +7640,13 @@ class AutonomousEngine:
         # Split from the deep scan so we get intermediate feedback and avoid a
         # monolithic 8-10 min silent nmap -p- -sV -sC -O command on filtered hosts.
         nmap_extra = cfg.get("nmap_extra", "")
-        port_flag = "-p-" if "-p-" in nmap_extra else "--top-ports 1000"
-        extra_no_p = nmap_extra.replace("-p-", "").strip()
+        if "-p-" in nmap_extra:
+            port_flag = "-p-"
+            extra_no_p = nmap_extra.replace("-p-", "").strip()
+        else:
+            port_flag = "--top-ports 1000"
+            # Remove --top-ports from extra flags to avoid duplicate
+            extra_no_p = re.sub(r'--top-ports\s+\d+', '', nmap_extra).strip()
         # Phase 1 gets ~40% of total timeout; host-timeout is slightly under that
         p1_timeout = max(60, int(_scan_timeout * 0.40))
         p1_ht = max(50, p1_timeout - 10)
@@ -8197,6 +8204,21 @@ class AutonomousEngine:
     def stop(self):
         self._running = False
         self._log("ENGINE Deteniendo autopiloto...")
+        # Kill any running subprocesses immediately so proc.communicate() unblocks
+        # (otherwise _loop stays blocked in _initial_scan for up to scan_timeout seconds)
+        with JOBS_LOCK:
+            lingering = [
+                j for j in JOBS.values()
+                if j.get("autopilot") and j.get("status") == "running" and j.get("pid")
+            ]
+        for j in lingering:
+            try:
+                os.killpg(os.getpgid(j["pid"]), signal.SIGKILL)
+            except Exception:
+                try:
+                    os.kill(j["pid"], signal.SIGKILL)
+                except Exception:
+                    pass
 
     def get_status(self):
         elapsed = 0
@@ -21429,6 +21451,19 @@ http:
     def stop(self):
         self._running = False
         self._log("[Claude] Deteniendo engine...")
+        with JOBS_LOCK:
+            lingering = [
+                j for j in JOBS.values()
+                if j.get("autopilot") and j.get("status") == "running" and j.get("pid")
+            ]
+        for j in lingering:
+            try:
+                os.killpg(os.getpgid(j["pid"]), signal.SIGKILL)
+            except Exception:
+                try:
+                    os.kill(j["pid"], signal.SIGKILL)
+                except Exception:
+                    pass
 
     def get_status(self):
         elapsed = 0
