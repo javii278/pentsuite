@@ -2293,6 +2293,51 @@ def _parse_tool_output(tool, output_text, rhost="", job_name=""):
     open_ports  = []
     findings    = []   # auto-detected vulnerabilities
 
+    # ── exploit_result / msf_exploit output parsing ────────────────────────────
+    if tool in ("exploit_result", "msf_exploit"):
+        # Detect root/SYSTEM access from exploit output
+        _EXPLOIT_SUCCESS_PATTERNS = [
+            (r'uid=0\(root\)', "RCE — Shell como root obtenida", "critical", "", 10.0),
+            (r'uid=\d+\(\w+\).*gid=\d+', "RCE — Ejecución de Comandos Confirmada", "critical", "", 9.8),
+            (r'NT AUTHORITY\\SYSTEM|nt authority\\system', "RCE — Shell SYSTEM obtenida (Windows)", "critical", "", 10.0),
+            (r'Meterpreter session \d+ opened', "Meterpreter Session Abierta", "critical", "", 10.0),
+            (r'Command shell session.*opened', "Shell Reversa via Metasploit", "critical", "", 10.0),
+            (r'Pwn3d!', "Acceso Admin Confirmado (Pwn3d!)", "critical", "", 9.8),
+            (r'DOCKER_DAEMON_EXPOSED', "Docker Daemon Expuesto — RCE Host", "critical", "", 10.0),
+            (r'JUPYTER_NO_AUTH|KERNEL_CREATED:', "Jupyter RCE Sin Autenticación", "critical", "", 9.8),
+            (r'GRAFANA_DEFAULT_CREDS_VALID', "Grafana Default Creds Válidas", "critical", "", 9.8),
+            (r'GRAFANA_CVE_2021_43798_CONFIRMED', "Grafana Path Traversal Confirmado", "critical", "CVE-2021-43798", 7.5),
+            (r'ACTIVEMQ_DEFAULT_CREDS', "ActiveMQ Default Creds (admin:admin)", "critical", "CVE-2023-46604", 9.8),
+            (r'TEAMCITY_AUTH_BYPASS', "TeamCity Auth Bypass Confirmado", "critical", "CVE-2023-42793", 9.8),
+            (r'METABASE_SETUP_TOKEN', "Metabase Setup Token Expuesto", "critical", "CVE-2023-38646", 9.8),
+            (r'SONARQUBE_DEFAULT_CREDS', "SonarQube Default Creds Válidas", "high", "", 8.8),
+            (r'KUBERNETES_API_ANONYMOUS|kube-system\b', "Kubernetes API Acceso Anónimo", "critical", "", 9.8),
+            (r'REDIS_NO_AUTH_CONFIRMED|redis.*PONG', "Redis Sin Autenticación", "critical", "", 9.8),
+            (r'REDIS_CRON_RCE_ATTEMPTED', "Redis Cron RCE Intentado", "high", "", 8.5),
+            (r'NAGIOS_DEFAULT_CREDS', "Nagios XI Default Creds", "critical", "CVE-2023-40931", 9.8),
+            (r'PORTAINER_CREDS_VALID', "Portainer Default Creds (admin:tryharder)", "critical", "", 9.8),
+            (r'VAULT_TOKEN_VALID', "HashiCorp Vault Token Default Válido", "critical", "", 9.8),
+            (r'RDP_LOGIN_SUCCESS:', "RDP — Credenciales Válidas", "critical", "", 9.8),
+            (r'HTTP_FORM_LOGIN_SUCCESS:', "Web — Login Form Bypass con Credenciales", "critical", "", 9.8),
+            (r'GRAFANA_CREDS_VALID:', "Grafana — Credenciales Válidas", "critical", "", 9.8),
+            (r'ZABBIX_AUTH_BYPASS|ZABBIX_DEFAULT_CREDS', "Zabbix Auth Bypass / Default Creds", "critical", "CVE-2022-23131", 9.8),
+            (r'NAGIOS_DETECTED', "Nagios XI Detectado", "medium", "", 5.0),
+            (r'230 Login successful', "FTP Login Exitoso", "high", "", 7.5),
+            (r'root\.txt[:\s]+[a-fA-F0-9]{32,}|user\.txt[:\s]+[a-fA-F0-9]{32,}', "Flag CTF Encontrada", "critical", "", 10.0),
+            (r'Administrator:500:[a-fA-F0-9]{32}:[a-fA-F0-9]{32}', "Windows — NTLM Hashes Volcados", "critical", "", 9.0),
+        ]
+        for pattern, title, severity, cve, cvss in _EXPLOIT_SUCCESS_PATTERNS:
+            if re.search(pattern, output_text, re.IGNORECASE | re.DOTALL):
+                findings.append({
+                    "id": str(uuid.uuid4()),
+                    "title": title,
+                    "severity": severity, "status": "open",
+                    "cve": cve, "cvss": cvss,
+                    "description": f"Confirmado via exploit_result: {title}",
+                    "evidence": re.search(pattern, output_text, re.IGNORECASE).group(0)[:200] if re.search(pattern, output_text, re.IGNORECASE) else "",
+                    "hosts": [rhost] if rhost else [], "source": "auto-exploit",
+                })
+
     # ── Gobuster / Feroxbuster output parsing ──────────────────────────────────
     if tool in ("gobuster", "feroxbuster") or any(t in job_name.lower() for t in ("gobuster", "feroxbuster", "dirb", "dirbust", "web fuzz", "ffuf")):
         # Feroxbuster: "200    45l   120w   3456c http://target/path"
