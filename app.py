@@ -21210,6 +21210,7 @@ http:
                         self._log("[Claude] 3 fallos API consecutivos — fallback determinístico")
                         self._phase5_no_api_fallback(target, open_ports, accumulated_output)
                         break
+                    time.sleep(5)  # back-off: evitar rate-limit 429 en fallos consecutivos
                     continue
                 _api_failures = 0  # reset on success
 
